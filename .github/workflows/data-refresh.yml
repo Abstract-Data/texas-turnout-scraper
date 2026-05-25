@@ -1,0 +1,79 @@
+name: Data Refresh
+
+on:
+  schedule:
+    - cron: "0 12 * * *"   # Daily at noon UTC (7am CT)
+  workflow_dispatch:         # Manual trigger
+    inputs:
+      election_id:
+        description: "source_election_id to fetch (leave blank to fetch all active)"
+        required: false
+        default: ""
+      date:
+        description: "Report date (YYYY-MM-DD, leave blank for latest)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write  # needed to commit data/ files
+
+jobs:
+  refresh:
+    name: Scrape and commit turnout data
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: uv sync
+
+      - name: Discover elections
+        run: uv run tx-turnout elections list --output data/elections/index.json
+
+      - name: Fetch turnout data
+        run: |
+          if [[ -n "${{ github.event.inputs.election_id }}" ]]; then
+            ELECTIONS="${{ github.event.inputs.election_id }}"
+          else
+            # Fetch all elections listed in index.json
+            ELECTIONS=$(python -c "
+          import json, sys
+          idx = json.load(open('data/elections/index.json'))
+          print(' '.join(e['source_election_id'] for e in idx['elections']))
+          ")
+          fi
+
+          DATE_ARG=""
+          if [[ -n "${{ github.event.inputs.date }}" ]]; then
+            DATE_ARG="--date ${{ github.event.inputs.date }}"
+          fi
+
+          for election_id in $ELECTIONS; do
+            echo "--- Fetching election $election_id ---"
+            uv run tx-turnout turnout fetch "$election_id" $DATE_ARG \
+              --output "data/elections/$election_id/"
+            uv run tx-turnout roster fetch "$election_id" $DATE_ARG \
+              --output "data/elections/$election_id/"
+            uv run tx-turnout audit run "$election_id" $DATE_ARG \
+              --output "data/elections/$election_id/"
+          done
+
+      - name: Commit data files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet && echo "No changes to commit" || \
+            git commit -m "data: refresh turnout data $(date -u +%Y-%m-%d)"
+          git push

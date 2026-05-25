@@ -1,0 +1,27 @@
+ELECTION_PICKER_URL = "https://earlyvoting.texas-election.com/Elections/getElectionDetails.do"
+
+[FORMATTING]
+SOS_DATE = "%B %d,%Y"
+NEW_DATE = "%Y%m%d"
+
+[SELECTION_CLASSES]
+ELECTION_LIST_SELECTION = "idElection"
+ELECTION_TYPE_SELECTION = "form-control"
+
+[BUTTONS]
+SUBMIT = "//button[text()='Submit']"
+PREVIOUS = "//button[text()='Previous']"
+GENERATE_REPORT = "//button[text()='Generate Statewide Report']"
+
+[XPATHS]
+DAILY_TOTALS = '//*[@id="electionsInfoForm"]/div/div[2]/div/div[3]/div/table/tbody'
+#DAILY_TOTALS = '//*[@id="electionsInfoForm"]/div/div[2]/div/div[3]/div/table/tbody/tr[255]'
+
+[ELECTION_DAY_SELECTION]
+EARLY_VOTE = "selectedDate"
+ELECTION_DAY = "electionDate"
+
+#//*[@id="electionsInfoForm"]/div/div[2]/div/div[3]/div/table/tbody/tr[164]/td[7]
+#//*[@id="electionsInfoForm"]/div/div[2]/div/div[3]/div/table/tbody/tr[164]/td[6]
+#//*[@id="electionsInfoForm"]/div/div[2]/div/div[3]/div/table/tbody/tr[164]/th
+

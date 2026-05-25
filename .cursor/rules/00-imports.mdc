@@ -1,0 +1,32 @@
+---
+description: Core import rules and AGENTS.md reference for all Python files
+alwaysApply: true
+---
+
+# Import Rules — texas-turnout-scraper
+
+Always read `AGENTS.md` before making changes to understand project constraints.
+
+## Forbidden imports
+- `selenium` — removed; use `httpx` for all HTTP
+- `election_utils` — dependency removed; all models are in `src/texas_turnout_scraper/`
+- `icecream` — removed; use `loguru` or stdlib `logging`
+- `sqlmodel` / `sqlalchemy` — not in this package; models are Pydantic-only
+
+## Required import style
+```python
+from __future__ import annotations
+
+from texas_turnout_scraper.models import Election, VoterRecord
+from texas_turnout_scraper.enums import ElectionType, VoteMethod
+```
+
+## ID types — NEVER coerce to int
+```python
+# ✅ correct
+source_election_id: str = "49664"
+voter_id: str = "0123456789"
+
+# ❌ wrong
+election_id: int = 49664
+```

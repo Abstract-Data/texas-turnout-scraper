@@ -1,0 +1,27 @@
+{
+  "date_updated": "2026-05-08",
+  "election_id": 53813,
+  "election_type": "P",
+  "early_voting_date": null,
+  "early_voting_date_id": null,
+  "turnout_by_county": [
+    {
+      "name": "ANDERSON",
+      "id": 1,
+      "registered_voters": 30678,
+      "in_person_votes_on_date": 2993,
+      "total_in_person_votes_for_election": 6956,
+      "total_mail_votes_for_election": 138,
+      "voter_details_report": true
+    },
+    {
+      "name": "HARRIS",
+      "id": 101,
+      "registered_voters": 2400000,
+      "in_person_votes_on_date": 89000,
+      "total_in_person_votes_for_election": 177500,
+      "total_mail_votes_for_election": 2400,
+      "voter_details_report": true
+    }
+  ]
+}

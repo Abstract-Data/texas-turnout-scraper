@@ -1,0 +1,31 @@
+---
+description: Python style and Pydantic v2 conventions for texas-turnout-scraper
+alwaysApply: false
+globs: ["src/**/*.py", "tests/**/*.py"]
+---
+
+# Python Conventions
+
+## Pydantic v2
+- Use `model_config = ConfigDict(...)` not `class Config`
+- Use `@field_validator` not `@validator`
+- Use `model_dump()` not `.dict()`
+- Annotate all fields with types
+
+## httpx patterns
+- Always use `httpx.Client` as a context manager
+- Set explicit timeouts: `httpx.Client(timeout=30.0)`
+- Carry cookies across requests via the client session (do not extract/re-inject manually)
+
+## CSV parsing
+- Always use `csv.DictReader` — never split on commas manually
+- Keep `ID_VOTER` and `source_election_id` as strings
+
+## Async
+- Core scraping functions use `asyncio` + `httpx.AsyncClient`
+- CLI entry points use `asyncio.run()`
+
+## Ruff
+- Line length: 100
+- Target: Python 3.10+
+- Selected rules: E, W, F, I (isort), UP (pyupgrade)

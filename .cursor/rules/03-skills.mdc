@@ -1,0 +1,48 @@
+---
+description: Available skills for texas-turnout-scraper — when and how to invoke each
+alwaysApply: true
+---
+
+# Skills Available for This Project
+
+These skills are installed in `.claude/skills/` and invocable via the Skill tool.
+Cursor agents should reference these when the trigger phrase matches the task.
+
+## Planning & Execution
+
+| Skill | Invoke As | Trigger |
+|-------|-----------|---------|
+| writing-plans | `power-skills-bundle:writing-plans` | Before implementing any multi-step task |
+| executing-plans | `power-skills-bundle:executing-plans` | Running a written implementation plan |
+| dispatching-parallel-agents | `power-skills-bundle:dispatching-parallel-agents` | 2+ independent tasks (e.g. build models + enums + fixtures in parallel) |
+| using-git-worktrees | `power-skills-bundle:using-git-worktrees` | Starting a new feature branch |
+
+## Implementation Quality
+
+| Skill | Invoke As | Trigger |
+|-------|-----------|---------|
+| test-driven-development | `power-skills-bundle:test-driven-development` | Before writing any implementation code |
+| verification-before-completion | `power-skills-bundle:verification-before-completion` | Before claiming a task is done |
+| systematic-debugging | `power-skills-bundle:systematic-debugging` | Any bug, test failure, or unexpected behavior |
+| requesting-code-review | `power-skills-bundle:requesting-code-review` | After completing a feature, before merging |
+
+## Code Review & Architecture
+
+| Skill | Invoke As | Trigger |
+|-------|-----------|---------|
+| adversarial-python-review | `adversarial-python-review` | Pressure-test Pydantic models or httpx session design |
+| python-project-review | `python-project-review` | Full codebase health check |
+
+## MCP Development
+
+| Skill | Invoke As | Trigger |
+|-------|-----------|---------|
+| mcp-builder | `mcp-builder` | Building `mcp_server.py` / FastMCP tools |
+
+## Project-Specific Notes
+
+- **Always** use `writing-plans` before implementing a new module
+- **Always** use `test-driven-development` when building session.py, roster.py, audit.py
+- **Always** use `verification-before-completion` before committing
+- Use `mcp-builder` when implementing the 5 MCP tools (list_elections, describe_election, fetch_roster, fetch_turnout, run_audit)
+- Use `adversarial-python-review` before finalizing `models.py` schema
