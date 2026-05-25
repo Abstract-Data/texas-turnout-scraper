@@ -21,6 +21,7 @@ from texas_turnout_scraper.civix import (
     _decode_envelope,
     fetch_county_roster,
 )
+from texas_turnout_scraper.http_transport import _MAX_HTTP_RETRIES
 from texas_turnout_scraper.enums import ElectionType, VoteMethod
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "early_voting"
@@ -547,4 +548,4 @@ def test_http_error_raises() -> None:
         with pytest.raises(httpx.HTTPStatusError):
             client.list_elections()
 
-    _assert_http_mocked(1)
+    _assert_http_mocked(_MAX_HTTP_RETRIES + 1)

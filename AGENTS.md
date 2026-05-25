@@ -258,7 +258,7 @@ Each prohibition is paired with the correct alternative:
 - Create git commits only when the user explicitly requests them.
 - Prefer parallel subagents for independent multi-module or multi-tranche work (e.g. civix + legacy CLI, review-fix plans).
 - When implementing from an attached plan, do not edit the plan file; treat it as read-only scope.
-- When asked to fix review findings, expect a review→fix→re-review loop until no issues remain.
+- When asked to fix review findings, run fix → `/review` repeatedly until no issues remain (e.g. “Fix everything” / “until we're all clear”).
 
 ## Learned Workspace Facts
 
@@ -266,10 +266,14 @@ Each prohibition is paired with the correct alternative:
 - `.gitignore` keeps **`data/**/*.csv`** and **`tests/fixtures/**/*.csv`** tracked while ignoring **`HANDOFF.md`**, **`TASK.md`**, **`.claude/handoffs/`**, **`src/texas_turnout_scraper/tmp/`**, and **`.cursor/hooks/state/`**.
 - Unit tests under **`tests/unit/`** mock HTTP with **respx** and load synthetic data from **`tests/fixtures/early_voting/`**; they must not hit the live SOS site.
 - Work is organized in **`prompts/{topic}/`** (`current.md` plus versioned snapshots); numbered prompts (e.g. `01-test-fixtures`, `02-unit-tests-civix`) map to test/fixture/CLI tranches in the refactor plan.
-- **Civix** roster parsing normalizes VUIDs with **`.zfill(10)`**; **legacy** `_parse_county_csv` uses **`str()` only** — unpadded IDs can behave differently between paths unless fixtures or code align.
+- **Normalization:** Civix VUIDs use **`.zfill(10)`**; legacy `_parse_county_csv` uses **`str()` only**; voterfile/roster precinct compare uses **`normalize_precinct`** / **`precincts_match`** (SOS zero-padded vs Civix unpadded).
 - **`writer.py`** exposes **`ROSTER_CSV_COLUMNS`** for CSV header parity; duplicate **`also_found_on`** uses row-index matching (same county/date duplicates still cross-reference).
 - Integration tests require **`--live`** (`tests/conftest.py` skips them otherwise); run with `uv run pytest tests/integration/ -v --live`.
 - Full local verification: `uv sync --dev`, ruff `E,W,F,I`, `uv run ty check`, `pytest tests/unit`, `pytest tests/verify`, then optional live integration.
+- **CLI** is namespaced: **`tx-turnout civix|legacy|audit|voterfile`** (not flat `elections list` / `roster fetch` shapes in older docs).
+- **All EV days for one election:** `civix fetch-all <id>` / `legacy fetch-all <id>` → `data/elections/{civix|legacy}/{id}/roster_ev_{id}.csv`; batch stale elections: **`civix|legacy refresh-all`** (drives **`data-refresh.yml`**).
+- **`civix elections`** — interactive **questionary** menus on TTY (newest election first); **`--no-interactive`** for scripts/CI.
+- **HTTP/Typer:** default Civix/legacy HTTP uses **cloudscraper** — catch **`requests.HTTPError`** as well as **`httpx.HTTPError`**; CLI EV dates use string **`EvDateStr`**, not **`Annotated[date]`** (Typer 0.25 registration fails on `date`).
 
 ---
 
