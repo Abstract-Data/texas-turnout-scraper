@@ -19,6 +19,7 @@ Python library, CLI (`tx-turnout`), and MCP server for Texas Secretary of State 
 [![lxml](https://img.shields.io/pypi/v/lxml?label=lxml)](https://pypi.org/project/lxml/)
 [![tqdm](https://img.shields.io/pypi/v/tqdm?label=tqdm)](https://pypi.org/project/tqdm/)
 [![anyio](https://img.shields.io/pypi/v/anyio?label=anyio)](https://pypi.org/project/anyio/)
+[![questionary](https://img.shields.io/pypi/v/questionary?label=questionary)](https://pypi.org/project/questionary/)
 
 ### Dev & build
 
@@ -57,7 +58,8 @@ uv sync --dev
 
 ```bash
 # Civix EVR (2025+)
-uv run tx-turnout civix elections
+uv run tx-turnout civix elections              # newest first; ↑/↓ menus in a TTY (questionary)
+uv run tx-turnout civix elections --no-interactive
 uv run tx-turnout civix turnout 53813 2025-03-01
 
 # Legacy SOS portal (pre-2025)

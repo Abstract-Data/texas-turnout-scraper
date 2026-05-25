@@ -230,6 +230,10 @@ GET /api-ivis-system/api/v1/getFileByFormat?type=EVR_EARLYVOTING
 
 Response is base64-wrapped like all other endpoints. Decode to get raw CSV text.
 
+**Empty roster:** For counties with zero voters on that EV date, Civix may return HTTP
+200 with an **empty response body** (not `{"upload": "..."}`). The scraper treats that as
+an empty roster (0 records). Turnout may still show `voter_details_report` as available.
+
 ---
 
 ## Endpoint 4 — EV Statewide Bulk

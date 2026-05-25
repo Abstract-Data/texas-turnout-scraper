@@ -16,6 +16,7 @@ dependencies = [
     "anyio>=4.4.0",
     "duckdb>=1.0.0",
     "cloudscraper>=1.2.71",
+    "questionary>=2.1.1",
 ]
 
 [project.scripts]

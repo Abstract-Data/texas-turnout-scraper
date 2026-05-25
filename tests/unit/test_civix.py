@@ -18,6 +18,7 @@ from texas_turnout_scraper.civix import (
     API_PREFIX,
     BASE_URL,
     CivixClient,
+    _decode_envelope,
     fetch_county_roster,
 )
 from texas_turnout_scraper.enums import ElectionType, VoteMethod
@@ -480,6 +481,38 @@ def test_decode_envelope_missing_upload_raises() -> None:
         with pytest.raises(KeyError):
             client.list_elections()
 
+    _assert_http_mocked(1)
+
+
+@respx.mock
+def test_decode_envelope_empty_body_returns_empty_bytes() -> None:
+    response = httpx.Response(200, text="")
+    assert _decode_envelope(response) == b""
+
+
+@respx.mock
+def test_fetch_ev_roster_csv_empty_body_returns_no_records() -> None:
+    respx.get(
+        f"{BASE_URL}{API_PREFIX}/getFileByFormat",
+        params={
+            "type": "EVR_EARLYVOTING",
+            "electionId": "53813",
+            "electionDate": "02/27/2026",
+            "county": "LOVING",
+            "countyId": "151",
+            "format": "csv",
+        },
+    ).mock(return_value=httpx.Response(200, text=""))
+
+    with CivixClient(http_backend="httpx") as client:
+        records = client.fetch_ev_roster_csv(
+            53813,
+            date(2026, 2, 27),
+            "LOVING",
+            151,
+        )
+
+    assert records == []
     _assert_http_mocked(1)
 
 

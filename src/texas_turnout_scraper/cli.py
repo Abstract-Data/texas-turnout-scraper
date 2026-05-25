@@ -392,6 +392,180 @@ def _run_typer_command(command: Callable[..., None], **kwargs: object) -> bool:
         return code == 0
 
 
+def _stdin_is_tty() -> bool:
+    import sys
+
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _sort_civix_elections(elections: list[object]) -> list[object]:
+    """Return Civix elections sorted by election_date descending (newest first)."""
+    from .models import CivixElection
+
+    civix_only = [e for e in elections if isinstance(e, CivixElection)]
+    return sorted(
+        civix_only,
+        key=lambda e: (e.election_date, e.id),
+        reverse=True,
+    )
+
+
+def _sort_civix_ev_dates(election: object) -> list[object]:
+    """Return early_voting_dates sorted newest first."""
+    from .models import CivixElection, CivixElectionDate
+
+    if not isinstance(election, CivixElection):
+        return []
+    dates = [d for d in election.early_voting_dates if isinstance(d, CivixElectionDate)]
+    return sorted(dates, key=lambda d: d.date, reverse=True)
+
+
+def _format_civix_election_line(e: object, *, index: int | None = None) -> str:
+    from .models import CivixElection
+
+    if not isinstance(e, CivixElection):
+        return ""
+    cert = "yes" if e.certified else "no"
+    prefix = f"{index:>3}. " if index is not None else ""
+    return (
+        f"{prefix}{e.id:>8}  {e.election_date!s:<12}  {e.election_type.value:<22}  "
+        f"{cert:<5}  {len(e.early_voting_dates):>8}  {e.election_name}"
+    )
+
+
+def _echo_civix_elections_table(elections: list[object], *, numbered: bool = False) -> None:
+    header = f"{'#':>3}  {'ID':>8}  {'DATE':<12}  {'TYPE':<22}  {'CERT':<5}  {'EV DATES':>8}  NAME"
+    if not numbered:
+        header = f"{'ID':>8}  {'DATE':<12}  {'TYPE':<22}  {'CERT':<5}  {'EV DATES':>8}  NAME"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for idx, election in enumerate(elections, start=1):
+        typer.echo(_format_civix_election_line(election, index=idx if numbered else None))
+
+
+def _prompt_select(message: str, options: list[tuple[str, str]]) -> str:
+    """Arrow-key menu (questionary). Each option is ``(value, label)``."""
+    import questionary
+    from questionary import Choice
+
+    if not options:
+        typer.echo("Error: no choices available for prompt.", err=True)
+        raise typer.Exit(code=1)
+
+    selected = questionary.select(
+        message,
+        choices=[Choice(title=label, value=value) for value, label in options],
+        use_arrow_keys=True,
+        use_indicator=True,
+        use_shortcuts=False,
+    ).ask()
+
+    if selected is None:
+        raise typer.Exit(code=0)
+    return selected
+
+
+def _prompt_civix_election_id(elections: list[object]) -> str:
+    from .models import CivixElection
+
+    options: list[tuple[str, str]] = []
+    for election in elections:
+        if not isinstance(election, CivixElection):
+            continue
+        cert = "certified" if election.certified else "uncertified"
+        label = (
+            f"{election.id:>8}  {election.election_date}  "
+            f"{election.election_type.value:<18}  {cert:<11}  {election.election_name}"
+        )
+        options.append((election.source_election_id, label))
+
+    typer.echo("\nUse ↑/↓ and Enter to select an election (newest first).")
+    return _prompt_select("Election", options)
+
+
+def _prompt_civix_scrape_action() -> str:
+    return _prompt_select(
+        "What would you like to do?",
+        [
+            ("done", "Done (list only)"),
+            ("turnout", "Fetch turnout for one EV date"),
+            ("roster_per_county", "Fetch roster — per-county CSV (one EV date)"),
+            ("roster_statewide", "Fetch roster — statewide bulk file (one EV date)"),
+            ("fetch_all", "Fetch all EV dates (per-county, combined roster CSV)"),
+        ],
+    )
+
+
+def _prompt_civix_ev_date(election: object) -> date:
+    ev_dates = _sort_civix_ev_dates(election)
+    if not ev_dates:
+        typer.echo("Error: election has no early voting dates.", err=True)
+        raise typer.Exit(code=1)
+
+    options = [(ev.date.isoformat(), str(ev.date)) for ev in ev_dates]
+    typer.echo("\nUse ↑/↓ and Enter to select an early voting date (newest first).")
+    picked = _prompt_select("EV date", options)
+    return _parse_ev_date(picked)
+
+
+def _run_civix_elections_interactive(elections: list[object]) -> None:
+    """Prompt for election + scrape action, then dispatch to civix subcommands."""
+    if not elections:
+        typer.echo("No elections returned from Civix.", err=True)
+        raise typer.Exit(code=1)
+
+    _echo_civix_elections_table(elections, numbered=True)
+    election_id = _prompt_civix_election_id(elections)
+    from .models import CivixElection
+
+    election = _resolve_civix_election(elections, election_id)
+    if election is None or not isinstance(election, CivixElection):
+        typer.echo(f"Error: election {election_id} not found.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"\nSelected: {election.election_name} ({election_id})")
+
+    action = _prompt_civix_scrape_action()
+    if action == "done":
+        return
+
+    if action == "fetch_all":
+        _run_typer_command(
+            civix_fetch_all,
+            election_id=election_id,
+            output_dir=Path("data/elections/civix"),
+            dry_run=False,
+            write_audit=False,
+        )
+        return
+
+    ev_date = _prompt_civix_ev_date(election)
+    ev_date_str = ev_date.isoformat()
+
+    if action == "turnout":
+        _run_typer_command(
+            civix_turnout_fetch,
+            election_id=election_id,
+            ev_date=ev_date_str,
+        )
+        return
+
+    out_dir_raw = typer.prompt(
+        "Output directory (blank = print only, no files)",
+        default="",
+        show_default=False,
+    )
+    out_dir = Path(out_dir_raw) if out_dir_raw.strip() else None
+    strategy = "statewide" if action == "roster_statewide" else "per-county"
+    _run_typer_command(
+        civix_roster_fetch,
+        election_id=election_id,
+        ev_date=ev_date_str,
+        county=None,
+        out_dir=out_dir,
+        strategy=strategy,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Civix subcommands
 # ---------------------------------------------------------------------------
@@ -400,12 +574,25 @@ def _run_typer_command(command: Callable[..., None], **kwargs: object) -> bool:
 @civix_app.command("elections")
 def civix_elections_list(
     output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
+    interactive: Annotated[
+        bool | None,
+        typer.Option(
+            "--interactive/--no-interactive",
+            help="Prompt to select an election and scrape action (default: on when stdout is a TTY)",
+        ),
+    ] = None,
 ) -> None:
-    """List all elections in the Civix EVR system."""
+    """List Civix elections (newest first) and optionally run an interactive scrape wizard."""
     from .civix import CivixClient
+    from .models import CivixElection
 
     with CivixClient() as client:
-        elections = client.list_elections()
+        elections = _sort_civix_elections(client.list_elections())
+
+    use_interactive = interactive if interactive is not None else _stdin_is_tty()
+    if use_interactive and output != "json":
+        _run_civix_elections_interactive(elections)
+        return
 
     if output == "json":
         rows = [
@@ -420,19 +607,11 @@ def civix_elections_list(
                 "counties_count": len(e.counties),
             }
             for e in elections
+            if isinstance(e, CivixElection)
         ]
         typer.echo(json.dumps(rows, indent=2))
     else:
-        # Table output via typer.echo (rich is available via Typer)
-        header = f"{'ID':>8}  {'DATE':<12}  {'TYPE':<22}  {'CERT':<5}  {'EV DATES':>8}  NAME"
-        typer.echo(header)
-        typer.echo("-" * len(header))
-        for e in elections:
-            cert = "yes" if e.certified else "no"
-            typer.echo(
-                f"{e.id:>8}  {e.election_date!s:<12}  {e.election_type.value:<22}  "
-                f"{cert:<5}  {len(e.early_voting_dates):>8}  {e.election_name}"
-            )
+        _echo_civix_elections_table(elections, numbered=False)
 
 
 @civix_app.command("turnout")
@@ -481,9 +660,24 @@ def civix_roster_fetch(
     ev_date: EvDateStr,
     county: Annotated[str | None, typer.Option("--county", help="County name (e.g. HARRIS). Omit for all counties.")] = None,
     out_dir: Annotated[Path | None, typer.Option("--out-dir", help="Directory to save roster CSVs.")] = None,
+    strategy: Annotated[
+        str,
+        typer.Option(
+            "--strategy",
+            help="Roster fetch: 'per-county' (CSV per county) or 'statewide' (single bulk file)",
+        ),
+    ] = "per-county",
 ) -> None:
     """Fetch EV voter rosters for all counties (or one county) for a Civix election + date."""
     from .civix import CivixClient, fetch_county_roster
+
+    strategy_normalized = strategy.strip().lower().replace("_", "-")
+    if strategy_normalized not in ("per-county", "statewide"):
+        typer.echo(
+            f"Error: --strategy must be 'per-county' or 'statewide', got {strategy!r}.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
     parsed_date = _parse_ev_date(ev_date)
     with CivixClient() as client:
@@ -493,6 +687,23 @@ def civix_roster_fetch(
     if election is None:
         typer.echo(f"Error: election {election_id} not found in Civix.", err=True)
         raise typer.Exit(code=1)
+
+    if strategy_normalized == "statewide":
+        if county is not None:
+            typer.echo("Error: --county is not supported with --strategy statewide.", err=True)
+            raise typer.Exit(code=1)
+        save_dir = out_dir if out_dir is not None else Path.cwd()
+        save_dir.mkdir(parents=True, exist_ok=True)
+        with CivixClient() as client:
+            payload = client.fetch_statewide(
+                election_id=election.id,
+                election_date=parsed_date,
+            )
+        suffix = ".zip" if payload[:2] == b"PK" else ".csv"
+        output_path = save_dir / f"statewide_{election_id}_{parsed_date.isoformat()}{suffix}"
+        output_path.write_bytes(payload)
+        typer.echo(f"Saved {len(payload):,} bytes to {output_path}")
+        return
 
     target_counties = election.counties
     if county:

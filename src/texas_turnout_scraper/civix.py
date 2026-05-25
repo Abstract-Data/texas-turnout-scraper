@@ -59,6 +59,10 @@ def _decode_envelope(response: Any) -> bytes:
     This helper extracts and decodes that payload to raw bytes, which may
     be UTF-8 text (JSON or CSV) or binary (ZIP) depending on the endpoint.
 
+    Civix sometimes returns HTTP 200 with an **empty body** for per-county
+    rosters that have no voters on that date (``roster_available`` may still
+    be true in the turnout table). Treat that as an empty payload.
+
     Args:
         response: HTTP response from Civix (httpx or requests, via ``.json()``).
 
@@ -67,10 +71,21 @@ def _decode_envelope(response: Any) -> bytes:
 
     Raises:
         KeyError: If the response JSON lacks the ``"upload"`` key.
+        ValueError: If the response body is non-empty but not valid JSON.
         httpx.HTTPStatusError: Propagated from the caller if status != 2xx.
     """
-    envelope = response.json()
-    return base64.b64decode(envelope["upload"])
+    body = (response.text or "").strip()
+    if not body:
+        return b""
+    try:
+        envelope = response.json()
+    except ValueError as exc:
+        msg = "Civix response was not valid JSON"
+        raise ValueError(msg) from exc
+    upload = envelope.get("upload")
+    if upload is None:
+        raise KeyError("upload")
+    return base64.b64decode(upload)
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +317,10 @@ class CivixClient:
             },
         )
         csv_bytes = _decode_envelope(response)
-        csv_text = csv_bytes.decode("utf-8")
+        if not csv_bytes.strip():
+            return []
 
+        csv_text = csv_bytes.decode("utf-8")
         records: list[VoterRecord] = []
         reader = csv.DictReader(io.StringIO(csv_text))
         for row in reader:
