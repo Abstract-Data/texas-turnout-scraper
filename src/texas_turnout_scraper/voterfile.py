@@ -91,21 +91,32 @@ def age_bracket(dob_raw: str, reference_date: date | None = None) -> str | None:
     return None  # under 18 or implausible DOB
 
 
+def normalize_vuid(vuid: str) -> str:
+    """Normalize a Texas VUID to 10 digits (pad, then keep last 10 if too long)."""
+    raw = str(vuid).strip()
+    digits = "".join(c for c in raw if c.isdigit())
+    if not digits:
+        return raw.zfill(10)[-10:] if raw else ""
+    return digits.zfill(10)[-10:]
+
+
 def normalize_precinct(precinct: str) -> str:
     """Normalize a precinct code for roster vs voterfile comparison.
 
     Texas SOS voterfiles zero-pad numeric precincts (e.g. ``0510``) while Civix
-    rosters often omit leading zeros (``510``).  All-digit values are compared
-    after ``zfill(4)``; alphanumeric precincts use stripped upper-case text.
+    rosters often omit leading zeros (``510``).  Digit sequences are compared
+    after stripping leading zeros and ``zfill(4)`` (long values use last 4 digits).
+    Values with no digits use stripped upper-case text.
     """
     raw = precinct.strip().upper()
     if not raw:
         return ""
-    if raw.isdigit():
-        return raw.zfill(4)
     digits_only = "".join(c for c in raw if c.isdigit())
-    if digits_only and not any(c.isalpha() for c in raw):
-        return digits_only.zfill(4)
+    if digits_only:
+        core = digits_only.lstrip("0") or "0"
+        if len(core) > 4:
+            core = core[-4:]
+        return core.zfill(4)
     return raw
 
 
@@ -218,6 +229,20 @@ def detect_columns(voterfile_path: Path) -> tuple[ColumnMapping, dict[str, str]]
     return ColumnMapping(**mapping_kwargs), confidence
 
 
+def mapping_column_conflicts(mapping: ColumnMapping) -> list[str]:
+    """Return human-readable errors when multiple standard fields map to one column."""
+    by_col: dict[str, list[str]] = {}
+    for field in _FIELD_PATTERNS:
+        col = getattr(mapping, field)
+        if col:
+            by_col.setdefault(col, []).append(field)
+    conflicts: list[str] = []
+    for col, fields in sorted(by_col.items()):
+        if len(fields) > 1:
+            conflicts.append(f"{', '.join(fields)} → {col!r}")
+    return conflicts
+
+
 def list_voterfile_columns(voterfile_path: Path) -> list[str]:
     """Return the raw column names from the voterfile header."""
     with voterfile_path.open("r", newline="", encoding="utf-8-sig") as fh:
@@ -270,6 +295,8 @@ def match_voterfile_to_roster(
     mapping: ColumnMapping,
     reference_date: date | None = None,
     progress_callback: callable | None = None,
+    *,
+    count_voterfile: bool = False,
 ) -> tuple[list[EnrichedVoterRecord], VoterfileMatchReport]:
     """Join an EV roster against a voterfile using DuckDB.
 
@@ -284,6 +311,8 @@ def match_voterfile_to_roster(
         reference_date: Date for age bracket calculation.  Defaults to today.
         progress_callback: Optional callable() called once after the DuckDB
             query completes (single-pass — no chunk callbacks).
+        count_voterfile: When True, run a full-file DuckDB row count for the report
+            (can be slow on multi-GB voterfiles).  Defaults to False.
 
     Returns:
         (enriched_records, match_report)
@@ -305,10 +334,19 @@ def match_voterfile_to_roster(
             "Run detect_columns() or configure it interactively."
         )
 
+    conflicts = mapping_column_conflicts(mapping)
+    if conflicts:
+        raise ValueError(
+            "Column mapping assigns multiple standard fields to the same voterfile column: "
+            + "; ".join(conflicts)
+        )
+
     ref = reference_date or date.today()
 
-    # Zero-pad roster VUIDs; dedupe for the DuckDB IN filter (order preserved)
-    roster_vuids: list[str] = list(dict.fromkeys(r.id_voter.zfill(10) for r in roster_records))
+    # Normalize roster VUIDs; dedupe for the DuckDB IN filter (order preserved)
+    roster_vuids: list[str] = list(
+        dict.fromkeys(normalize_vuid(r.id_voter) for r in roster_records)
+    )
 
     # Determine which voterfile columns to SELECT
     field_to_col: dict[str, str] = {}
@@ -347,7 +385,8 @@ def match_voterfile_to_roster(
             all_varchar = true,
             encoding = 'utf-8'
         )
-        WHERE lpad(trim(cast({quoted_vuid_col} as varchar)), 10, '0') IN (SELECT unnest(?))
+        WHERE right(lpad(trim(cast({quoted_vuid_col} as varchar)), 10, '0'), 10)
+              IN (SELECT unnest(?))
     """
 
     logger.info(
@@ -371,7 +410,7 @@ def match_voterfile_to_roster(
     duplicate_vf_rows = 0
     for row in rows:
         row_dict = dict(zip(col_names, row, strict=True))
-        vuid_raw = str(row_dict.get(vuid_col, "") or "").strip().zfill(10)
+        vuid_raw = normalize_vuid(str(row_dict.get(vuid_col, "") or ""))
         if not vuid_raw:
             continue
         if vuid_raw in vf_lookup:
@@ -390,8 +429,8 @@ def match_voterfile_to_roster(
         return val if val and val.upper() != "NULL" else None
 
     for rec in roster_records:
-        vuid_padded = rec.id_voter.zfill(10)
-        vf_row = vf_lookup.get(vuid_padded)
+        vuid_norm = normalize_vuid(rec.id_voter)
+        vf_row = vf_lookup.get(vuid_norm)
 
         dob_raw = _get(vf_row, "dob")
         bracket = age_bracket(dob_raw, ref) if dob_raw else None
@@ -495,7 +534,7 @@ def match_voterfile_to_roster(
             )
         )
 
-    total_vf_rows = count_voterfile_rows(voterfile_path)
+    total_vf_rows: int | None = count_voterfile_rows(voterfile_path) if count_voterfile else None
 
     report = VoterfileMatchReport(
         election_id=roster_records[0].election_id if roster_records else "unknown",
@@ -534,8 +573,10 @@ def count_voterfile_rows(voterfile_path: Path) -> int:
     """
     try:
         import duckdb
-    except ImportError:
-        return 0
+    except ImportError as exc:
+        raise ImportError(
+            "duckdb is required to count voterfile rows. Install it with: pip install duckdb"
+        ) from exc
     vf_path_str = str(voterfile_path).replace("'", "''")
     conn = duckdb.connect()
     result = conn.execute(

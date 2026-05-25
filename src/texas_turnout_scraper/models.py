@@ -12,11 +12,16 @@ Models are grouped into three sections:
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .enums import ElectionType, PoliticalParty, VoteMethod, infer_election_type  # noqa: F401
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
 
 # ---------------------------------------------------------------------------
 # Shared models
@@ -124,7 +129,7 @@ class AuditReport(BaseModel):
     duplicate_vuid_count: int
     cross_method_duplicate_count: int
     findings: list[AuditFinding] = Field(default_factory=list)
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=_utc_now)
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +314,7 @@ class VoterfileMatchReport(BaseModel):
 
     # Match summary
     total_roster_records: int
-    total_voterfile_records: int        # approximate row count from voterfile scan
+    total_voterfile_records: int | None = None  # full-file count; None if skipped
     matched_count: int                  # roster records found in voterfile
     unmatched_count: int                # roster records NOT in voterfile
     match_rate: float                   # matched / total_roster_records
@@ -326,7 +331,7 @@ class VoterfileMatchReport(BaseModel):
 
     # Audit findings
     findings: list[AuditFinding] = []
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=_utc_now)
 
 
 # ---------------------------------------------------------------------------

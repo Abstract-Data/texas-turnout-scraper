@@ -65,6 +65,7 @@ def test_voterfile_match_no_interactive_writes_outputs(tmp_path: Path) -> None:
             "--output-dir",
             str(tmp_path),
             "--no-save-mapping",
+            "--count-voterfile",
         ],
     )
     assert result.exit_code == 0, result.stdout
@@ -74,6 +75,27 @@ def test_voterfile_match_no_interactive_writes_outputs(tmp_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["matched_count"] == 1
     assert report["total_voterfile_records"] == 10
+
+
+def test_voterfile_match_default_skips_voterfile_row_count(tmp_path: Path) -> None:
+    roster = tmp_path / "roster.csv"
+    _write_minimal_roster(roster)
+    result = runner.invoke(
+        app,
+        [
+            "voterfile",
+            "match",
+            str(roster),
+            str(FIXTURE_VOTERFILE),
+            "--no-interactive",
+            "--output-dir",
+            str(tmp_path),
+            "--no-save-mapping",
+        ],
+    )
+    assert result.exit_code == 0
+    report = json.loads((tmp_path / "match_report_roster.json").read_text(encoding="utf-8"))
+    assert report["total_voterfile_records"] is None
 
 
 def test_voterfile_match_report_only_skips_enriched_csv(tmp_path: Path) -> None:
@@ -98,6 +120,65 @@ def test_voterfile_match_report_only_skips_enriched_csv(tmp_path: Path) -> None:
     assert (tmp_path / "match_report_roster.json").exists()
 
 
+def test_voterfile_redetect_ignores_existing_sidecar(tmp_path: Path) -> None:
+    roster = tmp_path / "roster.csv"
+    _write_minimal_roster(roster)
+    vf_copy = tmp_path / "voterfile.csv"
+    vf_copy.write_text(FIXTURE_VOTERFILE.read_text(encoding="utf-8"), encoding="utf-8")
+    sidecar = tmp_path / "voterfile.mapping.json"
+    sidecar.write_text('{"vuid": "WRONG", "cd": null}', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "voterfile",
+            "match",
+            str(roster),
+            str(vf_copy),
+            "--no-interactive",
+            "--redetect",
+            "--output-dir",
+            str(tmp_path),
+            "--no-save-mapping",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    report = json.loads((tmp_path / "match_report_roster.json").read_text(encoding="utf-8"))
+    assert report["matched_count"] == 1
+    # Sidecar not rewritten when --no-save-mapping
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["vuid"] == "WRONG"
+
+
+def test_voterfile_match_failure_does_not_save_sidecar(tmp_path: Path, monkeypatch) -> None:
+    roster = tmp_path / "roster.csv"
+    _write_minimal_roster(roster)
+    vf_copy = tmp_path / "voterfile.csv"
+    vf_copy.write_text(FIXTURE_VOTERFILE.read_text(encoding="utf-8"), encoding="utf-8")
+    sidecar = tmp_path / "voterfile.mapping.json"
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("simulated DuckDB failure")
+
+    monkeypatch.setattr(
+        "texas_turnout_scraper.voterfile.match_voterfile_to_roster",
+        _boom,
+    )
+    result = runner.invoke(
+        app,
+        [
+            "voterfile",
+            "match",
+            str(roster),
+            str(vf_copy),
+            "--no-interactive",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 1
+    assert not sidecar.exists()
+
+
 def test_voterfile_match_saves_mapping_sidecar(tmp_path: Path) -> None:
     roster = tmp_path / "roster.csv"
     _write_minimal_roster(roster)
@@ -118,5 +199,32 @@ def test_voterfile_match_saves_mapping_sidecar(tmp_path: Path) -> None:
     assert result.exit_code == 0
     sidecar = tmp_path / "voterfile.mapping.json"
     assert sidecar.exists()
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert data["vuid"] == "VUID"
+    assert "Column mapping saved" in result.stdout
+
+
+def test_voterfile_match_overwrites_sidecar_after_success(tmp_path: Path) -> None:
+    roster = tmp_path / "roster.csv"
+    _write_minimal_roster(roster)
+    vf_copy = tmp_path / "voterfile.csv"
+    vf_copy.write_text(FIXTURE_VOTERFILE.read_text(encoding="utf-8"), encoding="utf-8")
+    sidecar = tmp_path / "voterfile.mapping.json"
+    sidecar.write_text('{"vuid": "WRONG"}', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "voterfile",
+            "match",
+            str(roster),
+            str(vf_copy),
+            "--no-interactive",
+            "--redetect",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0
     data = json.loads(sidecar.read_text(encoding="utf-8"))
     assert data["vuid"] == "VUID"

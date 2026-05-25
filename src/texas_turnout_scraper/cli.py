@@ -1324,6 +1324,8 @@ def voterfile_match(
     mapping_file: Annotated[Path | None, typer.Option("--mapping-file", "-m", help="Path to a saved column-mapping JSON")] = None,
     save_mapping: Annotated[bool, typer.Option("--save-mapping/--no-save-mapping", help="Save detected mapping as a sidecar .json")] = True,
     no_interactive: Annotated[bool, typer.Option("--no-interactive", help="Accept auto-detected mapping without prompting")] = False,
+    redetect: Annotated[bool, typer.Option("--redetect", help="Re-scan voterfile headers instead of loading a saved sidecar")] = False,
+    count_voterfile: Annotated[bool, typer.Option("--count-voterfile", help="Count all voterfile rows (slow on large files)")] = False,
     report_only: Annotated[bool, typer.Option("--report-only", help="Skip enriched CSV output; write match report only")] = False,
 ) -> None:
     """Match an EV roster against a statewide voterfile.
@@ -1344,6 +1346,7 @@ def voterfile_match(
         detect_columns,
         list_voterfile_columns,
         load_mapping,
+        mapping_column_conflicts,
         match_voterfile_to_roster,
         sidecar_path_for,
         write_enriched_csv,
@@ -1380,15 +1383,18 @@ def voterfile_match(
     # ── Step 2: Column mapping ───────────────────────────────────────────────
     sidecar = mapping_file or sidecar_path_for(voterfile)
 
-    if sidecar.exists():
+    if sidecar.exists() and not redetect:
         mapping = load_mapping(sidecar)
         typer.echo(f"Loaded saved column mapping from {sidecar.name}")
-        confidence: dict[str, str] = {
+        confidence = {
             f: ("✓ Saved" if getattr(mapping, f) else "✗ Not mapped")
             for f in _STANDARD_FIELDS
         }
     else:
-        typer.echo("Scanning voterfile columns...", nl=False)
+        if redetect and sidecar.exists():
+            typer.echo("Re-scanning voterfile columns (--redetect)...", nl=False)
+        else:
+            typer.echo("Scanning voterfile columns...", nl=False)
         mapping, confidence = detect_columns(voterfile)
         typer.echo("  done")
 
@@ -1436,7 +1442,37 @@ def voterfile_match(
         typer.echo("Error: VUID column is required for matching. Please map it to a voterfile column.", err=True)
         raise typer.Exit(code=1)
 
-    # Save mapping sidecar (overwrite so interactive corrections persist)
+    col_conflicts = mapping_column_conflicts(mapping)
+    if col_conflicts:
+        typer.echo("Error: column mapping conflict:", err=True)
+        for msg in col_conflicts:
+            typer.echo(f"  {msg}", err=True)
+        raise typer.Exit(code=1)
+
+    # ── Step 4: Run the match ────────────────────────────────────────────────
+    typer.echo("")
+    typer.echo(f"Running DuckDB match on {voterfile.name}...")
+    typer.echo("  (scanning for matching VUIDs - this may take 30-60 seconds)")
+    if count_voterfile:
+        typer.echo("  (full voterfile row count enabled — may add extra time)")
+
+    def _on_progress() -> None:
+        typer.echo("  Scan complete.")
+
+    try:
+        enriched, report = match_voterfile_to_roster(
+            roster_records=roster_records,
+            voterfile_path=voterfile,
+            mapping=mapping,
+            progress_callback=_on_progress,
+            count_voterfile=count_voterfile,
+        )
+    except (ImportError, ValueError, OSError) as exc:
+        typer.echo(f"Error: match failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    report.roster_path = str(roster_csv)
+
+    # Save mapping sidecar after a successful match
     if save_mapping:
         import datetime as _dt
         from datetime import timezone
@@ -1446,22 +1482,6 @@ def voterfile_match(
             mapping.created_at = _dt.datetime.now(timezone.utc).isoformat()
         _save_mapping(mapping, sidecar)
         typer.echo(f"  Column mapping saved to {sidecar.name}")
-
-    # ── Step 4: Run the match ────────────────────────────────────────────────
-    typer.echo("")
-    typer.echo(f"Running DuckDB match on {voterfile.name}...")
-    typer.echo("  (scanning for matching VUIDs - this may take 30-60 seconds)")
-
-    def _on_progress() -> None:
-        typer.echo("  Scan complete.")
-
-    enriched, report = match_voterfile_to_roster(
-        roster_records=roster_records,
-        voterfile_path=voterfile,
-        mapping=mapping,
-        progress_callback=_on_progress,
-    )
-    report.roster_path = str(roster_csv)
 
     # ── Step 5: Output ───────────────────────────────────────────────────────
     stem = roster_csv.stem
@@ -1480,6 +1500,8 @@ def voterfile_match(
     typer.echo(f"  Roster records    : {report.total_roster_records:>10,}")
     typer.echo(f"  Matched           : {report.matched_count:>10,}  ({report.match_rate:.1%})")
     typer.echo(f"  Unmatched         : {report.unmatched_count:>10,}")
+    if report.total_voterfile_records is not None:
+        typer.echo(f"  Voterfile rows    : {report.total_voterfile_records:>10,}")
     typer.echo("")
 
     if report.by_age_bracket:

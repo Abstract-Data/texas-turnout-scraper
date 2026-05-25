@@ -28,8 +28,10 @@ from texas_turnout_scraper.voterfile import (
     age_bracket,
     detect_columns,
     load_mapping,
+    mapping_column_conflicts,
     match_voterfile_to_roster,
     normalize_precinct,
+    normalize_vuid,
     precincts_match,
     save_mapping,
     write_enriched_csv,
@@ -300,6 +302,17 @@ def test_age_bracket_all_ranges(age: int, expected: str):
     assert result == expected, f"age={age}: expected {expected!r}, got {result!r}"
 
 
+class TestNormalizeVuid:
+    def test_pads_short_vuid(self):
+        assert normalize_vuid("1000001") == "0001000001"
+
+    def test_truncates_long_vuid_to_last_ten_digits(self):
+        assert normalize_vuid("12345678901") == "2345678901"
+
+    def test_strips_non_digits(self):
+        assert normalize_vuid(" 0000000001 ") == "0000000001"
+
+
 class TestNormalizePrecinct:
     def test_unpadded_roster_matches_zero_padded_voterfile(self):
         assert normalize_precinct("510") == normalize_precinct("0510")
@@ -311,9 +324,27 @@ class TestNormalizePrecinct:
     def test_different_precincts_do_not_match(self):
         assert not precincts_match("510", "0512")
 
+    def test_overpadded_leading_zeros(self):
+        assert normalize_precinct("00510") == normalize_precinct("0510")
+
+    def test_label_with_digits_matches_padded(self):
+        assert precincts_match("PCT-510", "0510")
+
     def test_empty_returns_empty(self):
         assert normalize_precinct("") == ""
         assert normalize_precinct("   ") == ""
+
+
+class TestMappingColumnConflicts:
+    def test_detects_duplicate_column_assignment(self):
+        mapping = ColumnMapping(vuid="VUID", cd="VUID", hd="HD2022")
+        conflicts = mapping_column_conflicts(mapping)
+        assert len(conflicts) == 1
+        assert "VUID" in conflicts[0]
+
+    def test_no_conflict_when_columns_distinct(self):
+        mapping = ColumnMapping(vuid="VUID", cd="CDPLANC2333", hd="HD2022")
+        assert mapping_column_conflicts(mapping) == []
 
 
 class TestAgeBracketBlankReturnsNone:
@@ -637,13 +668,65 @@ class TestDuplicateVoterfileVuids:
 
 @requires_duckdb
 class TestVoterfileRowCount:
-    def test_total_voterfile_records_populated(self):
+    def test_total_voterfile_records_populated_when_enabled(self):
+        roster = [_voter("0000000001")]
+        mapping = ColumnMapping(vuid="VUID")
+        _, report = match_voterfile_to_roster(
+            roster,
+            SAMPLE_VOTERFILE,
+            mapping,
+            reference_date=_REF,
+            count_voterfile=True,
+        )
+        assert report.total_voterfile_records == 10
+
+    def test_total_voterfile_records_skipped_by_default(self):
         roster = [_voter("0000000001")]
         mapping = ColumnMapping(vuid="VUID")
         _, report = match_voterfile_to_roster(
             roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
         )
-        assert report.total_voterfile_records == 10
+        assert report.total_voterfile_records is None
+
+
+@requires_duckdb
+class TestMatchVoterfileEmptyRoster:
+    def test_empty_roster_returns_empty_enriched(self):
+        mapping = ColumnMapping(vuid="VUID")
+        enriched, report = match_voterfile_to_roster(
+            [], SAMPLE_VOTERFILE, mapping, reference_date=_REF
+        )
+        assert enriched == []
+        assert report.total_roster_records == 0
+        assert report.matched_count == 0
+
+
+@requires_duckdb
+class TestMatchVoterfileLongVuid:
+    def test_eleven_digit_roster_matches_ten_digit_voterfile(self, tmp_path):
+        vf = tmp_path / "long_vuid_vf.csv"
+        vf.write_text(
+            '"VUID","COUNTY"\n"2345678901","HARRIS"\n',
+            encoding="utf-8",
+        )
+        roster = [_voter("12345678901")]
+        mapping = ColumnMapping(vuid="VUID")
+        enriched, report = match_voterfile_to_roster(
+            roster, vf, mapping, reference_date=_REF
+        )
+        assert enriched[0].in_voterfile is True
+        assert report.matched_count == 1
+
+
+@requires_duckdb
+class TestMappingConflictRaises:
+    def test_duplicate_column_mapping_raises(self):
+        roster = [_voter("0000000001")]
+        mapping = ColumnMapping(vuid="VUID", county="VUID")
+        with pytest.raises(ValueError, match="multiple standard fields"):
+            match_voterfile_to_roster(
+                roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
+            )
 
 
 # ---------------------------------------------------------------------------
