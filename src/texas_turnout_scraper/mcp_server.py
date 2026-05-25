@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP(
     "texas-turnout",
-    description=(
+    instructions=(
         "Texas SOS early-voting turnout data tools. "
         "Civix tools cover 2025+ elections via the EVR API; "
         "Legacy tools cover pre-2025 elections via the SOS HTML portal."
@@ -398,9 +398,13 @@ def run_audit(
     """
     from pathlib import Path
 
-    from .audit import run_audit as _run_audit
+    from .writer import (
+        audit_from_records,
+        read_roster_csv,
+        report_date_from_roster_csv,
+        stored_roster_ev_path,
+    )
 
-    report_date = _parse_date(ev_date)
     source_key = source.lower()
     if source_key not in {"civix", "legacy"}:
         return {
@@ -409,8 +413,6 @@ def run_audit(
             "ev_date": ev_date,
             "source": source,
         }
-
-    from .writer import stored_roster_ev_path
 
     roster_path = stored_roster_ev_path(Path(data_dir), source_key, election_id)
 
@@ -422,8 +424,13 @@ def run_audit(
             "source": source,
         }
 
-    report = _run_audit(
-        csv_path=roster_path,
+    report_date = (
+        _parse_date(ev_date) if ev_date.strip() else report_date_from_roster_csv(roster_path)
+    )
+
+    records = read_roster_csv(roster_path)
+    report = audit_from_records(
+        records,
         election_id=election_id,
         report_date=report_date,
         source=source_key,

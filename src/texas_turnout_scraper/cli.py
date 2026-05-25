@@ -48,6 +48,34 @@ def _parse_ev_date(value: str | date) -> date:
         ) from exc
 
 
+def _resolve_civix_election(elections: list[object], election_id: str) -> object | None:
+    from .models import CivixElection
+
+    return next(
+        (
+            e
+            for e in elections
+            if isinstance(e, CivixElection)
+            and (str(e.id) == election_id or e.source_election_id == election_id)
+        ),
+        None,
+    )
+
+
+def _exit_on_partial_fetch_failures(failures: list[str]) -> None:
+    if not failures:
+        return
+    typer.echo(
+        f"Error: {len(failures)} partial fetch failure(s); roster may be incomplete.",
+        err=True,
+    )
+    for item in failures[:20]:
+        typer.echo(f"  - {item}", err=True)
+    if len(failures) > 20:
+        typer.echo(f"  ... and {len(failures) - 20} more", err=True)
+    raise typer.Exit(code=1)
+
+
 def _now_iso() -> str:
     import datetime
 
@@ -409,7 +437,7 @@ def civix_elections_list(
 
 @civix_app.command("turnout")
 def civix_turnout_fetch(
-    election_id: Annotated[int, typer.Argument(help="Civix election ID (integer)")],
+    election_id: Annotated[str, typer.Argument(help="Civix election ID (numeric string, e.g. '53813')")],
     ev_date: EvDateStr,
     output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
 ) -> None:
@@ -418,7 +446,15 @@ def civix_turnout_fetch(
 
     parsed_date = _parse_ev_date(ev_date)
     with CivixClient() as client:
-        rows = client.fetch_ev_turnout(election_id=election_id, ev_date=parsed_date)
+        elections = client.list_elections()
+        election = _resolve_civix_election(elections, election_id)
+        if election is None:
+            typer.echo(f"Error: election {election_id} not found in Civix.", err=True)
+            raise typer.Exit(code=1)
+        rows = client.fetch_ev_turnout(
+            election_id=election.id,
+            election_date=parsed_date,
+        )
 
     if output == "json":
         data = [r.model_dump(mode="json") for r in rows]
@@ -441,19 +477,19 @@ def civix_turnout_fetch(
 
 @civix_app.command("roster")
 def civix_roster_fetch(
-    election_id: Annotated[int, typer.Argument(help="Civix election ID (integer)")],
+    election_id: Annotated[str, typer.Argument(help="Civix election ID (numeric string, e.g. '53813')")],
     ev_date: EvDateStr,
     county: Annotated[str | None, typer.Option("--county", help="County name (e.g. HARRIS). Omit for all counties.")] = None,
     out_dir: Annotated[Path | None, typer.Option("--out-dir", help="Directory to save roster CSVs.")] = None,
 ) -> None:
     """Fetch EV voter rosters for all counties (or one county) for a Civix election + date."""
-    from .civix import CivixClient
+    from .civix import CivixClient, fetch_county_roster
 
     parsed_date = _parse_ev_date(ev_date)
     with CivixClient() as client:
         elections = client.list_elections()
 
-    election = next((e for e in elections if e.id == election_id), None)
+    election = _resolve_civix_election(elections, election_id)
     if election is None:
         typer.echo(f"Error: election {election_id} not found in Civix.", err=True)
         raise typer.Exit(code=1)
@@ -471,11 +507,12 @@ def civix_roster_fetch(
     total_saved = 0
     with CivixClient() as client:
         for county_ref in target_counties:
-            roster = client.fetch_county_roster(
-                election_id=election_id,
-                ev_date=parsed_date,
-                county_id=county_ref.county_id,
+            roster = fetch_county_roster(
+                client,
+                election_id=election.id,
+                election_date=parsed_date,
                 county_name=county_ref.name,
+                county_id=county_ref.county_id,
             )
             typer.echo(
                 f"{county_ref.name:<20}  {roster.total_voters:>8,} voters  "
@@ -529,14 +566,7 @@ def civix_fetch_all(
     with CivixClient(pace_seconds=pace_seconds) as client:
         elections = client.list_elections()
 
-    election = next(
-        (
-            e
-            for e in elections
-            if str(e.id) == election_id or e.source_election_id == election_id
-        ),
-        None,
-    )
+    election = _resolve_civix_election(elections, election_id)
     if election is None:
         typer.echo(f"Election {election_id} not found", err=True)
         raise typer.Exit(code=1)
@@ -549,18 +579,17 @@ def civix_fetch_all(
     typer.echo(f"EV dates: {len(ev_dates)}")
 
     if dry_run:
-        with CivixClient(pace_seconds=pace_seconds) as client:
-            for ev in ev_dates:
-                turnout_rows = client.fetch_ev_turnout(
-                    election_id=civix_id,
-                    election_date=ev.date,
-                )
-                roster_count = sum(1 for r in turnout_rows if r.roster_available)
-                typer.echo(f"[{ev.date}] Would fetch {roster_count} counties...")
+        county_count = len(election.counties)
+        for ev in ev_dates:
+            typer.echo(
+                f"[{ev.date}] Would fetch up to {county_count} counties "
+                "(roster availability not checked in dry-run)...",
+            )
         typer.echo(f"Would write: {output_path}")
         return
 
     all_rosters = []
+    fetch_failures: list[str] = []
     with CivixClient(pace_seconds=pace_seconds) as client:
         for ev in ev_dates:
             ev_date = ev.date
@@ -586,15 +615,22 @@ def civix_fetch_all(
                     )
                     date_rosters.append(roster)
                 except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+                    detail = (
+                        str(exc)
+                        if isinstance(exc, httpx.HTTPError)
+                        else type(exc).__name__
+                    )
+                    fetch_failures.append(f"{county_row.county}/{ev_date}: {detail}")
                     logger.warning(
                         "County roster fetch failed for %s on %s: %s",
                         county_row.county,
                         ev_date,
-                        exc if isinstance(exc, httpx.HTTPError) else type(exc).__name__,
+                        detail,
                     )
 
             date_records = sum(len(r.records) for r in date_rosters)
             if not date_rosters:
+                fetch_failures.append(f"{ev_date}: no county rosters fetched")
                 logger.warning("No rosters fetched for EV date %s", ev_date)
             typer.echo(f"  done ({date_records:,} records)")
             all_rosters.extend(date_rosters)
@@ -630,6 +666,8 @@ def civix_fetch_all(
         civix_elections=elections,
         refreshed_civix_ids={election_id},
     )
+
+    _exit_on_partial_fetch_failures(fetch_failures)
 
 
 @civix_app.command("refresh-all")
@@ -903,6 +941,7 @@ def legacy_fetch_all(
     audit_path = election_dir / f"audit_ev_{source_election_id}.json"
 
     all_rosters: list[CountyRoster] = []
+    fetch_failures: list[str] = []
     with LegacySession(pace_seconds=pace_seconds) as session:
         ev_dates = session.prime_election(source_election_id)
 
@@ -933,6 +972,7 @@ def legacy_fetch_all(
             id_by_name = extract_county_ids(html)
             if not id_by_name:
                 typer.echo("  warning: no county IDs in turnout HTML", err=True)
+                fetch_failures.append(f"{date_label}: no county IDs in turnout HTML")
                 logger.warning(
                     "No county IDs in turnout HTML for election %s on %s.",
                     source_election_id,
@@ -946,6 +986,7 @@ def legacy_fetch_all(
                 target_ids = [cid for cid in target_ids if cid in filter_ids]
                 if not target_ids:
                     typer.echo("  warning: no counties match --county-ids filter", err=True)
+                    fetch_failures.append(f"{date_label}: no counties match --county-ids filter")
                     logger.warning(
                         "No counties match filter for election %s on %s.",
                         source_election_id,
@@ -968,6 +1009,7 @@ def legacy_fetch_all(
                     )
                     date_rosters.extend(county_rosters)
                 except RuntimeError:
+                    fetch_failures.append(f"{county_label}/{date_label}: county fetch failed")
                     logger.warning(
                         "County fetch failed for county_id=%s on %s.",
                         county_id,
@@ -983,6 +1025,7 @@ def legacy_fetch_all(
             typer.echo(f"  done ({date_records:,} records)")
 
             if not date_rosters:
+                fetch_failures.append(f"{date_label}: zero county rosters")
                 typer.echo(
                     f"  Warning: 0 county rosters for {date_label}.",
                     err=True,
@@ -1027,6 +1070,8 @@ def legacy_fetch_all(
         legacy_elections=elections,
         refreshed_legacy_ids={source_election_id},
     )
+
+    _exit_on_partial_fetch_failures(fetch_failures)
 
 
 @legacy_app.command("refresh-all")
@@ -1127,28 +1172,44 @@ def legacy_refresh_all(
 @audit_app.command("run")
 def audit_run(
     election_id: Annotated[str, typer.Argument(help="Election ID (source_election_id string)")],
-    ev_date: EvDateStr,
+    ev_date: Annotated[
+        str | None,
+        typer.Argument(
+            help="Optional YYYY-MM-DD report label (default: latest date in roster CSV)",
+        ),
+    ] = None,
     source: Annotated[str, typer.Option("--source", help="Data source: 'civix' or 'legacy'")] = "civix",
     data_dir: Annotated[Path, typer.Option("--data-dir", help="Root data directory")] = Path("data"),
     output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
 ) -> None:
-    """Run data quality audit on a stored roster."""
-    from .audit import run_audit
-    from .writer import stored_audit_ev_path, stored_roster_ev_path
+    """Run data quality audit on a stored combined roster (roster_ev_{id}.csv)."""
+    from .writer import (
+        audit_from_records,
+        read_roster_csv,
+        report_date_from_roster_csv,
+        stored_audit_ev_path,
+        stored_roster_ev_path,
+    )
 
     source_key = source.lower()
     if source_key not in {"civix", "legacy"}:
         typer.echo(f"Error: --source must be 'civix' or 'legacy', got {source!r}.", err=True)
         raise typer.Exit(code=1)
 
-    parsed_date = _parse_ev_date(ev_date)
     roster_path = stored_roster_ev_path(data_dir, source_key, election_id)
     if not roster_path.exists():
         typer.echo(f"Error: roster file not found: {roster_path}", err=True)
         raise typer.Exit(code=1)
 
-    report = run_audit(
-        csv_path=roster_path,
+    parsed_date = (
+        _parse_ev_date(ev_date)
+        if ev_date is not None
+        else report_date_from_roster_csv(roster_path)
+    )
+
+    records = read_roster_csv(roster_path)
+    report = audit_from_records(
+        records,
         election_id=election_id,
         report_date=parsed_date,
         source=source_key,
@@ -1183,7 +1244,7 @@ def audit_run_inline(
     output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
 ) -> None:
     """Run data quality audit inline on a CSV file (no stored roster required)."""
-    from .audit import run_audit
+    from .audit import audit_from_csv
 
     if not csv_path.exists():
         typer.echo(f"Error: file not found: {csv_path}", err=True)
@@ -1211,7 +1272,7 @@ def audit_run_inline(
     if inferred_id is None:
         inferred_id = "unknown"
 
-    report = run_audit(
+    report = audit_from_csv(
         csv_path=csv_path,
         election_id=inferred_id,
         report_date=inferred_date,

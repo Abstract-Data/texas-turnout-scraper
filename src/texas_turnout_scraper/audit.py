@@ -275,11 +275,23 @@ def audit_from_csv(
                 vote_method = VoteMethod.IN_PERSON
 
             # VOTER_NAME is read by DictReader but never stored or logged
+            row_county = row.get("COUNTY", county).strip() or county
+            row_election_id = str(row.get("ELECTION_ID") or election_id)
+            row_report_date = report_date
+            raw_report_date = row.get("REPORT_DATE", "").strip()
+            if raw_report_date:
+                from datetime import datetime
+
+                row_report_date = datetime.strptime(raw_report_date, "%Y-%m-%d").date()
+
             records.append(
                 VoterRecord(
                     id_voter=raw_id,
                     voting_method=vote_method,
                     precinct=raw_precinct,
+                    county=row_county,
+                    election_id=row_election_id,
+                    report_date=row_report_date,
                 )
             )
 

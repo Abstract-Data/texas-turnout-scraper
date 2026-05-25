@@ -371,3 +371,11 @@ def stored_roster_ev_path(data_dir: Path, source: str, election_id: str) -> Path
 def stored_audit_ev_path(data_dir: Path, source: str, election_id: str) -> Path:
     """Path to the combined per-election EV audit JSON on disk."""
     return data_dir / "elections" / source / election_id / f"audit_ev_{election_id}.json"
+
+
+def report_date_from_roster_csv(csv_path: Path) -> date:
+    """Return the latest report_date present in a combined roster CSV."""
+    records = read_roster_csv(csv_path)
+    if not records:
+        return date.today()
+    return max(r.report_date for r in records)

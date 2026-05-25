@@ -26,6 +26,7 @@ jobs:
   refresh:
     name: Refresh election data
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v4
@@ -44,17 +45,13 @@ jobs:
         run: uv sync
 
       - name: Refresh Civix elections
+        id: civix_refresh
         if: >-
           (github.event_name == 'schedule' ||
           github.event.inputs.source == 'all' ||
           github.event.inputs.source == 'civix') &&
           (github.event.inputs.source != 'legacy')
-        continue-on-error: >-
-          ${{
-            github.event_name == 'workflow_dispatch' &&
-            github.event.inputs.election_id != '' &&
-            github.event.inputs.source == 'all'
-          }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           if [ -n "${{ github.event.inputs.election_id }}" ]; then
@@ -64,23 +61,52 @@ jobs:
           fi
 
       - name: Refresh legacy elections
+        id: legacy_refresh
         if: >-
           (github.event_name == 'schedule' ||
           github.event.inputs.source == 'all' ||
           github.event.inputs.source == 'legacy') &&
           (github.event.inputs.source != 'civix')
-        continue-on-error: >-
-          ${{
-            github.event_name == 'workflow_dispatch' &&
-            github.event.inputs.election_id != '' &&
-            github.event.inputs.source == 'all'
-          }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           if [ -n "${{ github.event.inputs.election_id }}" ]; then
             uv run tx-turnout legacy fetch-all "${{ github.event.inputs.election_id }}" --audit
           else
             uv run tx-turnout legacy refresh-all --audit
+          fi
+
+      - name: Verify refresh outcome
+        run: |
+          set -euo pipefail
+          civix_outcome="${{ steps.civix_refresh.outcome || 'skipped' }}"
+          legacy_outcome="${{ steps.legacy_refresh.outcome || 'skipped' }}"
+          election_id="${{ github.event.inputs.election_id }}"
+          source="${{ github.event.inputs.source }}"
+
+          civix_failed=false
+          legacy_failed=false
+          if [ "$civix_outcome" = "failure" ]; then civix_failed=true; fi
+          if [ "$legacy_outcome" = "failure" ]; then legacy_failed=true; fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$election_id" ]; then
+            if [ "$source" = "all" ]; then
+              if $civix_failed && $legacy_failed; then
+                echo "Both civix and legacy refresh failed for election_id=$election_id"
+                exit 1
+              fi
+            elif [ "$source" = "civix" ] && $civix_failed; then
+              echo "Civix refresh failed for election_id=$election_id"
+              exit 1
+            elif [ "$source" = "legacy" ] && $legacy_failed; then
+              echo "Legacy refresh failed for election_id=$election_id"
+              exit 1
+            fi
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            if $civix_failed && $legacy_failed; then
+              echo "Both civix and legacy scheduled refresh steps failed"
+              exit 1
+            fi
           fi
 
       - name: Commit data changes
