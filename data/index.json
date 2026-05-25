@@ -1,0 +1,17 @@
+{
+  "last_updated": "2026-05-24",
+  "sources": {
+    "civix": {
+      "description": "Civix EVR portal — 2025+ elections",
+      "base_url": "https://goelect.txelections.civixapps.com",
+      "data_path": "data/elections/civix/"
+    },
+    "legacy": {
+      "description": "Legacy SOS portal — pre-2025 historical elections",
+      "base_url": "https://earlyvoting.texas-election.com",
+      "data_path": "data/elections/legacy/"
+    }
+  },
+  "civix_elections": [],
+  "legacy_elections": []
+}

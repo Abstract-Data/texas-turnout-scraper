@@ -1,4 +1,0 @@
-result_version_url = "https://results.texas-election.com/static/data/election/{electionId}/Version.json"
-county_url = "https://results.texas-election.com/static/data/election/{electionId}/{versionNo}/County.json"
-office_url = "https://results.texas-election.com/static/data/election/{electionId}/{versionNo}/OfficeSummary.json"
-update_time_url = "https://results.texas-election.com/static/data/election/{electionId}/{versionNo}/Home.json"

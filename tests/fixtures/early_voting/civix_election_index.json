@@ -1,0 +1,36 @@
+{
+  "date_updated": "05/24/2026",
+  "elections": [
+    {
+      "id": 53813,
+      "type": "EV",
+      "election_date": "03/03/2026",
+      "election_name": "2026 REPUBLICAN PRIMARY ELECTION",
+      "certified": true,
+      "early_voting_dates": [
+        {"date": "02/17/2026", "date_turnout_id": 1},
+        {"date": "02/18/2026", "date_turnout_id": 2},
+        {"date": "02/27/2026", "date_turnout_id": 11}
+      ],
+      "counties": [
+        {"county_id": 1, "name": "ANDERSON"},
+        {"county_id": 101, "name": "HARRIS"},
+        {"county_id": 227, "name": "TRAVIS"}
+      ]
+    },
+    {
+      "id": 56181,
+      "type": "EV",
+      "election_date": "05/03/2026",
+      "election_name": "2026 SPECIAL ELECTION SENATE DISTRICT 4",
+      "certified": false,
+      "early_voting_dates": [
+        {"date": "04/20/2026", "date_turnout_id": 1}
+      ],
+      "counties": [
+        {"county_id": 12, "name": "BOWIE"},
+        {"county_id": 37, "name": "CASS"}
+      ]
+    }
+  ]
+}

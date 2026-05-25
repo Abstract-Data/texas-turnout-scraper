@@ -1,0 +1,36 @@
+{
+  "date_updated": "2026-05-12",
+  "election_id": 53813,
+  "election_type": "P",
+  "early_voting_date": "2026-02-27",
+  "early_voting_date_id": 925,
+  "turnout_by_county": [
+    {
+      "name": "ANDERSON",
+      "id": 1,
+      "registered_voters": 30678,
+      "in_person_votes_on_date": 707,
+      "total_in_person_votes_for_election": 3963,
+      "total_mail_votes_for_election": 0,
+      "voter_details_report": "EarlyVotingTurnoutByDate/2026-02-27/EVR_EarlyVotingByDate"
+    },
+    {
+      "name": "HARRIS",
+      "id": 101,
+      "registered_voters": 2400000,
+      "in_person_votes_on_date": 14200,
+      "total_in_person_votes_for_election": 88500,
+      "total_mail_votes_for_election": 1200,
+      "voter_details_report": "EarlyVotingTurnoutByDate/2026-02-27/EVR_EarlyVotingByDate"
+    },
+    {
+      "name": "TRAVIS",
+      "id": 227,
+      "registered_voters": 900000,
+      "in_person_votes_on_date": 0,
+      "total_in_person_votes_for_election": 0,
+      "total_mail_votes_for_election": 0,
+      "voter_details_report": false
+    }
+  ]
+}

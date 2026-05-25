@@ -1,0 +1,53 @@
+name: Tool Config Verify
+
+on:
+  push:
+    paths:
+      - "AGENTS.md"
+      - ".claude/**"
+      - ".cursor/**"
+      - ".pre-commit-config.yaml"
+  schedule:
+    - cron: "0 6 * * 1"  # Weekly on Monday
+
+jobs:
+  verify:
+    name: Verify AI tool configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: uv sync --dev --no-install-project
+
+      - name: Check AGENTS.md structure
+        run: uv run pytest tests/verify/check_agents_md.py -v
+
+      - name: Verify hook executability
+        run: |
+          for h in block-dangerous block-env-writes pre-commit verify-completion; do
+            test -x ".claude/hooks/${h}.sh" \
+              && echo "✅ ${h}.sh executable" \
+              || (echo "❌ ${h}.sh missing or not executable" && exit 1)
+          done
+
+      - name: Verify CLAUDE.md symlink
+        run: |
+          test -L CLAUDE.md && echo "✅ CLAUDE.md is a symlink" || (echo "❌ CLAUDE.md is not a symlink" && exit 1)
+          readlink -f CLAUDE.md | grep -q "AGENTS.md" && echo "✅ resolves to AGENTS.md" || (echo "❌ wrong target" && exit 1)
+
+      - name: Check .gitignore CSV exception
+        run: |
+          grep -q '!data/\*\*/\*.csv' .gitignore \
+            && echo "✅ data CSV exception present" \
+            || (echo "❌ data CSV exception missing from .gitignore" && exit 1)

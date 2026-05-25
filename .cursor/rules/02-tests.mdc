@@ -1,0 +1,34 @@
+---
+description: Test conventions for texas-turnout-scraper
+alwaysApply: false
+globs: ["tests/**/*.py"]
+---
+
+# Test Conventions
+
+## Structure
+- `tests/unit/` — pure unit tests, no network, no filesystem I/O
+- `tests/integration/` — hits live SOS site; mark `@pytest.mark.integration`
+- `tests/fixtures/early_voting/` — small HTML/CSV/JSON samples
+
+## Mocking httpx
+Use `respx` to mock httpx requests in unit tests:
+```python
+import respx
+import httpx
+
+@respx.mock
+def test_election_parse():
+    respx.get("https://earlyvoting.texas-election.com/...").mock(
+        return_value=httpx.Response(200, text=FIXTURE_HTML)
+    )
+```
+
+## Fixture rules
+- Use the smallest county (Loving County, townId=151, 6 rows) for roster fixtures
+- Redact or synthesize VOTER_NAME and ID_VOTER in committed fixtures
+- Never commit real PII in test fixtures
+
+## Assertion style
+- Assert on model fields, not raw dicts
+- Always assert ID fields remain strings: `assert isinstance(record.voter_id, str)`

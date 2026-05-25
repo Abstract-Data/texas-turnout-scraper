@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "feat/**", "fix/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Lint + Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Ruff lint
+        run: uv run ruff check . --select E,W,F,I --quiet
+
+      - name: Ruff format check
+        run: uv run ruff format . --check
+
+      - name: Type check
+        run: uv run ty check
+
+      - name: Unit tests
+        run: uv run pytest tests/unit -q --tb=short
+
+      - name: Verify structural checks
+        run: uv run pytest tests/verify -q
