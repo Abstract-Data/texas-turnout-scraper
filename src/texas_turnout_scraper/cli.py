@@ -766,9 +766,8 @@ def civix_fetch_all(
     """Fetch all EV dates for a Civix election into one per-election roster CSV."""
     import logging
 
-    import httpx
-
     from .civix import CivixClient, fetch_county_roster
+    from .http_transport import HTTP_FETCH_EXCEPTIONS, format_fetch_error
     from .writer import accumulate_roster, audit_from_records, write_roster_csv
 
     logger = logging.getLogger(__name__)
@@ -825,12 +824,8 @@ def civix_fetch_all(
                         county_id=county_row.county_id,
                     )
                     date_rosters.append(roster)
-                except (httpx.HTTPError, ValueError, RuntimeError) as exc:
-                    detail = (
-                        str(exc)
-                        if isinstance(exc, httpx.HTTPError)
-                        else type(exc).__name__
-                    )
+                except (*HTTP_FETCH_EXCEPTIONS, ValueError, RuntimeError) as exc:
+                    detail = format_fetch_error(exc)
                     fetch_failures.append(f"{county_row.county}/{ev_date}: {detail}")
                     logger.warning(
                         "County roster fetch failed for %s on %s: %s",

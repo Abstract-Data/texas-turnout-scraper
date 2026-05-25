@@ -11,8 +11,30 @@ from contextlib import contextmanager
 from typing import Any, Literal
 
 import httpx
+from requests.exceptions import HTTPError as RequestsHTTPError
+from requests.exceptions import RequestException as RequestsRequestException
 
 HttpBackend = Literal["httpx", "cloudscraper"]
+
+# Exceptions raised by either httpx (tests) or cloudscraper/requests (production).
+HTTP_FETCH_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    httpx.HTTPError,
+    RequestsHTTPError,
+    RequestsRequestException,
+)
+
+_RETRYABLE_STATUS_CODES = frozenset({502, 503, 504})
+_MAX_HTTP_RETRIES = 2
+
+
+def format_fetch_error(exc: BaseException) -> str:
+    """Short error label for logs (no voter PII)."""
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None:
+            return f"HTTP {status_code}"
+    return type(exc).__name__
 
 _DEFAULT_HEADERS = {
     "User-Agent": (
@@ -78,15 +100,40 @@ class PacedHttpClient:
             return path
         return f"{self._base_url}{path}"
 
-    def get(self, path: str, **kwargs: Any) -> Any:
-        if self._httpx is not None:
-            return self._httpx.get(path, **kwargs)
-        return self._scraper.get(
-            self._url(path),
-            timeout=self._timeout,
-            allow_redirects=self._follow_redirects,
-            **kwargs,
-        )
+    def get(
+        self,
+        path: str,
+        *,
+        retry_status_codes: frozenset[int] = _RETRYABLE_STATUS_CODES,
+        max_retries: int = _MAX_HTTP_RETRIES,
+        **kwargs: Any,
+    ) -> Any:
+        last_response: Any = None
+        for attempt in range(max_retries + 1):
+            if self._httpx is not None:
+                last_response = self._httpx.get(path, **kwargs)
+            else:
+                last_response = self._scraper.get(
+                    self._url(path),
+                    timeout=self._timeout,
+                    allow_redirects=self._follow_redirects,
+                    **kwargs,
+                )
+            status_code = getattr(last_response, "status_code", None)
+            if (
+                status_code in retry_status_codes
+                and attempt < max_retries
+            ):
+                import time
+
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            last_response.raise_for_status()
+            return last_response
+        if last_response is not None:
+            last_response.raise_for_status()
+        msg = "GET request failed without a response"
+        raise RuntimeError(msg)
 
     def post(
         self, path: str, data: dict[str, str] | None = None, **kwargs: Any

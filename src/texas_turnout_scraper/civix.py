@@ -149,7 +149,6 @@ class CivixClient:
 
         response = self._client.get(path, params=params)
         self._last_request = time.monotonic()
-        response.raise_for_status()
         return response
 
     def close(self) -> None:

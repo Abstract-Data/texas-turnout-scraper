@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
+from requests.exceptions import HTTPError as RequestsHTTPError
 from typer.testing import CliRunner
 
 from texas_turnout_scraper.cli import (
@@ -115,6 +116,54 @@ def test_civix_fetch_all_exits_on_partial_county_failure(tmp_path: Path) -> None
         mock_client.fetch_ev_turnout.return_value = [turnout_row_ok, turnout_row_fail]
         mock_client_cls.return_value = mock_client
         mock_fetch.side_effect = [roster, RuntimeError("county failed")]
+
+        with pytest.raises(typer.Exit) as exc_info:
+            civix_fetch_all(
+                election_id="53813",
+                output_dir=tmp_path / "civix",
+                index_path=tmp_path / "index.json",
+            )
+
+    assert exc_info.value.exit_code == 1
+    assert (tmp_path / "civix" / "53813" / "roster_ev_53813.csv").exists()
+
+
+def test_civix_fetch_all_continues_on_requests_http_error(tmp_path: Path) -> None:
+    election = _civix_election()
+    turnout_row_ok = MagicMock(county="HARRIS", county_id=1, roster_available=True)
+    turnout_row_fail = MagicMock(county="LAMPASAS", county_id=141, roster_available=True)
+    roster = CountyRoster(
+        county="HARRIS",
+        county_id=1,
+        election_id="53813",
+        report_date=date(2026, 2, 17),
+        source="civix",
+        records=[
+            VoterRecord(
+                id_voter="0123456789",
+                voting_method=VoteMethod.IN_PERSON,
+                precinct="100",
+                county="HARRIS",
+                election_id="53813",
+                report_date=date(2026, 2, 17),
+            )
+        ],
+    )
+    response = MagicMock(status_code=502)
+    http_error = RequestsHTTPError("502 Server Error", response=response)
+
+    with (
+        patch("texas_turnout_scraper.civix.CivixClient") as mock_client_cls,
+        patch("texas_turnout_scraper.civix.fetch_county_roster") as mock_fetch,
+        patch("texas_turnout_scraper.cli._update_election_index"),
+    ):
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = None
+        mock_client.list_elections.return_value = [election]
+        mock_client.fetch_ev_turnout.return_value = [turnout_row_ok, turnout_row_fail]
+        mock_client_cls.return_value = mock_client
+        mock_fetch.side_effect = [roster, http_error]
 
         with pytest.raises(typer.Exit) as exc_info:
             civix_fetch_all(
