@@ -103,13 +103,17 @@ def accumulate_roster(rosters: list[CountyRoster]) -> list[VoterRecord]:
     vuid_names: dict[str, set[str]] = collections.defaultdict(set)
     vuid_precincts: dict[str, set[str]] = collections.defaultdict(set)
 
-    for rec in all_records:
+    appearance_tokens = [_appearance_token(rec) for rec in all_records]
+    vuid_row_indices: dict[str, list[int]] = collections.defaultdict(list)
+
+    for i, rec in enumerate(all_records):
         vuid = rec.id_voter
         vuid_dates[vuid].add(rec.report_date)
         vuid_counties[vuid].add(rec.county)
         vuid_methods[vuid].add(rec.voting_method)
         vuid_names[vuid].add(rec.voter_name)
         vuid_precincts[vuid].add(rec.precinct)
+        vuid_row_indices[vuid].append(i)
 
     # --- Build flagged records ---------------------------------------------
     flagged: list[VoterRecord] = []
@@ -135,9 +139,9 @@ def accumulate_roster(rosters: list[CountyRoster]) -> list[VoterRecord]:
 
         # Tokens from every other row with the same VUID (index-based, not token-based)
         other_tokens = [
-            _appearance_token(other)
-            for j, other in enumerate(all_records)
-            if j != i and other.id_voter == vuid
+            appearance_tokens[j]
+            for j in vuid_row_indices[vuid]
+            if j != i
         ]
         unique_others = _dedupe_tokens_preserve_order(other_tokens)
 
