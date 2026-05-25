@@ -256,6 +256,9 @@ Each prohibition is paired with the correct alternative:
 - When the user runs `/review`, report findings only and do not edit code until they explicitly ask to fix (e.g. "Fix", "Fix all").
 - Drive implementation from versioned prompts when the user references `@NN-topic` or a name under `prompts/` — read `prompts/{topic}/current.md` (and `v{X.Y.Z}.md` if needed) rather than improvising scope.
 - Create git commits only when the user explicitly requests them.
+- Prefer parallel subagents for independent multi-module or multi-tranche work (e.g. civix + legacy CLI, review-fix plans).
+- When implementing from an attached plan, do not edit the plan file; treat it as read-only scope.
+- When asked to fix review findings, expect a review→fix→re-review loop until no issues remain.
 
 ## Learned Workspace Facts
 
@@ -265,6 +268,8 @@ Each prohibition is paired with the correct alternative:
 - Work is organized in **`prompts/{topic}/`** (`current.md` plus versioned snapshots); numbered prompts (e.g. `01-test-fixtures`, `02-unit-tests-civix`) map to test/fixture/CLI tranches in the refactor plan.
 - **Civix** roster parsing normalizes VUIDs with **`.zfill(10)`**; **legacy** `_parse_county_csv` uses **`str()` only** — unpadded IDs can behave differently between paths unless fixtures or code align.
 - **`writer.py`** exposes **`ROSTER_CSV_COLUMNS`** for CSV header parity; duplicate **`also_found_on`** uses row-index matching (same county/date duplicates still cross-reference).
+- Integration tests require **`--live`** (`tests/conftest.py` skips them otherwise); run with `uv run pytest tests/integration/ -v --live`.
+- Full local verification: `uv sync --dev`, ruff `E,W,F,I`, `uv run ty check`, `pytest tests/unit`, `pytest tests/verify`, then optional live integration.
 
 ---
 

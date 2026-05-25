@@ -2,24 +2,29 @@ name: Data Refresh
 
 on:
   schedule:
-    - cron: "0 12 * * *"   # Daily at noon UTC (7am CT)
-  workflow_dispatch:         # Manual trigger
+    - cron: "0 8 * * *" # 8:00 UTC daily (3 AM CT)
+  workflow_dispatch:
     inputs:
       election_id:
-        description: "source_election_id to fetch (leave blank to fetch all active)"
+        description: "Specific election ID to refresh (leave blank for all)"
         required: false
         default: ""
-      date:
-        description: "Report date (YYYY-MM-DD, leave blank for latest)"
+      source:
+        description: "Data source to refresh"
         required: false
-        default: ""
+        default: "all"
+        type: choice
+        options:
+          - all
+          - civix
+          - legacy
 
 permissions:
-  contents: write  # needed to commit data/ files
+  contents: write
 
 jobs:
   refresh:
-    name: Scrape and commit turnout data
+    name: Refresh election data
     runs-on: ubuntu-latest
 
     steps:
@@ -33,47 +38,53 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install package
         run: uv sync
 
-      - name: Discover elections
-        run: uv run tx-turnout elections list --output data/elections/index.json
-
-      - name: Fetch turnout data
+      - name: Refresh Civix elections
+        if: >-
+          (github.event_name == 'schedule' ||
+          github.event.inputs.source == 'all' ||
+          github.event.inputs.source == 'civix') &&
+          (github.event.inputs.source != 'legacy')
+        continue-on-error: >-
+          ${{
+            github.event_name == 'workflow_dispatch' &&
+            github.event.inputs.election_id != '' &&
+            github.event.inputs.source == 'all'
+          }}
         run: |
-          if [[ -n "${{ github.event.inputs.election_id }}" ]]; then
-            ELECTIONS="${{ github.event.inputs.election_id }}"
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.election_id }}" ]; then
+            uv run tx-turnout civix fetch-all "${{ github.event.inputs.election_id }}" --audit
           else
-            # Fetch all elections listed in index.json
-            ELECTIONS=$(python -c "
-          import json, sys
-          idx = json.load(open('data/elections/index.json'))
-          print(' '.join(e['source_election_id'] for e in idx['elections']))
-          ")
+            uv run tx-turnout civix refresh-all --audit
           fi
 
-          DATE_ARG=""
-          if [[ -n "${{ github.event.inputs.date }}" ]]; then
-            DATE_ARG="--date ${{ github.event.inputs.date }}"
-          fi
-
-          for election_id in $ELECTIONS; do
-            echo "--- Fetching election $election_id ---"
-            uv run tx-turnout turnout fetch "$election_id" $DATE_ARG \
-              --output "data/elections/$election_id/"
-            uv run tx-turnout roster fetch "$election_id" $DATE_ARG \
-              --output "data/elections/$election_id/"
-            uv run tx-turnout audit run "$election_id" $DATE_ARG \
-              --output "data/elections/$election_id/"
-          done
-
-      - name: Commit data files
+      - name: Refresh legacy elections
+        if: >-
+          (github.event_name == 'schedule' ||
+          github.event.inputs.source == 'all' ||
+          github.event.inputs.source == 'legacy') &&
+          (github.event.inputs.source != 'civix')
+        continue-on-error: >-
+          ${{
+            github.event_name == 'workflow_dispatch' &&
+            github.event.inputs.election_id != '' &&
+            github.event.inputs.source == 'all'
+          }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/
-          git diff --staged --quiet && echo "No changes to commit" || \
-            git commit -m "data: refresh turnout data $(date -u +%Y-%m-%d)"
-          git push
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.election_id }}" ]; then
+            uv run tx-turnout legacy fetch-all "${{ github.event.inputs.election_id }}" --audit
+          else
+            uv run tx-turnout legacy refresh-all --audit
+          fi
+
+      - name: Commit data changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "data: refresh election rosters [skip ci]"
+          file_pattern: "data/elections/**"

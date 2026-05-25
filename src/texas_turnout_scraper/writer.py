@@ -361,3 +361,13 @@ def audit_from_records(
         cross_method_duplicate_count=len({r.id_voter for r in conflicting}),
         findings=findings,
     )
+
+
+def stored_roster_ev_path(data_dir: Path, source: str, election_id: str) -> Path:
+    """Path to the combined per-election EV roster CSV on disk."""
+    return data_dir / "elections" / source / election_id / f"roster_ev_{election_id}.csv"
+
+
+def stored_audit_ev_path(data_dir: Path, source: str, election_id: str) -> Path:
+    """Path to the combined per-election EV audit JSON on disk."""
+    return data_dir / "elections" / source / election_id / f"audit_ev_{election_id}.json"

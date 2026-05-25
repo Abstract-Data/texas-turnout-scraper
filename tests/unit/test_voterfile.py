@@ -178,7 +178,7 @@ class TestDetectColumnsPrefixPattern:
 
     def test_sample_voterfile_full_detection(self):
         """Detect all expected columns from the sample fixture file."""
-        mapping, confidence = detect_columns(SAMPLE_VOTERFILE)
+        mapping, _confidence = detect_columns(SAMPLE_VOTERFILE)
         assert mapping.vuid == "VUID"
         assert mapping.cd == "CDPLANC2333"
         assert mapping.hd == "HD2022"
@@ -376,7 +376,7 @@ class TestMatchVoterfileToRosterBasic:
             hispanic="HISPANIC", status="STATUS",
             last_name="LNAME", first_name="FNAME",
         )
-        enriched, report = match_voterfile_to_roster(
+        enriched, _report = match_voterfile_to_roster(
             roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
         )
         assert len(enriched) == 3
@@ -422,7 +422,7 @@ class TestMatchVoterfileUnmatchedRecords:
     def test_unknown_vuid_not_in_voterfile(self):
         roster = [_voter("9999999999")]  # not in fixture
         mapping = ColumnMapping(vuid="VUID")
-        enriched, report = match_voterfile_to_roster(
+        enriched, _report = match_voterfile_to_roster(
             roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
         )
         assert enriched[0].in_voterfile is False

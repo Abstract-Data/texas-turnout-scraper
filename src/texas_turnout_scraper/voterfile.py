@@ -15,7 +15,7 @@ full multi-GB file into memory.  DuckDB scans only the rows it needs.
 
 ## Age brackets
 
-    18–24, 25–34, 35–44, 45–54, 55–64, 65–74, 75+
+    18-24, 25-34, 35-44, 45-54, 55-64, 65-74, 75+
 
 DOB is expected as YYYYMMDD (Texas state voterfile format) or YYYY-MM-DD.
 
@@ -330,7 +330,7 @@ def match_voterfile_to_roster(
     # Build VUID → voterfile row dict
     vf_lookup: dict[str, dict] = {}
     for row in rows:
-        row_dict = dict(zip(col_names, row))
+        row_dict = dict(zip(col_names, row, strict=True))
         vuid_raw = str(row_dict.get(vuid_col, "") or "").strip().zfill(10)
         if vuid_raw and vuid_raw not in vf_lookup:
             vf_lookup[vuid_raw] = row_dict

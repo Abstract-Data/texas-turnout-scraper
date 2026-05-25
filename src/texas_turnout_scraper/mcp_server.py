@@ -401,7 +401,18 @@ def run_audit(
     from .audit import run_audit as _run_audit
 
     report_date = _parse_date(ev_date)
-    roster_path = Path(data_dir) / "elections" / election_id / f"roster_{ev_date}.csv"
+    source_key = source.lower()
+    if source_key not in {"civix", "legacy"}:
+        return {
+            "error": f"Invalid source {source!r}; expected 'civix' or 'legacy'.",
+            "election_id": election_id,
+            "ev_date": ev_date,
+            "source": source,
+        }
+
+    from .writer import stored_roster_ev_path
+
+    roster_path = stored_roster_ev_path(Path(data_dir), source_key, election_id)
 
     if not roster_path.exists():
         return {
@@ -415,7 +426,7 @@ def run_audit(
         csv_path=roster_path,
         election_id=election_id,
         report_date=report_date,
-        source=source,
+        source=source_key,
     )
 
     return report.model_dump(mode="json")
