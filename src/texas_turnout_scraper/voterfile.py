@@ -91,12 +91,43 @@ def age_bracket(dob_raw: str, reference_date: date | None = None) -> str | None:
     return None  # under 18 or implausible DOB
 
 
+def normalize_precinct(precinct: str) -> str:
+    """Normalize a precinct code for roster vs voterfile comparison.
+
+    Texas SOS voterfiles zero-pad numeric precincts (e.g. ``0510``) while Civix
+    rosters often omit leading zeros (``510``).  All-digit values are compared
+    after ``zfill(4)``; alphanumeric precincts use stripped upper-case text.
+    """
+    raw = precinct.strip().upper()
+    if not raw:
+        return ""
+    if raw.isdigit():
+        return raw.zfill(4)
+    digits_only = "".join(c for c in raw if c.isdigit())
+    if digits_only and not any(c.isalpha() for c in raw):
+        return digits_only.zfill(4)
+    return raw
+
+
+def precincts_match(roster_precinct: str, vf_precinct: str) -> bool:
+    """Return True when roster and voterfile precinct values refer to the same precinct."""
+    return normalize_precinct(roster_precinct) == normalize_precinct(vf_precinct)
+
+
 # ---------------------------------------------------------------------------
 # Column auto-detection
 # ---------------------------------------------------------------------------
 
 _FIELD_PATTERNS: dict[str, list[str]] = {
-    "vuid": ["vuid", "idvoter", "voterid", "vanid", "lalvoterid", "registrantid", "statecodevoterid"],
+    "vuid": [
+        "vuid",
+        "idvoter",
+        "voterid",
+        "vanid",
+        "lalvoterid",
+        "registrantid",
+        "statecodevoterid",
+    ],
     "cd": ["cd", "congdist", "congressional", "ushouse", "conghouse"],
     "hd": ["hd", "housedist", "statehouse", "lowerchamber"],
     "sd": ["sd", "senatedist", "statesenate", "upperchamber"],
@@ -131,7 +162,7 @@ def _normalise(col: str) -> str:
 def _check_prefix(norm: str, field: str) -> bool:
     for prefix in _FIELD_PREFIX_PATTERNS.get(field, []):
         if norm.startswith(prefix) and len(norm) > len(prefix):
-            remainder = norm[len(prefix):]
+            remainder = norm[len(prefix) :]
             # Must start with digit or known word (plan, dist) — not another letter
             if remainder[0].isdigit() or remainder[:4] in ("plan", "dist"):
                 return True
@@ -265,8 +296,7 @@ def match_voterfile_to_roster(
         import duckdb
     except ImportError as exc:
         raise ImportError(
-            "duckdb is required for voterfile matching. "
-            "Install it with: pip install duckdb"
+            "duckdb is required for voterfile matching. Install it with: pip install duckdb"
         ) from exc
 
     if mapping.vuid is None:
@@ -277,17 +307,26 @@ def match_voterfile_to_roster(
 
     ref = reference_date or date.today()
 
-    # Zero-pad all roster VUIDs to 10 digits
-    roster_vuids: list[str] = [r.id_voter.zfill(10) for r in roster_records]
-    roster_by_vuid: dict[str, list[VoterRecord]] = {}
-    for rec in roster_records:
-        roster_by_vuid.setdefault(rec.id_voter.zfill(10), []).append(rec)
+    # Zero-pad roster VUIDs; dedupe for the DuckDB IN filter (order preserved)
+    roster_vuids: list[str] = list(dict.fromkeys(r.id_voter.zfill(10) for r in roster_records))
 
     # Determine which voterfile columns to SELECT
     field_to_col: dict[str, str] = {}
-    for field in ("vuid", "cd", "hd", "sd", "county", "precinct",
-                  "dob", "sex", "hispanic", "status",
-                  "first_name", "last_name", "full_name"):
+    for field in (
+        "vuid",
+        "cd",
+        "hd",
+        "sd",
+        "county",
+        "precinct",
+        "dob",
+        "sex",
+        "hispanic",
+        "status",
+        "first_name",
+        "last_name",
+        "full_name",
+    ):
         col = getattr(mapping, field)
         if col:
             field_to_col[field] = col
@@ -327,12 +366,17 @@ def match_voterfile_to_roster(
 
     logger.info("DuckDB returned %d matching voterfile rows", len(rows))
 
-    # Build VUID → voterfile row dict
+    # Build VUID → voterfile row dict (first row wins on duplicate VUIDs)
     vf_lookup: dict[str, dict] = {}
+    duplicate_vf_rows = 0
     for row in rows:
         row_dict = dict(zip(col_names, row, strict=True))
         vuid_raw = str(row_dict.get(vuid_col, "") or "").strip().zfill(10)
-        if vuid_raw and vuid_raw not in vf_lookup:
+        if not vuid_raw:
+            continue
+        if vuid_raw in vf_lookup:
+            duplicate_vf_rows += 1
+        else:
             vf_lookup[vuid_raw] = row_dict
 
     # Build enriched records
@@ -360,7 +404,7 @@ def match_voterfile_to_roster(
                 county=rec.county,
                 election_id=rec.election_id,
                 report_date=rec.report_date,
-                voter_name=rec.voter_name,          # PII — do not log
+                voter_name=rec.voter_name,  # PII — do not log
                 duplicate_flag=rec.duplicate_flag,
                 duplicate_type=rec.duplicate_type,
                 also_found_on=rec.also_found_on,
@@ -402,36 +446,56 @@ def match_voterfile_to_roster(
 
     if unmatched_count > 0:
         pct = (unmatched_count / total * 100) if total else 0
-        findings.append(AuditFinding(
-            finding_type="unmatched_voters",
-            severity="warning",
-            detail=(
-                f"{unmatched_count} EV roster records ({pct:.1f}%) not found in voterfile "
-                f"— possible stale voterfile or out-of-district voters"
-            ),
-        ))
+        findings.append(
+            AuditFinding(
+                finding_type="unmatched_voters",
+                severity="warning",
+                detail=(
+                    f"{unmatched_count} EV roster records ({pct:.1f}%) not found in voterfile "
+                    f"— possible stale voterfile or out-of-district voters"
+                ),
+            )
+        )
 
     county_mismatches = sum(
-        1 for r in matched
-        if r.vf_county and r.county.upper() != r.vf_county.upper()
+        1 for r in matched if r.vf_county and r.county.upper() != r.vf_county.upper()
     )
     if county_mismatches:
-        findings.append(AuditFinding(
-            finding_type="county_mismatch",
-            severity="warning",
-            detail=f"{county_mismatches} matched records: county differs between EV roster and voterfile",
-        ))
+        findings.append(
+            AuditFinding(
+                finding_type="county_mismatch",
+                severity="warning",
+                detail=f"{county_mismatches} matched records: county differs between EV roster and voterfile",
+            )
+        )
 
     precinct_mismatches = sum(
-        1 for r in matched
-        if r.vf_precinct and r.precinct.strip() and r.precinct.upper() != r.vf_precinct.upper()
+        1
+        for r in matched
+        if r.vf_precinct and r.precinct.strip() and not precincts_match(r.precinct, r.vf_precinct)
     )
     if precinct_mismatches:
-        findings.append(AuditFinding(
-            finding_type="precinct_mismatch",
-            severity="info",
-            detail=f"{precinct_mismatches} matched records: precinct differs between EV roster and voterfile",
-        ))
+        findings.append(
+            AuditFinding(
+                finding_type="precinct_mismatch",
+                severity="info",
+                detail=f"{precinct_mismatches} matched records: precinct differs between EV roster and voterfile",
+            )
+        )
+
+    if duplicate_vf_rows:
+        findings.append(
+            AuditFinding(
+                finding_type="duplicate_voterfile_vuids",
+                severity="info",
+                detail=(
+                    f"{duplicate_vf_rows} extra voterfile row(s) with duplicate VUIDs "
+                    f"were skipped (first row kept per VUID)"
+                ),
+            )
+        )
+
+    total_vf_rows = count_voterfile_rows(voterfile_path)
 
     report = VoterfileMatchReport(
         election_id=roster_records[0].election_id if roster_records else "unknown",
@@ -439,7 +503,7 @@ def match_voterfile_to_roster(
         voterfile_path=str(voterfile_path),
         roster_path="",  # filled in by CLI
         total_roster_records=total,
-        total_voterfile_records=0,  # DuckDB can count separately if needed
+        total_voterfile_records=total_vf_rows,
         matched_count=matched_count,
         unmatched_count=unmatched_count,
         match_rate=match_rate,
@@ -456,7 +520,9 @@ def match_voterfile_to_roster(
 
     logger.info(
         "Match complete: %d/%d records matched (%.1f%%)",
-        matched_count, total, match_rate * 100,
+        matched_count,
+        total,
+        match_rate * 100,
     )
     return enriched, report
 
@@ -522,28 +588,30 @@ def write_enriched_csv(records: list[EnrichedVoterRecord], path: Path) -> Path:
         writer = csv.DictWriter(fh, fieldnames=_ENRICHED_COLUMNS, quoting=csv.QUOTE_ALL)
         writer.writeheader()
         for rec in records:
-            writer.writerow({
-                "VOTER_NAME": rec.voter_name,   # PII — public record
-                "ID_VOTER": rec.id_voter,
-                "VOTING_METHOD": rec.voting_method.value,
-                "PRECINCT": rec.precinct,
-                "COUNTY": rec.county,
-                "ELECTION_ID": rec.election_id,
-                "REPORT_DATE": rec.report_date.isoformat(),
-                "DUPLICATE_FLAG": str(rec.duplicate_flag).lower(),
-                "DUPLICATE_TYPE": rec.duplicate_type,
-                "ALSO_FOUND_ON": rec.also_found_on,
-                "IN_VOTERFILE": str(rec.in_voterfile).lower(),
-                "CD": rec.cd or "",
-                "HD": rec.hd or "",
-                "SD": rec.sd or "",
-                "VF_COUNTY": rec.vf_county or "",
-                "VF_PRECINCT": rec.vf_precinct or "",
-                "AGE_BRACKET": rec.age_bracket or "",
-                "SEX": rec.sex or "",
-                "HISPANIC": rec.hispanic or "",
-                "VOTER_STATUS": rec.voter_status or "",
-            })
+            writer.writerow(
+                {
+                    "VOTER_NAME": rec.voter_name,  # PII — public record
+                    "ID_VOTER": rec.id_voter,
+                    "VOTING_METHOD": rec.voting_method.value,
+                    "PRECINCT": rec.precinct,
+                    "COUNTY": rec.county,
+                    "ELECTION_ID": rec.election_id,
+                    "REPORT_DATE": rec.report_date.isoformat(),
+                    "DUPLICATE_FLAG": str(rec.duplicate_flag).lower(),
+                    "DUPLICATE_TYPE": rec.duplicate_type,
+                    "ALSO_FOUND_ON": rec.also_found_on,
+                    "IN_VOTERFILE": str(rec.in_voterfile).lower(),
+                    "CD": rec.cd or "",
+                    "HD": rec.hd or "",
+                    "SD": rec.sd or "",
+                    "VF_COUNTY": rec.vf_county or "",
+                    "VF_PRECINCT": rec.vf_precinct or "",
+                    "AGE_BRACKET": rec.age_bracket or "",
+                    "SEX": rec.sex or "",
+                    "HISPANIC": rec.hispanic or "",
+                    "VOTER_STATUS": rec.voter_status or "",
+                }
+            )
     return path
 
 

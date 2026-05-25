@@ -29,6 +29,8 @@ from texas_turnout_scraper.voterfile import (
     detect_columns,
     load_mapping,
     match_voterfile_to_roster,
+    normalize_precinct,
+    precincts_match,
     save_mapping,
     write_enriched_csv,
 )
@@ -296,6 +298,22 @@ def test_age_bracket_all_ranges(age: int, expected: str):
     dob = date(_REF.year - age, 1, 1)
     result = age_bracket(dob.strftime("%Y%m%d"), _REF)
     assert result == expected, f"age={age}: expected {expected!r}, got {result!r}"
+
+
+class TestNormalizePrecinct:
+    def test_unpadded_roster_matches_zero_padded_voterfile(self):
+        assert normalize_precinct("510") == normalize_precinct("0510")
+
+    def test_precincts_match_helper(self):
+        assert precincts_match("510", "0510")
+        assert precincts_match("0510", "0510")
+
+    def test_different_precincts_do_not_match(self):
+        assert not precincts_match("510", "0512")
+
+    def test_empty_returns_empty(self):
+        assert normalize_precinct("") == ""
+        assert normalize_precinct("   ") == ""
 
 
 class TestAgeBracketBlankReturnsNone:
@@ -574,6 +592,58 @@ class TestCountyMismatchFinding:
         )
         county_mismatches = [f for f in report.findings if f.finding_type == "county_mismatch"]
         assert len(county_mismatches) == 0
+
+
+@requires_duckdb
+class TestPrecinctMismatchFinding:
+    def test_no_mismatch_when_roster_unpadded_and_voterfile_padded(self):
+        """Civix-style precinct 510 vs voterfile 0510 for same VUID."""
+        roster = [_voter("0000000001", precinct="510")]
+        mapping = ColumnMapping(vuid="VUID", precinct="PCT")
+        _, report = match_voterfile_to_roster(
+            roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
+        )
+        precinct_findings = [f for f in report.findings if f.finding_type == "precinct_mismatch"]
+        assert len(precinct_findings) == 0
+
+    def test_mismatch_when_precincts_truly_differ(self, tmp_path):
+        roster = [_voter("0000000001", precinct="9999")]
+        mapping = ColumnMapping(vuid="VUID", precinct="PCT")
+        _, report = match_voterfile_to_roster(
+            roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
+        )
+        assert "precinct_mismatch" in [f.finding_type for f in report.findings]
+
+
+@requires_duckdb
+class TestDuplicateVoterfileVuids:
+    def test_duplicate_vuid_rows_emit_finding(self, tmp_path):
+        vf = tmp_path / "dup_vuid.csv"
+        vf.write_text(
+            '"VUID","PCT","COUNTY"\n'
+            '"0000000001","0510","HARRIS"\n'
+            '"0000000001","0512","HARRIS"\n',
+            encoding="utf-8",
+        )
+        roster = [_voter("0000000001", precinct="510")]
+        mapping = ColumnMapping(vuid="VUID", precinct="PCT", county="COUNTY")
+        enriched, report = match_voterfile_to_roster(
+            roster, vf, mapping, reference_date=_REF
+        )
+        assert enriched[0].in_voterfile is True
+        assert enriched[0].vf_precinct == "0510"
+        assert "duplicate_voterfile_vuids" in [f.finding_type for f in report.findings]
+
+
+@requires_duckdb
+class TestVoterfileRowCount:
+    def test_total_voterfile_records_populated(self):
+        roster = [_voter("0000000001")]
+        mapping = ColumnMapping(vuid="VUID")
+        _, report = match_voterfile_to_roster(
+            roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
+        )
+        assert report.total_voterfile_records == 10
 
 
 # ---------------------------------------------------------------------------

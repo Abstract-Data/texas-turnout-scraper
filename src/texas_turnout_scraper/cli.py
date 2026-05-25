@@ -1436,11 +1436,14 @@ def voterfile_match(
         typer.echo("Error: VUID column is required for matching. Please map it to a voterfile column.", err=True)
         raise typer.Exit(code=1)
 
-    # Save mapping sidecar
-    if save_mapping and not sidecar.exists():
+    # Save mapping sidecar (overwrite so interactive corrections persist)
+    if save_mapping:
         import datetime as _dt
+        from datetime import timezone
+
         mapping.voterfile_path = str(voterfile)
-        mapping.created_at = _dt.datetime.utcnow().isoformat()
+        if not mapping.created_at:
+            mapping.created_at = _dt.datetime.now(timezone.utc).isoformat()
         _save_mapping(mapping, sidecar)
         typer.echo(f"  Column mapping saved to {sidecar.name}")
 
