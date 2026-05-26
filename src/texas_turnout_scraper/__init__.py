@@ -9,7 +9,7 @@ Both produce the same shared output models: VoterRecord, CountyRoster, CountyTur
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # Enums
 # Civix client
