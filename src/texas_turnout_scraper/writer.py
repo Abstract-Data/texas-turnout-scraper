@@ -399,3 +399,27 @@ def load_stored_turnout_for_audit(
         turnout_rows.extend(read_turnout_csv(path))
 
     return turnout_rows if turnout_rows else None
+
+
+def write_turnout_csv(rows: list[CountyTurnout], path: Path) -> Path:
+    """Write county turnout rows to a CSV file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_TURNOUT_CSV_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "election_id": row.election_id,
+                    "report_date": row.report_date.isoformat(),
+                    "county": row.county,
+                    "county_id": row.county_id if row.county_id is not None else "",
+                    "registered_voters": row.registered_voters,
+                    "in_person_votes_on_date": row.in_person_votes_on_date,
+                    "total_in_person_votes": row.total_in_person_votes,
+                    "total_mail_votes": row.total_mail_votes,
+                    "roster_available": str(row.roster_available).lower(),
+                    "source": row.source,
+                }
+            )
+    return path

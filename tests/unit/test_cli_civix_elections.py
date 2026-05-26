@@ -69,6 +69,27 @@ def test_civix_elections_table_sorted_without_interactive() -> None:
     assert result.stdout.index("200") < result.stdout.index("100")
 
 
+def test_civix_elections_interactive_skips_table_before_prompt() -> None:
+    election = _election(election_id=53813, election_date=date(2026, 3, 3))
+
+    with patch("texas_turnout_scraper.civix.CivixClient") as mock_client_cls:
+        mock_client = mock_client_cls.return_value.__enter__.return_value
+        mock_client.list_elections.return_value = [election]
+
+        with patch(
+            "texas_turnout_scraper.cli._prompt_select",
+            side_effect=["53813", "done"],
+        ):
+            result = runner.invoke(
+                app,
+                ["civix", "elections", "--interactive"],
+            )
+
+    assert result.exit_code == 0
+    assert "EV DATES" not in result.stdout
+    assert "53813" in result.stdout
+
+
 def test_civix_elections_interactive_dispatches_turnout() -> None:
     election = _election(election_id=53813, election_date=date(2026, 3, 3))
 

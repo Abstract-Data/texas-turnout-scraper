@@ -510,7 +510,6 @@ def _run_civix_elections_interactive(elections: list[object]) -> None:
         typer.echo("No elections returned from Civix.", err=True)
         raise typer.Exit(code=1)
 
-    _echo_civix_elections_table(elections, numbered=True)
     election_id = _prompt_civix_election_id(elections)
     from .models import CivixElection
 
@@ -784,7 +783,13 @@ def civix_fetch_all(
     from .audit import audit_records
     from .civix import CivixClient, fetch_county_roster
     from .http_transport import HTTP_FETCH_EXCEPTIONS, format_fetch_error
-    from .writer import accumulate_roster, load_stored_turnout_for_audit, write_roster_csv
+    from .models import CountyTurnout
+    from .writer import (
+        accumulate_roster,
+        load_stored_turnout_for_audit,
+        write_roster_csv,
+        write_turnout_csv,
+    )
 
     logger = logging.getLogger(__name__)
     with CivixClient(pace_seconds=pace) as client:
@@ -820,6 +825,11 @@ def civix_fetch_all(
             turnout_rows = client.fetch_ev_turnout(
                 election_id=civix_id,
                 election_date=ev_date,
+            )
+            turnout_path = output_dir / election_id / f"turnout_ev_{ev_date.isoformat()}.csv"
+            write_turnout_csv(
+                [CountyTurnout(**row.model_dump()) for row in turnout_rows],
+                turnout_path,
             )
             roster_counties = [r for r in turnout_rows if r.roster_available]
             typer.echo(
@@ -902,6 +912,102 @@ def civix_fetch_all(
     )
 
     _exit_on_partial_fetch_failures(fetch_failures)
+
+
+def _echo_gap_report_summary(report: object) -> None:
+    from .models import TurnoutRosterGapReport
+    from .terminal_report import print_gap_report_summary
+
+    if isinstance(report, TurnoutRosterGapReport):
+        print_gap_report_summary(report)
+
+
+@civix_app.command("gap-report")
+def civix_gap_report(
+    election_id: Annotated[
+        str, typer.Argument(help="Civix election ID (numeric string, e.g. '58315')")
+    ],
+    roster: Annotated[
+        Path | None,
+        typer.Option("--roster", help="Combined roster CSV (default: stored roster_ev file)"),
+    ] = None,
+    ev_date: EvDateStr | None = None,
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Election data directory"),
+    ] = Path("data/elections/civix"),
+    turnout_source: Annotated[
+        str,
+        typer.Option(
+            "--turnout-source",
+            help="Turnout data source: live (API), stored (saved CSV), or auto",
+        ),
+    ] = "auto",
+    output: Annotated[
+        str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")
+    ] = "table",
+    write_files: Annotated[
+        bool,
+        typer.Option("--write-files/--no-write-files", help="Write JSON + county CSV reports"),
+    ] = True,
+) -> None:
+    """Compare published Civix turnout vs scraped roster voters, county by county."""
+    from .gap_analysis import (
+        stored_gap_counties_csv_path,
+        stored_gap_report_path,
+        try_build_civix_gap_report,
+        write_gap_counties_csv,
+        write_gap_report_json,
+    )
+    from .writer import read_roster_csv
+
+    if turnout_source not in {"live", "stored", "auto"}:
+        typer.echo("Error: --turnout-source must be live, stored, or auto.", err=True)
+        raise typer.Exit(code=1)
+
+    roster_path = roster or (output_dir / election_id / f"roster_ev_{election_id}.csv")
+    if not roster_path.exists():
+        typer.echo(f"Error: roster file not found: {roster_path}", err=True)
+        raise typer.Exit(code=1)
+
+    roster_records = read_roster_csv(roster_path)
+    if not roster_records:
+        typer.echo(f"Error: roster file is empty: {roster_path}", err=True)
+        raise typer.Exit(code=1)
+
+    data_root = (
+        output_dir.parent.parent
+        if output_dir.name in {"civix", "legacy"}
+        else output_dir.parent
+    )
+
+    parsed_ev_date = (
+        _parse_ev_date(ev_date)
+        if ev_date is not None
+        else max(rec.report_date for rec in roster_records)
+    )
+    report = try_build_civix_gap_report(
+        roster_path=roster_path,
+        roster_records=roster_records,
+        ev_date=parsed_ev_date,
+        turnout_source=turnout_source,
+    )
+    if report is None:
+        typer.echo("Error: could not build gap report for this roster/election.", err=True)
+        raise typer.Exit(code=1)
+
+    if write_files:
+        json_path = stored_gap_report_path(data_root, "civix", election_id)
+        csv_path = stored_gap_counties_csv_path(data_root, "civix", election_id)
+        write_gap_report_json(report, json_path)
+        write_gap_counties_csv(report, csv_path)
+        typer.echo(f"Wrote: {json_path}")
+        typer.echo(f"Wrote: {csv_path}")
+
+    if output == "json":
+        typer.echo(json.dumps(report.model_dump(mode="json"), indent=2))
+    else:
+        _echo_gap_report_summary(report)
 
 
 @civix_app.command("refresh-all")
@@ -1645,6 +1751,20 @@ def voterfile_match(
         bool,
         typer.Option("--report-only", help="Skip enriched CSV output; write match report only"),
     ] = False,
+    gap_report: Annotated[
+        bool,
+        typer.Option(
+            "--gap-report/--no-gap-report",
+            help="Include turnout vs roster gap analysis in the match summary",
+        ),
+    ] = True,
+    gap_turnout_source: Annotated[
+        str,
+        typer.Option(
+            "--gap-turnout-source",
+            help="Turnout source for gap analysis: live, stored, or auto",
+        ),
+    ] = "auto",
 ) -> None:
     """Match an EV roster against a statewide voterfile.
 
@@ -1795,6 +1915,31 @@ def voterfile_match(
         typer.echo(f"Error: match failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     report.roster_path = str(roster_csv)
+    stem = roster_csv.stem
+
+    gap_report_path: Path | None = None
+    gap_counties_path: Path | None = None
+    if gap_report:
+        if gap_turnout_source not in {"live", "stored", "auto"}:
+            typer.echo("Error: --gap-turnout-source must be live, stored, or auto.", err=True)
+            raise typer.Exit(code=1)
+        from .gap_analysis import (
+            try_build_civix_gap_report,
+            write_gap_counties_csv,
+            write_gap_report_json,
+        )
+
+        gap = try_build_civix_gap_report(
+            roster_path=roster_csv,
+            roster_records=roster_records,
+            turnout_source=gap_turnout_source,
+        )
+        if gap is not None:
+            report.turnout_roster_gap = gap
+            gap_report_path = out_dir / f"gap_report_{stem}.json"
+            gap_counties_path = out_dir / f"gap_counties_{stem}.csv"
+            write_gap_report_json(gap, gap_report_path)
+            write_gap_counties_csv(gap, gap_counties_path)
 
     # Save mapping sidecar after a successful match
     if save_mapping:
@@ -1805,7 +1950,6 @@ def voterfile_match(
         typer.echo(f"  Column mapping saved to {sidecar.name}")
 
     # ── Step 5: Output ───────────────────────────────────────────────────────
-    stem = roster_csv.stem
     report_path = out_dir / f"match_report_{stem}.json"
     write_match_report_json(report, report_path)
 
@@ -1814,48 +1958,15 @@ def voterfile_match(
         write_enriched_csv(enriched, enriched_path)
 
     # ── Step 6: Print summary ────────────────────────────────────────────────
-    typer.echo("")
-    typer.echo("━" * 60)
-    typer.echo("  Match Summary")
-    typer.echo("━" * 60)
-    typer.echo(f"  Roster records    : {report.total_roster_records:>10,}")
-    typer.echo(f"  Matched           : {report.matched_count:>10,}  ({report.match_rate:.1%})")
-    typer.echo(f"  Unmatched         : {report.unmatched_count:>10,}")
-    if report.total_voterfile_records is not None:
-        typer.echo(f"  Voterfile rows    : {report.total_voterfile_records:>10,}")
-    typer.echo("")
+    from .terminal_report import print_voterfile_match_summary
 
-    if report.by_age_bracket:
-        typer.echo("  Age brackets (matched voters):")
-        for bracket, count in sorted(report.by_age_bracket.items()):
-            bar = "█" * min(40, count // max(1, report.matched_count // 40))
-            typer.echo(f"    {bracket:<8}  {count:>8,}  {bar}")
-        typer.echo("")
-
-    if report.by_voting_method:
-        typer.echo("  Voting method (matched voters):")
-        for method, count in sorted(report.by_voting_method.items()):
-            typer.echo(f"    {method:<12}  {count:>8,}")
-        typer.echo("")
-
-    if report.by_cd:
-        typer.echo(f"  Congressional districts: {len(report.by_cd)} found")
-    if report.by_hd:
-        typer.echo(f"  State House districts:   {len(report.by_hd)} found")
-    if report.by_sd:
-        typer.echo(f"  State Senate districts:  {len(report.by_sd)} found")
-
-    if report.findings:
-        typer.echo("")
-        typer.echo("  Audit findings:")
-        for finding in report.findings:
-            typer.echo(f"    [{finding.severity.upper()}] {finding.finding_type}: {finding.detail}")
-
-    typer.echo("")
-    if not report_only:
-        typer.echo(f"  Enriched CSV  → {enriched_path}")
-    typer.echo(f"  Match report  → {report_path}")
-    typer.echo("")
+    print_voterfile_match_summary(
+        report,
+        report_path=report_path,
+        enriched_path=enriched_path if not report_only else None,
+        gap_report_path=gap_report_path,
+        gap_counties_path=gap_counties_path,
+    )
 
 
 @voterfile_app.command("detect-columns")

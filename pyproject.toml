@@ -17,6 +17,7 @@ dependencies = [
     "duckdb>=1.0.0",
     "cloudscraper>=1.2.71",
     "questionary>=2.1.1",
+    "rich>=13.9.0",
 ]
 
 [project.scripts]

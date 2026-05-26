@@ -173,6 +173,57 @@ class AuditReport(BaseModel):
     audit_schema_version: str = "2.0"
 
 
+class CountyTurnoutRosterGap(BaseModel):
+    """Per-county comparison of published turnout vs scraped roster voters."""
+
+    model_config = ConfigDict(frozen=False)
+
+    county: str
+    county_id: int | None = None
+    registered_voters: int = 0
+    turnout_in_person: int = 0
+    turnout_mail: int = 0
+    turnout_total: int = 0
+    roster_in_person: int = 0
+    roster_mail: int = 0
+    roster_total: int = 0
+    gap_in_person: int = 0
+    gap_mail: int = 0
+    gap_total: int = 0
+    gap_pct: float = 0.0
+
+
+class TurnoutRosterGapReport(BaseModel):
+    """Statewide gap analysis: Civix cumulative turnout table vs scraped roster VUIDs."""
+
+    model_config = ConfigDict(frozen=False)
+
+    election_id: str
+    election_name: str | None = None
+    certified: bool | None = None
+    source: str = "civix"
+    ev_date: date
+    roster_path: str
+    turnout_source: str  # "live", "stored", or "auto"
+    roster_row_count: int
+    roster_unique_vuids: int
+    counties: list[CountyTurnoutRosterGap] = Field(default_factory=list)
+    turnout_in_person: int = 0
+    turnout_mail: int = 0
+    turnout_total: int = 0
+    roster_in_person: int = 0
+    roster_mail: int = 0
+    roster_total: int = 0
+    gap_in_person: int = 0
+    gap_mail: int = 0
+    gap_total: int = 0
+    gap_pct: float = 0.0
+    counties_with_gap: int = 0
+    counties_roster_over_turnout: int = 0
+    generated_at: datetime = Field(default_factory=_utc_now)
+    report_schema_version: str = "1.0"
+
+
 # ---------------------------------------------------------------------------
 # Civix-specific models
 # ---------------------------------------------------------------------------
@@ -372,6 +423,7 @@ class VoterfileMatchReport(BaseModel):
 
     # Audit findings
     findings: list[AuditFinding] = []
+    turnout_roster_gap: TurnoutRosterGapReport | None = None
     generated_at: datetime = Field(default_factory=_utc_now)
 
 

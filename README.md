@@ -20,6 +20,7 @@ Python library, CLI (`tx-turnout`), and MCP server for Texas Secretary of State 
 [![tqdm](https://img.shields.io/pypi/v/tqdm?label=tqdm)](https://pypi.org/project/tqdm/)
 [![anyio](https://img.shields.io/pypi/v/anyio?label=anyio)](https://pypi.org/project/anyio/)
 [![questionary](https://img.shields.io/pypi/v/questionary?label=questionary)](https://pypi.org/project/questionary/)
+[![Rich](https://img.shields.io/pypi/v/rich?label=rich)](https://pypi.org/project/rich/)
 
 ### Dev & build
 
@@ -43,7 +44,7 @@ Python library, CLI (`tx-turnout`), and MCP server for Texas Secretary of State 
 | Surface | Role |
 |--------|------|
 | **Library** | Pydantic models and scrapers for legacy SOS and Civix EVR portals |
-| **CLI** | `tx-turnout` — fetch rosters, turnout, audits, and voterfile matching |
+| **CLI** | `tx-turnout` — fetch rosters, turnout, audits, voterfile matching, and turnout vs roster gap reports |
 | **MCP** | FastMCP tools for agents (`list_elections`, `fetch_roster`, `run_audit`, …) |
 
 Scraped data is committed under `data/elections/` and published as a **static API** via GitHub Pages (scheduled refresh — not a live scrape endpoint).
@@ -71,7 +72,65 @@ uv run tx-turnout legacy roster 49664 2024-10-21 --strategy B --out-dir ./data/t
 # Audit and voterfile match
 uv run tx-turnout audit run-inline data/elections/49664/roster_2024-10-21.csv
 uv run tx-turnout voterfile match roster.csv /path/to/voterfile.csv
+
+# Turnout vs roster gap report (Civix)
+uv run tx-turnout civix gap-report 58315
+uv run tx-turnout civix gap-report 58315 --ev-date 2026-05-22 --turnout-source live
 ```
+
+## Turnout vs roster gap analysis
+
+Civix publishes two related but different numbers during early voting:
+
+| Source | What it counts | Typical use |
+|--------|----------------|-------------|
+| **Turnout table** | County cumulative ballot totals (in-person + mail) | What SOS posts online (~829k for a runoff) |
+| **Roster CSVs** | Named voters in per-county detail files | What `fetch-all` scrapes (~780k unique VUIDs) |
+
+The gap report compares those side by side, **county by county**, so you can see where aggregate turnout and scraped roster detail diverge (often mail ballots counted in turnout before they appear in roster files, especially while an election is uncertified).
+
+### How the report is built
+
+1. **Roster side** — Read the combined Civix roster (`roster_ev_{id}.csv` from `civix fetch-all`). For each county, count unique VUIDs from in-person and mail-only rows across all EV dates in the file.
+2. **Turnout side** — Load cumulative county totals for one EV snapshot date:
+   - **`auto`** (default): use `turnout_ev_{date}.csv` on disk if present, else fetch live from Civix
+   - **`stored`**: use saved turnout CSV only
+   - **`live`**: always fetch from the Civix API (matches current online totals)
+3. **Gap** — Per county: `turnout_total − roster_total`, with the same split for in-person and mail. Statewide totals are summed across counties.
+
+`civix fetch-all` saves a turnout snapshot for each EV day as `data/elections/civix/{id}/turnout_ev_{date}.csv`, so later gap runs can compare against the turnout that was online **at scrape time** without re-hitting the API.
+
+### Running gap analysis
+
+**Standalone** (Rich table in the terminal + JSON/CSV on disk):
+
+```bash
+uv run tx-turnout civix gap-report 58315
+uv run tx-turnout civix gap-report 58315 --ev-date 2026-05-22 -o json --no-write-files
+```
+
+**With voterfile match** (on by default for Civix `roster_ev_*.csv` paths):
+
+```bash
+uv run tx-turnout voterfile match \
+  data/elections/civix/58315/roster_ev_58315.csv \
+  /path/to/voterfile.csv \
+  --no-interactive
+```
+
+Use `--no-gap-report` to skip, or `--gap-turnout-source stored|live|auto` to control the turnout source.
+
+### Output files
+
+| File | Description |
+|------|-------------|
+| `gap_report_ev_{id}.json` | Full report (statewide + all counties) from `civix gap-report` |
+| `gap_counties_ev_{id}.csv` | County table for spreadsheets |
+| `gap_report_{roster_stem}.json` | Same report embedded when run via `voterfile match` |
+| `gap_counties_{roster_stem}.csv` | County CSV from match flow |
+| `match_report_*.json` | Includes `turnout_roster_gap` when gap analysis ran |
+
+Implementation: [`src/texas_turnout_scraper/gap_analysis.py`](src/texas_turnout_scraper/gap_analysis.py); terminal formatting: [`src/texas_turnout_scraper/terminal_report.py`](src/texas_turnout_scraper/terminal_report.py).
 
 ## Tests
 
