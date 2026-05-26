@@ -22,6 +22,10 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/block-raw-git.sh"
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/pre-commit.sh"
           }
         ]
@@ -32,6 +36,21 @@
           {
             "type": "command",
             "command": ".claude/hooks/block-env-writes.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-pii-exc-info.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/mcp-tool-test-required.sh"
           }
         ]
       }

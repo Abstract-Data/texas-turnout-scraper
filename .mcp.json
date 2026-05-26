@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/.mcp.schema.json",
+  "_comment": "Project-scoped MCP server registrations. Context7 is strongly recommended — it eliminates hallucinated library APIs (see AGENTS.md ## Documentation Priority, item 1). Install with: claude mcp add context7 -- npx -y @upstash/context7-mcp",
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    }
+  }
+}
