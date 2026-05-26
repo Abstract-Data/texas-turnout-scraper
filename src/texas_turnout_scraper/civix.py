@@ -24,7 +24,6 @@ import zipfile
 from datetime import date
 from typing import Any
 
-from .enums import VoteMethod
 from .http_transport import HttpBackend, PacedHttpClient
 from .models import (
     CivixCountyRef,
@@ -122,7 +121,7 @@ class CivixClient:
             backend=http_backend,
             timeout=timeout,
         )
-        self._pace = pace_seconds
+        self._pace = max(pace_seconds, DEFAULT_PACE_SECONDS)
         self._last_request: float = 0.0
 
     # ------------------------------------------------------------------
@@ -324,14 +323,11 @@ class CivixClient:
         reader = csv.DictReader(io.StringIO(csv_text))
         for row in reader:
             records.append(
-                VoterRecord(
-                    id_voter=str(row["ID_VOTER"]).zfill(10),  # always string — never int
-                    voting_method=VoteMethod(row["VOTING_METHOD"]),
-                    precinct=row["PRECINCT"],
+                VoterRecord.from_csv_row(
+                    row,
                     county=county_name,
                     election_id=str(election_id),
                     report_date=election_date,
-                    voter_name=row.get("VOTER_NAME", ""),  # stored for mismatch detection only
                 )
             )
 
@@ -531,18 +527,11 @@ class CivixClient:
                     reader = csv.DictReader(io.StringIO(csv_text))
                     for row in reader:
                         records.append(
-                            VoterRecord(
-                                id_voter=str(row["ID_VOTER"]).zfill(
-                                    10
-                                ),  # always string — never int
-                                voting_method=VoteMethod(row["VOTING_METHOD"]),
-                                precinct=row["PRECINCT"],
+                            VoterRecord.from_csv_row(
+                                row,
                                 county=county_name,
                                 election_id=str(election_id),
                                 report_date=election_date,
-                                voter_name=row.get(
-                                    "VOTER_NAME", ""
-                                ),  # stored for mismatch detection only
                             )
                         )
 

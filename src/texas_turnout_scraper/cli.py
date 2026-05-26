@@ -12,9 +12,9 @@ startup time fast.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from collections.abc import Callable
-from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -24,7 +24,9 @@ app = typer.Typer(name="tx-turnout", help="Texas SOS early-voting data tool.")
 civix_app = typer.Typer(help="Commands for the Civix EVR portal (2025+)")
 legacy_app = typer.Typer(help="Commands for the legacy SOS portal (pre-2025)")
 audit_app = typer.Typer(help="Data quality audit commands")
-voterfile_app = typer.Typer(help="Voterfile matching — join a statewide voterfile against an EV roster")
+voterfile_app = typer.Typer(
+    help="Voterfile matching — join a statewide voterfile against an EV roster"
+)
 
 app.add_typer(civix_app, name="civix")
 app.add_typer(legacy_app, name="legacy")
@@ -37,11 +39,11 @@ _FRESHNESS_HOURS = 24
 EvDateStr = Annotated[str, typer.Argument(help="EV date in YYYY-MM-DD format")]
 
 
-def _parse_ev_date(value: str | date) -> date:
-    if isinstance(value, date):
+def _parse_ev_date(value: str | dt.date) -> dt.date:
+    if isinstance(value, dt.date):
         return value
     try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
+        return dt.datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError as exc:
         raise typer.BadParameter(
             f"Invalid EV date {value!r}; expected YYYY-MM-DD.",
@@ -76,23 +78,19 @@ def _exit_on_partial_fetch_failures(failures: list[str]) -> None:
     raise typer.Exit(code=1)
 
 
-def _now_iso() -> str:
-    import datetime
-
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _iso_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _parse_index_timestamp(value: object) -> datetime | None:
-    import datetime
-
+def _parse_index_timestamp(value: object) -> dt.datetime | None:
     if not isinstance(value, str) or not value:
         return None
     try:
         if value.endswith("Z"):
-            return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-        parsed = datetime.datetime.fromisoformat(value)
+            return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = dt.datetime.fromisoformat(value)
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=datetime.timezone.utc)
+            return parsed.replace(tzinfo=dt.timezone.utc)
         return parsed
     except ValueError:
         return None
@@ -129,11 +127,10 @@ def _roster_is_fresh(
     if max_age_hours <= 0:
         return False
 
-    import datetime
     import time
 
-    now = datetime.datetime.now(datetime.timezone.utc)
-    max_age = datetime.timedelta(hours=max_age_hours)
+    now = dt.datetime.now(dt.timezone.utc)
+    max_age = dt.timedelta(hours=max_age_hours)
 
     if index_path is not None and index_path.exists() and election_id:
         entry = _find_index_entry(index_path, source_prefix, election_id)
@@ -147,11 +144,9 @@ def _roster_is_fresh(
 
 
 def _roster_mtime_iso(path: Path) -> str:
-    import datetime
-
-    mtime = datetime.datetime.fromtimestamp(
+    mtime = dt.datetime.fromtimestamp(
         path.stat().st_mtime,
-        tz=datetime.timezone.utc,
+        tz=dt.timezone.utc,
     )
     return mtime.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -160,17 +155,18 @@ def _election_index_entry_from_roster(
     *,
     source_election_id: str,
     election_name: str,
-    election_date: date,
+    election_date: dt.date,
     election_type: str,
     certified: bool | None,
     roster_path: Path,
     source_prefix: str,
     last_refreshed: str | None = None,
 ) -> dict[str, object]:
-    from .writer import audit_from_records, read_roster_csv
+    from .audit import audit_records
+    from .writer import read_roster_csv
 
     records = read_roster_csv(roster_path)
-    report = audit_from_records(
+    report = audit_records(
         records,
         election_id=source_election_id,
         source=source_prefix,
@@ -191,15 +187,15 @@ def _election_index_entry_from_roster(
     return entry
 
 
-def _legacy_election_date(meta: object | None) -> date:
+def _legacy_election_date(meta: object | None) -> dt.date:
     from .models import LegacyElection
 
     if isinstance(meta, LegacyElection):
         if meta.ev_dates:
             return meta.ev_dates[-1].date
         if meta.election_year is not None:
-            return date(meta.election_year, 11, 1)
-    return date.today()
+            return dt.date(meta.election_year, 11, 1)
+    return dt.date.today()
 
 
 def _existing_index_entries(index_path: Path | None) -> dict[str, dict[str, object]]:
@@ -218,7 +214,7 @@ def _resolve_last_refreshed(
     refreshed_ids: set[str],
 ) -> str:
     if election_id in refreshed_ids:
-        return _now_iso()
+        return _iso_now()
     existing = existing_entries.get(election_id, {})
     prior = existing.get("last_refreshed")
     if isinstance(prior, str) and prior:
@@ -254,7 +250,7 @@ def _build_civix_index_entries(
             _election_index_entry_from_roster(
                 source_election_id=election_id,
                 election_name=meta.election_name if meta else election_id,
-                election_date=meta.election_date if meta else date.today(),
+                election_date=meta.election_date if meta else dt.date.today(),
                 election_type=meta.election_type.value if meta else "unknown",
                 certified=meta.certified if meta else None,
                 roster_path=roster_path,
@@ -321,11 +317,9 @@ def _write_election_index(
     legacy_entries: list[dict[str, object]],
 ) -> bool:
     """Write index.json. Returns True when the file content changed."""
-    import datetime
-
     index_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "last_updated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "last_updated": _iso_now(),
         "civix": {"elections": civix_entries},
         "legacy": {"elections": legacy_entries},
     }
@@ -339,7 +333,9 @@ def _write_election_index(
     return True
 
 
-def _load_index_sections(index_path: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+def _load_index_sections(
+    index_path: Path,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     if not index_path.exists():
         return [], []
     data = json.loads(index_path.read_text())
@@ -496,7 +492,7 @@ def _prompt_civix_scrape_action() -> str:
     )
 
 
-def _prompt_civix_ev_date(election: object) -> date:
+def _prompt_civix_ev_date(election: object) -> dt.date:
     ev_dates = _sort_civix_ev_dates(election)
     if not ev_dates:
         typer.echo("Error: election has no early voting dates.", err=True)
@@ -514,7 +510,6 @@ def _run_civix_elections_interactive(elections: list[object]) -> None:
         typer.echo("No elections returned from Civix.", err=True)
         raise typer.Exit(code=1)
 
-    _echo_civix_elections_table(elections, numbered=True)
     election_id = _prompt_civix_election_id(elections)
     from .models import CivixElection
 
@@ -573,7 +568,9 @@ def _run_civix_elections_interactive(elections: list[object]) -> None:
 
 @civix_app.command("elections")
 def civix_elections_list(
-    output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
+    output: Annotated[
+        str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")
+    ] = "table",
     interactive: Annotated[
         bool | None,
         typer.Option(
@@ -616,9 +613,13 @@ def civix_elections_list(
 
 @civix_app.command("turnout")
 def civix_turnout_fetch(
-    election_id: Annotated[str, typer.Argument(help="Civix election ID (numeric string, e.g. '53813')")],
+    election_id: Annotated[
+        str, typer.Argument(help="Civix election ID (numeric string, e.g. '53813')")
+    ],
     ev_date: EvDateStr,
-    output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
+    output: Annotated[
+        str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")
+    ] = "table",
 ) -> None:
     """Fetch county EV turnout table for a Civix election + date."""
     from .civix import CivixClient
@@ -656,10 +657,17 @@ def civix_turnout_fetch(
 
 @civix_app.command("roster")
 def civix_roster_fetch(
-    election_id: Annotated[str, typer.Argument(help="Civix election ID (numeric string, e.g. '53813')")],
+    election_id: Annotated[
+        str, typer.Argument(help="Civix election ID (numeric string, e.g. '53813')")
+    ],
     ev_date: EvDateStr,
-    county: Annotated[str | None, typer.Option("--county", help="County name (e.g. HARRIS). Omit for all counties.")] = None,
-    out_dir: Annotated[Path | None, typer.Option("--out-dir", help="Directory to save roster CSVs.")] = None,
+    county: Annotated[
+        str | None,
+        typer.Option("--county", help="County name (e.g. HARRIS). Omit for all counties."),
+    ] = None,
+    out_dir: Annotated[
+        Path | None, typer.Option("--out-dir", help="Directory to save roster CSVs.")
+    ] = None,
     strategy: Annotated[
         str,
         typer.Option(
@@ -727,8 +735,8 @@ def civix_roster_fetch(
             )
             typer.echo(
                 f"{county_ref.name:<20}  {roster.total_voters:>8,} voters  "
-                f"(in-person: {sum(1 for r in roster.records if r.voting_method.value == 'IN-PERSON'):,}, "
-                f"mail-in: {sum(1 for r in roster.records if r.voting_method.value == 'MAIL-IN'):,})"
+                f"(in-person: {roster.in_person_count:,}, "
+                f"mail-in: {roster.mail_in_count:,})"
             )
             if out_dir is not None:
                 import csv
@@ -747,16 +755,22 @@ def civix_roster_fetch(
 
 @civix_app.command("fetch-all")
 def civix_fetch_all(
-    election_id: Annotated[str, typer.Argument(help="Civix election ID (numeric string, e.g. '53813')")],
+    election_id: Annotated[
+        str, typer.Argument(help="Civix election ID (numeric string, e.g. '53813')")
+    ],
     output_dir: Annotated[
         Path,
         typer.Option("--output-dir", help="Base output directory"),
     ] = Path("data/elections/civix"),
-    pace: Annotated[float, typer.Option("--pace", help="Seconds between requests (minimum 1.0)")] = 1.0,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print fetch plan without roster CSV requests")] = False,
+    pace: Annotated[
+        float, typer.Option("--pace", help="Seconds between requests (minimum 1.0)")
+    ] = 1.0,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print fetch plan without roster CSV requests")
+    ] = False,
     write_audit: Annotated[
         bool,
-        typer.Option("--audit", help="Run audit_from_records and write audit_ev JSON"),
+        typer.Option("--audit", help="Run audit_records and write audit_ev JSON"),
     ] = False,
     index_path: Annotated[
         Path,
@@ -766,14 +780,19 @@ def civix_fetch_all(
     """Fetch all EV dates for a Civix election into one per-election roster CSV."""
     import logging
 
+    from .audit import audit_records
     from .civix import CivixClient, fetch_county_roster
     from .http_transport import HTTP_FETCH_EXCEPTIONS, format_fetch_error
-    from .writer import accumulate_roster, audit_from_records, write_roster_csv
+    from .models import CountyTurnout
+    from .writer import (
+        accumulate_roster,
+        load_stored_turnout_for_audit,
+        write_roster_csv,
+        write_turnout_csv,
+    )
 
     logger = logging.getLogger(__name__)
-    pace_seconds = max(pace, 1.0)
-
-    with CivixClient(pace_seconds=pace_seconds) as client:
+    with CivixClient(pace_seconds=pace) as client:
         elections = client.list_elections()
 
     election = _resolve_civix_election(elections, election_id)
@@ -800,12 +819,17 @@ def civix_fetch_all(
 
     all_rosters = []
     fetch_failures: list[str] = []
-    with CivixClient(pace_seconds=pace_seconds) as client:
+    with CivixClient(pace_seconds=pace) as client:
         for ev in ev_dates:
             ev_date = ev.date
             turnout_rows = client.fetch_ev_turnout(
                 election_id=civix_id,
                 election_date=ev_date,
+            )
+            turnout_path = output_dir / election_id / f"turnout_ev_{ev_date.isoformat()}.csv"
+            write_turnout_csv(
+                [CountyTurnout(**row.model_dump()) for row in turnout_rows],
+                turnout_path,
             )
             roster_counties = [r for r in turnout_rows if r.roster_available]
             typer.echo(
@@ -856,9 +880,23 @@ def civix_fetch_all(
     typer.echo(f"Wrote: {output_path}")
 
     if write_audit:
-        report = audit_from_records(
+        audit_report_date = max(r.report_date for r in records)
+        data_root = (
+            output_dir.parent.parent
+            if output_dir.name in {"civix", "legacy"}
+            else output_dir
+        )
+        turnout = load_stored_turnout_for_audit(
+            data_root,
+            "civix",
+            election_id,
+            report_dates={r.report_date for r in records},
+        )
+        report = audit_records(
             records,
+            turnout=turnout,
             election_id=election_id,
+            report_date=audit_report_date,
             source="civix",
         )
         audit_path = output_dir / election_id / f"audit_ev_{election_id}.json"
@@ -876,6 +914,102 @@ def civix_fetch_all(
     _exit_on_partial_fetch_failures(fetch_failures)
 
 
+def _echo_gap_report_summary(report: object) -> None:
+    from .models import TurnoutRosterGapReport
+    from .terminal_report import print_gap_report_summary
+
+    if isinstance(report, TurnoutRosterGapReport):
+        print_gap_report_summary(report)
+
+
+@civix_app.command("gap-report")
+def civix_gap_report(
+    election_id: Annotated[
+        str, typer.Argument(help="Civix election ID (numeric string, e.g. '58315')")
+    ],
+    roster: Annotated[
+        Path | None,
+        typer.Option("--roster", help="Combined roster CSV (default: stored roster_ev file)"),
+    ] = None,
+    ev_date: EvDateStr | None = None,
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Election data directory"),
+    ] = Path("data/elections/civix"),
+    turnout_source: Annotated[
+        str,
+        typer.Option(
+            "--turnout-source",
+            help="Turnout data source: live (API), stored (saved CSV), or auto",
+        ),
+    ] = "auto",
+    output: Annotated[
+        str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")
+    ] = "table",
+    write_files: Annotated[
+        bool,
+        typer.Option("--write-files/--no-write-files", help="Write JSON + county CSV reports"),
+    ] = True,
+) -> None:
+    """Compare published Civix turnout vs scraped roster voters, county by county."""
+    from .gap_analysis import (
+        stored_gap_counties_csv_path,
+        stored_gap_report_path,
+        try_build_civix_gap_report,
+        write_gap_counties_csv,
+        write_gap_report_json,
+    )
+    from .writer import read_roster_csv
+
+    if turnout_source not in {"live", "stored", "auto"}:
+        typer.echo("Error: --turnout-source must be live, stored, or auto.", err=True)
+        raise typer.Exit(code=1)
+
+    roster_path = roster or (output_dir / election_id / f"roster_ev_{election_id}.csv")
+    if not roster_path.exists():
+        typer.echo(f"Error: roster file not found: {roster_path}", err=True)
+        raise typer.Exit(code=1)
+
+    roster_records = read_roster_csv(roster_path)
+    if not roster_records:
+        typer.echo(f"Error: roster file is empty: {roster_path}", err=True)
+        raise typer.Exit(code=1)
+
+    data_root = (
+        output_dir.parent.parent
+        if output_dir.name in {"civix", "legacy"}
+        else output_dir.parent
+    )
+
+    parsed_ev_date = (
+        _parse_ev_date(ev_date)
+        if ev_date is not None
+        else max(rec.report_date for rec in roster_records)
+    )
+    report = try_build_civix_gap_report(
+        roster_path=roster_path,
+        roster_records=roster_records,
+        ev_date=parsed_ev_date,
+        turnout_source=turnout_source,
+    )
+    if report is None:
+        typer.echo("Error: could not build gap report for this roster/election.", err=True)
+        raise typer.Exit(code=1)
+
+    if write_files:
+        json_path = stored_gap_report_path(data_root, "civix", election_id)
+        csv_path = stored_gap_counties_csv_path(data_root, "civix", election_id)
+        write_gap_report_json(report, json_path)
+        write_gap_counties_csv(report, csv_path)
+        typer.echo(f"Wrote: {json_path}")
+        typer.echo(f"Wrote: {csv_path}")
+
+    if output == "json":
+        typer.echo(json.dumps(report.model_dump(mode="json"), indent=2))
+    else:
+        _echo_gap_report_summary(report)
+
+
 @civix_app.command("refresh-all")
 def civix_refresh_all(
     output_dir: Annotated[
@@ -886,7 +1020,9 @@ def civix_refresh_all(
         Path,
         typer.Option("--index-path", help="Election index JSON path"),
     ] = _DEFAULT_INDEX_PATH,
-    pace: Annotated[float, typer.Option("--pace", help="Seconds between requests (minimum 1.0)")] = 1.0,
+    pace: Annotated[
+        float, typer.Option("--pace", help="Seconds between requests (minimum 1.0)")
+    ] = 1.0,
     write_audit: Annotated[
         bool,
         typer.Option("--audit", help="Write audit_ev JSON for refreshed elections"),
@@ -899,8 +1035,7 @@ def civix_refresh_all(
     """Discover certified Civix elections and refresh stale roster files."""
     from .civix import CivixClient
 
-    pace_seconds = max(pace, 1.0)
-    with CivixClient(pace_seconds=pace_seconds) as client:
+    with CivixClient(pace_seconds=pace) as client:
         elections = client.list_elections()
 
     certified = [e for e in elections if e.certified]
@@ -931,7 +1066,7 @@ def civix_refresh_all(
             civix_fetch_all,
             election_id=election_id,
             output_dir=output_dir,
-            pace=pace_seconds,
+            pace=pace,
             dry_run=False,
             write_audit=write_audit,
             index_path=index_path,
@@ -972,7 +1107,9 @@ def _exit_on_legacy_api_error(exc: ValueError | RuntimeError) -> None:
 
 @legacy_app.command("elections")
 def legacy_elections_list(
-    output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
+    output: Annotated[
+        str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")
+    ] = "table",
 ) -> None:
     """List all elections from the legacy SOS HTML portal."""
     from . import legacy_api
@@ -996,9 +1133,13 @@ def legacy_elections_list(
 
 @legacy_app.command("turnout")
 def legacy_turnout_fetch(
-    source_election_id: Annotated[str, typer.Argument(help="Legacy SOS election ID string (e.g. '49664')")],
+    source_election_id: Annotated[
+        str, typer.Argument(help="Legacy SOS election ID string (e.g. '49664')")
+    ],
     ev_date: EvDateStr,
-    output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
+    output: Annotated[
+        str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")
+    ] = "table",
 ) -> None:
     """Fetch county EV turnout from the legacy SOS portal."""
     from . import legacy_api
@@ -1033,10 +1174,17 @@ def legacy_turnout_fetch(
 
 @legacy_app.command("roster")
 def legacy_roster_fetch(
-    source_election_id: Annotated[str, typer.Argument(help="Legacy SOS election ID string (e.g. '49664')")],
+    source_election_id: Annotated[
+        str, typer.Argument(help="Legacy SOS election ID string (e.g. '49664')")
+    ],
     ev_date: EvDateStr,
-    strategy: Annotated[str, typer.Option("--strategy", help="Fetch strategy: 'A' (per-county loop) or 'B' (bulk ZIP)")] = "A",
-    out_dir: Annotated[Path | None, typer.Option("--out-dir", help="Directory to save roster output.")] = None,
+    strategy: Annotated[
+        str,
+        typer.Option("--strategy", help="Fetch strategy: 'A' (per-county loop) or 'B' (bulk ZIP)"),
+    ] = "A",
+    out_dir: Annotated[
+        Path | None, typer.Option("--out-dir", help="Directory to save roster output.")
+    ] = None,
 ) -> None:
     """Fetch EV voter rosters from the legacy SOS portal.
 
@@ -1091,7 +1239,9 @@ def legacy_roster_fetch(
 
 @legacy_app.command("fetch-all")
 def legacy_fetch_all(
-    source_election_id: Annotated[str, typer.Argument(help="Legacy SOS election ID string (e.g. '49664')")],
+    source_election_id: Annotated[
+        str, typer.Argument(help="Legacy SOS election ID string (e.g. '49664')")
+    ],
     output_dir: Annotated[
         Path,
         typer.Option("--output-dir", help="Base output directory"),
@@ -1121,19 +1271,20 @@ def legacy_fetch_all(
     import logging
 
     from . import legacy_api
+    from .audit import audit_records
+    from .http_transport import HTTP_FETCH_EXCEPTIONS, format_fetch_error
     from .models import CountyRoster
     from .roster import fetch_roster_strategy_a
     from .session import LegacySession
     from .turnout import extract_county_ids, fetch_ev_details_html
-    from .writer import accumulate_roster, audit_from_records, write_roster_csv
+    from .writer import accumulate_roster, load_stored_turnout_for_audit, write_roster_csv
 
     logger = logging.getLogger(__name__)
-    pace_seconds = max(pace, 1.0)
     filter_ids: set[str] | None = None
     if county_ids:
         filter_ids = {part.strip() for part in county_ids.split(",") if part.strip()}
 
-    elections = legacy_api.list_elections(pace_seconds=pace_seconds)
+    elections = legacy_api.list_elections(pace=pace)
     election = next(
         (e for e in elections if e.source_election_id == source_election_id),
         None,
@@ -1148,7 +1299,7 @@ def legacy_fetch_all(
 
     all_rosters: list[CountyRoster] = []
     fetch_failures: list[str] = []
-    with LegacySession(pace_seconds=pace_seconds) as session:
+    with LegacySession(pace_seconds=pace) as session:
         ev_dates = session.prime_election(source_election_id)
 
         if not ev_dates:
@@ -1174,7 +1325,19 @@ def legacy_fetch_all(
             date_label = ev_date.isoformat()
             typer.echo(f"[{date_label}] Fetching counties...", nl=False)
 
-            html = fetch_ev_details_html(session, source_election_id, ev_date)
+            try:
+                html = fetch_ev_details_html(session, source_election_id, ev_date)
+            except (*HTTP_FETCH_EXCEPTIONS, ValueError, RuntimeError) as exc:
+                detail = format_fetch_error(exc)
+                fetch_failures.append(f"{date_label}: turnout HTML failed ({detail})")
+                logger.warning(
+                    "Turnout HTML fetch failed for election %s on %s: %s",
+                    source_election_id,
+                    date_label,
+                    detail,
+                )
+                continue
+
             id_by_name = extract_county_ids(html)
             if not id_by_name:
                 typer.echo("  warning: no county IDs in turnout HTML", err=True)
@@ -1209,13 +1372,14 @@ def legacy_fetch_all(
                         source_election_id,
                         ev_date,
                         [county_id],
-                        pace_seconds=pace_seconds,
+                        pace_seconds=pace,
                         county_names=county_names,
                         skip_prime=True,
                     )
                     date_rosters.extend(county_rosters)
-                except RuntimeError:
-                    fetch_failures.append(f"{county_label}/{date_label}: county fetch failed")
+                except (*HTTP_FETCH_EXCEPTIONS, ValueError, RuntimeError) as exc:
+                    detail = format_fetch_error(exc)
+                    fetch_failures.append(f"{county_label}/{date_label}: {detail}")
                     logger.warning(
                         "County fetch failed for county_id=%s on %s.",
                         county_id,
@@ -1262,9 +1426,23 @@ def legacy_fetch_all(
     typer.echo(f"Wrote: {roster_path}")
 
     if audit:
-        report = audit_from_records(
+        audit_report_date = max(r.report_date for r in records)
+        data_root = (
+            output_dir.parent.parent
+            if output_dir.name in {"civix", "legacy"}
+            else output_dir
+        )
+        turnout = load_stored_turnout_for_audit(
+            data_root,
+            "legacy",
+            source_election_id,
+            report_dates={r.report_date for r in records},
+        )
+        report = audit_records(
             records,
+            turnout=turnout,
             election_id=source_election_id,
+            report_date=audit_report_date,
             source="legacy",
         )
         audit_path.write_text(json.dumps(report.model_dump(mode="json"), indent=2))
@@ -1306,8 +1484,7 @@ def legacy_refresh_all(
     """Refresh legacy elections that already have on-disk roster files."""
     from . import legacy_api
 
-    pace_seconds = max(pace, 1.0)
-    elections = legacy_api.list_elections(pace_seconds=pace_seconds)
+    elections = legacy_api.list_elections(pace=pace)
     typer.echo(f"Legacy elections on portal: {len(elections)}")
 
     attempted = 0
@@ -1341,7 +1518,7 @@ def legacy_refresh_all(
             legacy_fetch_all,
             source_election_id=source_election_id,
             output_dir=output_dir,
-            pace=pace_seconds,
+            pace=pace,
             dry_run=False,
             county_ids=None,
             audit=audit,
@@ -1384,13 +1561,20 @@ def audit_run(
             help="Optional YYYY-MM-DD report label (default: latest date in roster CSV)",
         ),
     ] = None,
-    source: Annotated[str, typer.Option("--source", help="Data source: 'civix' or 'legacy'")] = "civix",
-    data_dir: Annotated[Path, typer.Option("--data-dir", help="Root data directory")] = Path("data"),
-    output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
+    source: Annotated[
+        str, typer.Option("--source", help="Data source: 'civix' or 'legacy'")
+    ] = "civix",
+    data_dir: Annotated[Path, typer.Option("--data-dir", help="Root data directory")] = Path(
+        "data"
+    ),
+    output: Annotated[
+        str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")
+    ] = "table",
 ) -> None:
     """Run data quality audit on a stored combined roster (roster_ev_{id}.csv)."""
+    from .audit import audit_records
     from .writer import (
-        audit_from_records,
+        load_stored_turnout_for_audit,
         read_roster_csv,
         report_date_from_roster_csv,
         stored_audit_ev_path,
@@ -1408,14 +1592,20 @@ def audit_run(
         raise typer.Exit(code=1)
 
     parsed_date = (
-        _parse_ev_date(ev_date)
-        if ev_date is not None
-        else report_date_from_roster_csv(roster_path)
+        _parse_ev_date(ev_date) if ev_date is not None else report_date_from_roster_csv(roster_path)
     )
 
     records = read_roster_csv(roster_path)
-    report = audit_from_records(
+    report_dates = {r.report_date for r in records}
+    turnout = load_stored_turnout_for_audit(
+        data_dir,
+        source_key,
+        election_id,
+        report_dates=report_dates or None,
+    )
+    report = audit_records(
         records,
+        turnout=turnout,
         election_id=election_id,
         report_date=parsed_date,
         source=source_key,
@@ -1424,7 +1614,9 @@ def audit_run(
     if output == "json":
         typer.echo(json.dumps(report.model_dump(mode="json"), indent=2))
     else:
-        typer.echo(f"Audit Report — Election {report.election_id}  |  {report.report_date}  |  {report.source}")
+        typer.echo(
+            f"Audit Report — Election {report.election_id}  |  {report.report_date}  |  {report.source}"
+        )
         typer.echo(f"  Total records        : {report.total_records:,}")
         typer.echo(f"  Unique VUIDs         : {report.unique_vuids:,}")
         typer.echo(f"  Duplicate VUIDs      : {report.duplicate_vuid_count:,}")
@@ -1446,8 +1638,12 @@ def audit_run(
 @audit_app.command("run-inline")
 def audit_run_inline(
     csv_path: Annotated[Path, typer.Argument(help="Path to roster CSV file")],
-    election_id: Annotated[str | None, typer.Option("--election-id", help="Election ID override")] = None,
-    output: Annotated[str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")] = "table",
+    election_id: Annotated[
+        str | None, typer.Option("--election-id", help="Election ID override")
+    ] = None,
+    output: Annotated[
+        str, typer.Option("--output", "-o", help="Output format: 'table' or 'json'")
+    ] = "table",
 ) -> None:
     """Run data quality audit inline on a CSV file (no stored roster required)."""
     from .audit import audit_from_csv
@@ -1458,22 +1654,18 @@ def audit_run_inline(
 
     # Infer election_id and date from filename if not provided (e.g. roster_2024-10-21.csv)
     stem = csv_path.stem  # e.g. "roster_2024-10-21"
-    inferred_date: date | None = None
+    inferred_date: dt.date | None = None
     inferred_id: str | None = election_id
 
     parts = stem.split("_")
     for part in parts:
         try:
-            from datetime import datetime
-
-            inferred_date = datetime.strptime(part, "%Y-%m-%d").date()
+            inferred_date = dt.datetime.strptime(part, "%Y-%m-%d").date()
         except ValueError:
             pass
 
     if inferred_date is None:
-        import datetime
-
-        inferred_date = datetime.datetime.now(datetime.timezone.utc).date()
+        inferred_date = dt.datetime.now(dt.timezone.utc).date()
 
     if inferred_id is None:
         inferred_id = "unknown"
@@ -1506,33 +1698,73 @@ def audit_run_inline(
 # ---------------------------------------------------------------------------
 
 _STANDARD_FIELDS = {
-    "vuid":       "Texas Voter Unique ID (join key — REQUIRED)",
-    "cd":         "Congressional District",
-    "hd":         "State House District",
-    "sd":         "State Senate District",
-    "county":     "County",
-    "precinct":   "Precinct",
-    "last_name":  "Last Name",
+    "vuid": "Texas Voter Unique ID (join key — REQUIRED)",
+    "cd": "Congressional District",
+    "hd": "State House District",
+    "sd": "State Senate District",
+    "county": "County",
+    "precinct": "Precinct",
+    "last_name": "Last Name",
     "first_name": "First Name",
-    "full_name":  "Full Name (alternative to first/last)",
-    "dob":        "Date of Birth (for age bracket — YYYYMMDD or YYYY-MM-DD)",
-    "sex":        "Sex / Gender",
-    "hispanic":   "Hispanic flag",
-    "status":     "Voter registration status (V=active, S=suspense)",
+    "full_name": "Full Name (alternative to first/last)",
+    "dob": "Date of Birth (for age bracket — YYYYMMDD or YYYY-MM-DD)",
+    "sex": "Sex / Gender",
+    "hispanic": "Hispanic flag",
+    "status": "Voter registration status (V=active, S=suspense)",
 }
 
 
 @voterfile_app.command("match")
 def voterfile_match(
-    roster_csv: Annotated[Path, typer.Argument(help="EV roster CSV produced by 'fetch-all' or 'writer.py'")],
+    roster_csv: Annotated[
+        Path, typer.Argument(help="EV roster CSV produced by 'fetch-all' or 'writer.py'")
+    ],
     voterfile: Annotated[Path, typer.Argument(help="Statewide voterfile CSV")],
-    output_dir: Annotated[Path | None, typer.Option("--output-dir", "-d", help="Directory for output files")] = None,
-    mapping_file: Annotated[Path | None, typer.Option("--mapping-file", "-m", help="Path to a saved column-mapping JSON")] = None,
-    save_mapping: Annotated[bool, typer.Option("--save-mapping/--no-save-mapping", help="Save detected mapping as a sidecar .json")] = True,
-    no_interactive: Annotated[bool, typer.Option("--no-interactive", help="Accept auto-detected mapping without prompting")] = False,
-    redetect: Annotated[bool, typer.Option("--redetect", help="Re-scan voterfile headers instead of loading a saved sidecar")] = False,
-    count_voterfile: Annotated[bool, typer.Option("--count-voterfile", help="Count all voterfile rows (slow on large files)")] = False,
-    report_only: Annotated[bool, typer.Option("--report-only", help="Skip enriched CSV output; write match report only")] = False,
+    output_dir: Annotated[
+        Path | None, typer.Option("--output-dir", "-d", help="Directory for output files")
+    ] = None,
+    mapping_file: Annotated[
+        Path | None,
+        typer.Option("--mapping-file", "-m", help="Path to a saved column-mapping JSON"),
+    ] = None,
+    save_mapping: Annotated[
+        bool,
+        typer.Option(
+            "--save-mapping/--no-save-mapping", help="Save detected mapping as a sidecar .json"
+        ),
+    ] = True,
+    no_interactive: Annotated[
+        bool,
+        typer.Option("--no-interactive", help="Accept auto-detected mapping without prompting"),
+    ] = False,
+    redetect: Annotated[
+        bool,
+        typer.Option(
+            "--redetect", help="Re-scan voterfile headers instead of loading a saved sidecar"
+        ),
+    ] = False,
+    count_voterfile: Annotated[
+        bool,
+        typer.Option("--count-voterfile", help="Count all voterfile rows (slow on large files)"),
+    ] = False,
+    report_only: Annotated[
+        bool,
+        typer.Option("--report-only", help="Skip enriched CSV output; write match report only"),
+    ] = False,
+    gap_report: Annotated[
+        bool,
+        typer.Option(
+            "--gap-report/--no-gap-report",
+            help="Include turnout vs roster gap analysis in the match summary",
+        ),
+    ] = True,
+    gap_turnout_source: Annotated[
+        str,
+        typer.Option(
+            "--gap-turnout-source",
+            help="Turnout source for gap analysis: live, stored, or auto",
+        ),
+    ] = "auto",
 ) -> None:
     """Match an EV roster against a statewide voterfile.
 
@@ -1593,8 +1825,7 @@ def voterfile_match(
         mapping = load_mapping(sidecar)
         typer.echo(f"Loaded saved column mapping from {sidecar.name}")
         confidence = {
-            f: ("✓ Saved" if getattr(mapping, f) else "✗ Not mapped")
-            for f in _STANDARD_FIELDS
+            f: ("✓ Saved" if getattr(mapping, f) else "✗ Not mapped") for f in _STANDARD_FIELDS
         }
     else:
         if redetect and sidecar.exists():
@@ -1636,16 +1867,23 @@ def voterfile_match(
                 entered = entered.strip()
                 # Validate that the entered column exists
                 if entered and entered not in all_columns:
-                    typer.echo(f"    Warning: '{entered}' not found in voterfile columns — skipping.", err=True)
+                    typer.echo(
+                        f"    Warning: '{entered}' not found in voterfile columns — skipping.",
+                        err=True,
+                    )
                     entered = ""
                 mapping_dict[field] = entered or None
 
             from .models import ColumnMapping as _CM2
+
             mapping = _CM2(**mapping_dict)
 
     # Check VUID is mapped
     if not mapping.vuid:
-        typer.echo("Error: VUID column is required for matching. Please map it to a voterfile column.", err=True)
+        typer.echo(
+            "Error: VUID column is required for matching. Please map it to a voterfile column.",
+            err=True,
+        )
         raise typer.Exit(code=1)
 
     col_conflicts = mapping_column_conflicts(mapping)
@@ -1677,20 +1915,41 @@ def voterfile_match(
         typer.echo(f"Error: match failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     report.roster_path = str(roster_csv)
+    stem = roster_csv.stem
+
+    gap_report_path: Path | None = None
+    gap_counties_path: Path | None = None
+    if gap_report:
+        if gap_turnout_source not in {"live", "stored", "auto"}:
+            typer.echo("Error: --gap-turnout-source must be live, stored, or auto.", err=True)
+            raise typer.Exit(code=1)
+        from .gap_analysis import (
+            try_build_civix_gap_report,
+            write_gap_counties_csv,
+            write_gap_report_json,
+        )
+
+        gap = try_build_civix_gap_report(
+            roster_path=roster_csv,
+            roster_records=roster_records,
+            turnout_source=gap_turnout_source,
+        )
+        if gap is not None:
+            report.turnout_roster_gap = gap
+            gap_report_path = out_dir / f"gap_report_{stem}.json"
+            gap_counties_path = out_dir / f"gap_counties_{stem}.csv"
+            write_gap_report_json(gap, gap_report_path)
+            write_gap_counties_csv(gap, gap_counties_path)
 
     # Save mapping sidecar after a successful match
     if save_mapping:
-        import datetime as _dt
-        from datetime import timezone
-
         mapping.voterfile_path = str(voterfile)
         if not mapping.created_at:
-            mapping.created_at = _dt.datetime.now(timezone.utc).isoformat()
+            mapping.created_at = dt.datetime.now(dt.timezone.utc).isoformat()
         _save_mapping(mapping, sidecar)
         typer.echo(f"  Column mapping saved to {sidecar.name}")
 
     # ── Step 5: Output ───────────────────────────────────────────────────────
-    stem = roster_csv.stem
     report_path = out_dir / f"match_report_{stem}.json"
     write_match_report_json(report, report_path)
 
@@ -1699,48 +1958,15 @@ def voterfile_match(
         write_enriched_csv(enriched, enriched_path)
 
     # ── Step 6: Print summary ────────────────────────────────────────────────
-    typer.echo("")
-    typer.echo("━" * 60)
-    typer.echo("  Match Summary")
-    typer.echo("━" * 60)
-    typer.echo(f"  Roster records    : {report.total_roster_records:>10,}")
-    typer.echo(f"  Matched           : {report.matched_count:>10,}  ({report.match_rate:.1%})")
-    typer.echo(f"  Unmatched         : {report.unmatched_count:>10,}")
-    if report.total_voterfile_records is not None:
-        typer.echo(f"  Voterfile rows    : {report.total_voterfile_records:>10,}")
-    typer.echo("")
+    from .terminal_report import print_voterfile_match_summary
 
-    if report.by_age_bracket:
-        typer.echo("  Age brackets (matched voters):")
-        for bracket, count in sorted(report.by_age_bracket.items()):
-            bar = "█" * min(40, count // max(1, report.matched_count // 40))
-            typer.echo(f"    {bracket:<8}  {count:>8,}  {bar}")
-        typer.echo("")
-
-    if report.by_voting_method:
-        typer.echo("  Voting method (matched voters):")
-        for method, count in sorted(report.by_voting_method.items()):
-            typer.echo(f"    {method:<12}  {count:>8,}")
-        typer.echo("")
-
-    if report.by_cd:
-        typer.echo(f"  Congressional districts: {len(report.by_cd)} found")
-    if report.by_hd:
-        typer.echo(f"  State House districts:   {len(report.by_hd)} found")
-    if report.by_sd:
-        typer.echo(f"  State Senate districts:  {len(report.by_sd)} found")
-
-    if report.findings:
-        typer.echo("")
-        typer.echo("  Audit findings:")
-        for finding in report.findings:
-            typer.echo(f"    [{finding.severity.upper()}] {finding.finding_type}: {finding.detail}")
-
-    typer.echo("")
-    if not report_only:
-        typer.echo(f"  Enriched CSV  → {enriched_path}")
-    typer.echo(f"  Match report  → {report_path}")
-    typer.echo("")
+    print_voterfile_match_summary(
+        report,
+        report_path=report_path,
+        enriched_path=enriched_path if not report_only else None,
+        gap_report_path=gap_report_path,
+        gap_counties_path=gap_counties_path,
+    )
 
 
 @voterfile_app.command("detect-columns")

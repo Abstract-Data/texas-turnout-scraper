@@ -42,7 +42,9 @@ def _civix_election() -> CivixElection:
     )
 
 
-def _minimal_roster(path: Path, *, election_id: str = "53813", report_date: date | None = None) -> None:
+def _minimal_roster(
+    path: Path, *, election_id: str = "53813", report_date: date | None = None
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_roster_csv(
         [
@@ -176,7 +178,9 @@ def test_civix_fetch_all_continues_on_requests_http_error(tmp_path: Path) -> Non
     assert (tmp_path / "civix" / "53813" / "roster_ev_53813.csv").exists()
 
 
-def test_audit_run_uses_combined_roster_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_audit_run_uses_combined_roster_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     roster_path = stored_roster_ev_path(tmp_path, "civix", "53813")
     _minimal_roster(roster_path)
 

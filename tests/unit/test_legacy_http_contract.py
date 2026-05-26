@@ -70,14 +70,12 @@ def test_roster_post_includes_id_town() -> None:
     respx.post(f"{BASE_URL}/Elections/getElectionEVDates.do").mock(
         return_value=httpx.Response(200, text=_load_text("legacy_ev_dates_49664.html"))
     )
-    respx.post(f"{BASE_URL}/Elections/downloadVoterInfoReport.do").mock(
-        side_effect=roster_handler
-    )
+    respx.post(f"{BASE_URL}/Elections/downloadVoterInfoReport.do").mock(side_effect=roster_handler)
 
     session = _legacy_session()
     try:
         session.prime_election(_ELECTION_ID)
-        session._post_form(
+        session.post_form(
             "/Elections/downloadVoterInfoReport.do",
             legacy_ev_form_fields(_ELECTION_ID, _EV_DATE, id_town="149"),
         )

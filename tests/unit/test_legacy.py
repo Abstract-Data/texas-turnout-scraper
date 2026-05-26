@@ -16,7 +16,11 @@ from texas_turnout_scraper.legacy_forms import legacy_ev_form_fields
 from texas_turnout_scraper.models import LegacyElection
 from texas_turnout_scraper.roster import _parse_county_csv, fetch_roster_strategy_a
 from texas_turnout_scraper.session import LegacySession
-from texas_turnout_scraper.turnout import extract_county_ids, fetch_turnout
+from texas_turnout_scraper.turnout import (
+    _detect_column_map,
+    extract_county_ids,
+    fetch_turnout,
+)
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "early_voting"
 BASE_URL = LegacySession.BASE_URL
@@ -42,6 +46,30 @@ def test_legacy_ev_form_fields_turnout_shape() -> None:
 def test_legacy_ev_form_fields_roster_includes_id_town() -> None:
     fields = legacy_ev_form_fields("49664", date(2024, 10, 21), id_town="149")
     assert fields["idTown"] == "149"
+
+
+# ---------------------------------------------------------------------------
+# turnout column detection
+# ---------------------------------------------------------------------------
+
+
+def test_detect_column_map_maps_county_and_registered_voters() -> None:
+    from bs4 import BeautifulSoup
+
+    html = """
+    <table>
+      <tr><th>COUNTY</th><th>REGISTERED VOTERS</th><th>IN PERSON</th><th>MAIL</th></tr>
+      <tr><td>HARRIS</td><td>1,000</td><td>50</td><td>10</td></tr>
+    </table>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table")
+    assert table is not None
+    rows = table.find_all("tr")
+    col_map = _detect_column_map(rows)
+    assert col_map is not None
+    assert "county" in col_map
+    assert "registered_voters" in col_map
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +260,7 @@ def test_parse_county_csv_id_voter_always_string() -> None:
 
 def test_parse_county_csv_zfills_short_vuid() -> None:
     csv_text = (
-        '"VOTER_NAME","ID_VOTER","VOTING_METHOD","PRECINCT"\n'
-        '"DOE, TEST","12345","IN-PERSON","1"\n'
+        '"VOTER_NAME","ID_VOTER","VOTING_METHOD","PRECINCT"\n"DOE, TEST","12345","IN-PERSON","1"\n'
     )
     roster = _parse_county_csv(
         raw_text=csv_text,
@@ -440,8 +467,8 @@ def test_legacy_session_pace_enforced() -> None:
     try:
         session._last_request_at = time.monotonic()
         start = time.monotonic()
-        session._pace()
-        session._pace()
+        session.pace()
+        session.pace()
         elapsed = time.monotonic() - start
         assert elapsed >= 0.1
     finally:

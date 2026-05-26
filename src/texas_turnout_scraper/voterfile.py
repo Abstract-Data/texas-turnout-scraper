@@ -32,6 +32,7 @@ import csv
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
 
@@ -294,7 +295,7 @@ def match_voterfile_to_roster(
     voterfile_path: Path,
     mapping: ColumnMapping,
     reference_date: date | None = None,
-    progress_callback: callable | None = None,
+    progress_callback: Callable[[], None] | None = None,
     *,
     count_voterfile: bool = False,
 ) -> tuple[list[EnrichedVoterRecord], VoterfileMatchReport]:

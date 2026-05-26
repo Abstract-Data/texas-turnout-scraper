@@ -15,6 +15,8 @@ HTTP flow:
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from .http_transport import HttpBackend, PacedHttpClient
@@ -36,7 +38,7 @@ class LegacySession:
     Example::
 
         with LegacySession(pace_seconds=1.0) as sess:
-            resp = sess._post_form("/Elections/getElectionEVDates.do",
+            resp = sess.post_form("/Elections/getElectionEVDates.do",
                                    {"idElection": "49664"})
     """
 
@@ -49,7 +51,7 @@ class LegacySession:
         timeout: float = 30.0,
         http_backend: HttpBackend = "cloudscraper",
     ) -> None:
-        self._pace_seconds = pace_seconds
+        self._pace_seconds = max(pace_seconds, self.DEFAULT_PACE)
         self._timeout = timeout
         self._last_request_at: float = 0.0
         self._client = PacedHttpClient(
@@ -61,6 +63,11 @@ class LegacySession:
         self._primed_election_id: str | None = None
         self._cached_ev_dates: list[LegacyEVDate] | None = None
         self._election_details_html: str | None = None
+
+    @property
+    def cached_election_html(self) -> str | None:
+        """HTML from the initial ``getElectionDetails.do`` response, if established."""
+        return self._election_details_html
 
     # ------------------------------------------------------------------
     # Session establishment
@@ -78,10 +85,7 @@ class LegacySession:
         Returns:
             Available early-voting dates for the election.
         """
-        if (
-            self._primed_election_id == source_election_id
-            and self._cached_ev_dates is not None
-        ):
+        if self._primed_election_id == source_election_id and self._cached_ev_dates is not None:
             return self._cached_ev_dates
 
         from .elections import get_ev_dates
@@ -104,58 +108,60 @@ class LegacySession:
         self._cached_ev_dates = None
         self._election_details_html = None
 
-        self._pace()
+        self.pace()
         resp = self._client.get("/Elections/getElectionDetails.do")
         resp.raise_for_status()
         self._election_details_html = resp.text
         self._last_request_at = time.monotonic()
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Public HTTP surface
     # ------------------------------------------------------------------
 
-    def _pace(self) -> None:
+    def pace(self) -> None:
         """Block until at least ``pace_seconds`` have elapsed since the last request."""
         elapsed = time.monotonic() - self._last_request_at
         remaining = self._pace_seconds - elapsed
         if remaining > 0:
             time.sleep(remaining)
 
-    def _post_form(self, path: str, data: dict[str, str]) -> Any:
-        """Submit a rate-paced ``application/x-www-form-urlencoded`` POST.
-
-        Args:
-            path: URL path relative to :attr:`BASE_URL`, e.g.
-                ``"/Elections/getElectionEVDates.do"``.
-            data: Form fields to encode in the request body.
-
-        Returns:
-            HTTP response (httpx or requests).
-
-        Raises:
-            HTTP error if the server returns a non-2xx status.
-        """
-        self._pace()
+    def post_form(self, path: str, data: dict[str, str]) -> Any:
+        """Submit a rate-paced ``application/x-www-form-urlencoded`` POST."""
+        self.pace()
         resp = self._client.post(path, data=data)
         self._last_request_at = time.monotonic()
         resp.raise_for_status()
         return resp
 
     def get(self, path: str, **kwargs: object) -> Any:
-        """Rate-paced GET request.
-
-        Args:
-            path: URL path relative to :attr:`BASE_URL`.
-            **kwargs: Extra keyword arguments forwarded to the HTTP client.
-
-        Returns:
-            HTTP response (httpx or requests).
-        """
-        self._pace()
+        """Rate-paced GET request."""
+        self.pace()
         resp = self._client.get(path, **kwargs)  # type: ignore[arg-type]
         self._last_request_at = time.monotonic()
         resp.raise_for_status()
         return resp
+
+    @contextmanager
+    def stream(self, method: str, path: str, **kwargs: object) -> Iterator[Any]:
+        """Stream a request body (delegates to :class:`PacedHttpClient`)."""
+        self.pace()
+        with self._client.stream(method, path, **kwargs) as response:  # type: ignore[arg-type]
+            self._last_request_at = time.monotonic()
+            yield response
+
+    @contextmanager
+    def with_pace(self, pace_seconds: float) -> Iterator[None]:
+        """Temporarily override ``pace_seconds`` for a nested block."""
+        prior = self._pace_seconds
+        self._pace_seconds = max(pace_seconds, self.DEFAULT_PACE)
+        try:
+            yield
+        finally:
+            self._pace_seconds = prior
+
+    # Backward-compatible aliases (tests and external callers may still use these)
+    _pace = pace
+    _post_form = post_form
 
     # ------------------------------------------------------------------
     # Lifecycle

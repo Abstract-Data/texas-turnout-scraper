@@ -12,6 +12,7 @@ DuckDB-dependent tests (match_voterfile_to_roster) use the
 tests/fixtures/voterfiles/sample_voterfile.csv fixture file directly
 and are skipped automatically if duckdb is not installed.
 """
+
 from __future__ import annotations
 
 import csv
@@ -43,6 +44,7 @@ from texas_turnout_scraper.voterfile import (
 
 try:
     import duckdb as _duckdb  # noqa: F401
+
     _HAS_DUCKDB = True
 except ImportError:
     _HAS_DUCKDB = False
@@ -67,6 +69,7 @@ _REF = date(2026, 6, 1)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _voter(
     vuid: str = "0000000001",
@@ -126,9 +129,20 @@ def _write_csv(tmp_path: Path, rows: list[dict], filename: str = "voterfile.csv"
 
 class TestDetectColumnsExactMatch:
     def test_vuid_exact(self, tmp_path):
-        path = _write_csv(tmp_path, [{"VUID": "1", "COUNTY": "HARRIS", "PCT": "0510",
-                                       "DOB": "19850315", "SEX": "M", "STATUS": "V",
-                                       "HISPANIC": "N"}])
+        path = _write_csv(
+            tmp_path,
+            [
+                {
+                    "VUID": "1",
+                    "COUNTY": "HARRIS",
+                    "PCT": "0510",
+                    "DOB": "19850315",
+                    "SEX": "M",
+                    "STATUS": "V",
+                    "HISPANIC": "N",
+                }
+            ],
+        )
         mapping, confidence = detect_columns(path)
         assert mapping.vuid == "VUID"
         assert confidence["vuid"] == "✓ Exact"
@@ -160,22 +174,25 @@ class TestDetectColumnsExactMatch:
 
 class TestDetectColumnsPrefixPattern:
     def test_cd_prefix_planc(self, tmp_path):
-        path = _write_csv(tmp_path, [{"VUID": "1", "CDPLANC2333": "7",
-                                       "HD2022": "145", "SD2022": "6"}])
+        path = _write_csv(
+            tmp_path, [{"VUID": "1", "CDPLANC2333": "7", "HD2022": "145", "SD2022": "6"}]
+        )
         mapping, confidence = detect_columns(path)
         assert mapping.cd == "CDPLANC2333"
         assert confidence["cd"] == "~ Prefix"
 
     def test_hd_prefix_year(self, tmp_path):
-        path = _write_csv(tmp_path, [{"VUID": "1", "CDPLANC2333": "7",
-                                       "HD2022": "145", "SD2022": "6"}])
+        path = _write_csv(
+            tmp_path, [{"VUID": "1", "CDPLANC2333": "7", "HD2022": "145", "SD2022": "6"}]
+        )
         mapping, confidence = detect_columns(path)
         assert mapping.hd == "HD2022"
         assert confidence["hd"] == "~ Prefix"
 
     def test_sd_prefix_year(self, tmp_path):
-        path = _write_csv(tmp_path, [{"VUID": "1", "CDPLANC2333": "7",
-                                       "HD2022": "145", "SD2022": "6"}])
+        path = _write_csv(
+            tmp_path, [{"VUID": "1", "CDPLANC2333": "7", "HD2022": "145", "SD2022": "6"}]
+        )
         mapping, confidence = detect_columns(path)
         assert mapping.sd == "SD2022"
         assert confidence["sd"] == "~ Prefix"
@@ -199,16 +216,16 @@ class TestDetectColumnsPrefixPattern:
 
 class TestDetectColumnsAlternateNames:
     def test_van_style_columns(self, tmp_path):
-        path = _write_csv(tmp_path, [{"VANID": "1000", "LAST": "DOE",
-                                       "FIRST": "JOHN", "BIRTH_DATE": "19850315"}])
+        path = _write_csv(
+            tmp_path, [{"VANID": "1000", "LAST": "DOE", "FIRST": "JOHN", "BIRTH_DATE": "19850315"}]
+        )
         mapping, confidence = detect_columns(path)
         # VAN's VANID maps to vuid pattern list
         assert mapping.vuid == "VANID"
         assert confidence["vuid"] == "✓ Pattern"
 
     def test_l2_style_lname_fname(self, tmp_path):
-        path = _write_csv(tmp_path, [{"LALVOTERID": "abc", "LNAME": "DOE",
-                                       "FNAME": "JANE"}])
+        path = _write_csv(tmp_path, [{"LALVOTERID": "abc", "LNAME": "DOE", "FNAME": "JANE"}])
         mapping, _ = detect_columns(path)
         assert mapping.vuid == "LALVOTERID"
         assert mapping.last_name == "LNAME"
@@ -278,22 +295,25 @@ class TestAgeBracketYYYYMMDDFormat:
         assert result == "35-44"
 
 
-@pytest.mark.parametrize("age,expected", [
-    (18, "18-24"),
-    (24, "18-24"),
-    (25, "25-34"),
-    (34, "25-34"),
-    (35, "35-44"),
-    (44, "35-44"),
-    (45, "45-54"),
-    (54, "45-54"),
-    (55, "55-64"),
-    (64, "55-64"),
-    (65, "65-74"),
-    (74, "65-74"),
-    (75, "75+"),
-    (90, "75+"),
-])
+@pytest.mark.parametrize(
+    "age,expected",
+    [
+        (18, "18-24"),
+        (24, "18-24"),
+        (25, "25-34"),
+        (34, "25-34"),
+        (35, "35-44"),
+        (44, "35-44"),
+        (45, "45-54"),
+        (54, "45-54"),
+        (55, "55-64"),
+        (64, "55-64"),
+        (65, "65-74"),
+        (74, "65-74"),
+        (75, "75+"),
+        (90, "75+"),
+    ],
+)
 def test_age_bracket_all_ranges(age: int, expected: str):
     """Build DOB from (reference_date - age years) and assert bracket."""
     # Use Jan 1 of (ref_year - age) so birthday has passed by ref date (June 1)
@@ -392,9 +412,7 @@ class TestMatchVoterfileSqlColumnSanitization:
         )
         roster = [_voter("0000000001")]
         mapping = ColumnMapping(vuid='VUID"', county="COUNTY")
-        enriched, report = match_voterfile_to_roster(
-            roster, vf, mapping, reference_date=_REF
-        )
+        enriched, report = match_voterfile_to_roster(roster, vf, mapping, reference_date=_REF)
         assert enriched[0].in_voterfile is True
         assert report.matched_count == 1
 
@@ -420,10 +438,18 @@ class TestMatchVoterfileToRosterBasic:
             _voter("0000000003", precinct="0512"),
         ]
         mapping = ColumnMapping(
-            vuid="VUID", cd="CDPLANC2333", hd="HD2022", sd="SD2022",
-            county="COUNTY", precinct="PCT", dob="DOB", sex="SEX",
-            hispanic="HISPANIC", status="STATUS",
-            last_name="LNAME", first_name="FNAME",
+            vuid="VUID",
+            cd="CDPLANC2333",
+            hd="HD2022",
+            sd="SD2022",
+            county="COUNTY",
+            precinct="PCT",
+            dob="DOB",
+            sex="SEX",
+            hispanic="HISPANIC",
+            status="STATUS",
+            last_name="LNAME",
+            first_name="FNAME",
         )
         enriched, _report = match_voterfile_to_roster(
             roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
@@ -435,8 +461,13 @@ class TestMatchVoterfileToRosterBasic:
     def test_matched_records_have_district_fields(self):
         roster = [_voter("0000000001", precinct="0510")]
         mapping = ColumnMapping(
-            vuid="VUID", cd="CDPLANC2333", hd="HD2022", sd="SD2022",
-            county="COUNTY", precinct="PCT", dob="DOB",
+            vuid="VUID",
+            cd="CDPLANC2333",
+            hd="HD2022",
+            sd="SD2022",
+            county="COUNTY",
+            precinct="PCT",
+            dob="DOB",
         )
         enriched, _ = match_voterfile_to_roster(
             roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
@@ -512,9 +543,7 @@ class TestMatchVoterfileVuidZeroPadding:
         )
         roster = [_voter("0001000001")]  # 10-digit padded
         mapping = ColumnMapping(vuid="VUID", dob="DOB")
-        enriched, report = match_voterfile_to_roster(
-            roster, vf, mapping, reference_date=_REF
-        )
+        enriched, report = match_voterfile_to_roster(roster, vf, mapping, reference_date=_REF)
         assert enriched[0].in_voterfile is True
         assert report.matched_count == 1
 
@@ -651,16 +680,12 @@ class TestDuplicateVoterfileVuids:
     def test_duplicate_vuid_rows_emit_finding(self, tmp_path):
         vf = tmp_path / "dup_vuid.csv"
         vf.write_text(
-            '"VUID","PCT","COUNTY"\n'
-            '"0000000001","0510","HARRIS"\n'
-            '"0000000001","0512","HARRIS"\n',
+            '"VUID","PCT","COUNTY"\n"0000000001","0510","HARRIS"\n"0000000001","0512","HARRIS"\n',
             encoding="utf-8",
         )
         roster = [_voter("0000000001", precinct="510")]
         mapping = ColumnMapping(vuid="VUID", precinct="PCT", county="COUNTY")
-        enriched, report = match_voterfile_to_roster(
-            roster, vf, mapping, reference_date=_REF
-        )
+        enriched, report = match_voterfile_to_roster(roster, vf, mapping, reference_date=_REF)
         assert enriched[0].in_voterfile is True
         assert enriched[0].vf_precinct == "0510"
         assert "duplicate_voterfile_vuids" in [f.finding_type for f in report.findings]
@@ -711,9 +736,7 @@ class TestMatchVoterfileLongVuid:
         )
         roster = [_voter("12345678901")]
         mapping = ColumnMapping(vuid="VUID")
-        enriched, report = match_voterfile_to_roster(
-            roster, vf, mapping, reference_date=_REF
-        )
+        enriched, report = match_voterfile_to_roster(roster, vf, mapping, reference_date=_REF)
         assert enriched[0].in_voterfile is True
         assert report.matched_count == 1
 
@@ -724,9 +747,7 @@ class TestMappingConflictRaises:
         roster = [_voter("0000000001")]
         mapping = ColumnMapping(vuid="VUID", county="VUID")
         with pytest.raises(ValueError, match="multiple standard fields"):
-            match_voterfile_to_roster(
-                roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF
-            )
+            match_voterfile_to_roster(roster, SAMPLE_VOTERFILE, mapping, reference_date=_REF)
 
 
 # ---------------------------------------------------------------------------
@@ -779,10 +800,26 @@ class TestWriteEnrichedCsvRoundtrip:
             reader = csv.DictReader(fh)
             fieldnames = reader.fieldnames or []
         expected = {
-            "VOTER_NAME", "ID_VOTER", "VOTING_METHOD", "PRECINCT", "COUNTY",
-            "ELECTION_ID", "REPORT_DATE", "DUPLICATE_FLAG", "DUPLICATE_TYPE",
-            "ALSO_FOUND_ON", "IN_VOTERFILE", "CD", "HD", "SD",
-            "VF_COUNTY", "VF_PRECINCT", "AGE_BRACKET", "SEX", "HISPANIC", "VOTER_STATUS",
+            "VOTER_NAME",
+            "ID_VOTER",
+            "VOTING_METHOD",
+            "PRECINCT",
+            "COUNTY",
+            "ELECTION_ID",
+            "REPORT_DATE",
+            "DUPLICATE_FLAG",
+            "DUPLICATE_TYPE",
+            "ALSO_FOUND_ON",
+            "IN_VOTERFILE",
+            "CD",
+            "HD",
+            "SD",
+            "VF_COUNTY",
+            "VF_PRECINCT",
+            "AGE_BRACKET",
+            "SEX",
+            "HISPANIC",
+            "VOTER_STATUS",
         }
         assert expected.issubset(set(fieldnames))
 

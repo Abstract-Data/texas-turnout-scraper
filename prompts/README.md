@@ -12,7 +12,14 @@ One `##` section per prompt. Each prompt lives in its own numbered subdirectory 
 ```
 00 (optional) → 01 → 02 + 03 + 04 (parallel) → 05 → 06 → 07 → 08
 09 (voterfile-match) is standalone — run after uv sync installs duckdb
+10 (review-remediation) runs after 08 is green — parallel waves below
 ```
+
+**Prompt 10 parallel waves (v1.1.0):**
+```
+10-review-remediation: WS-0 → (WS-1A..1G parallel) → WS-1H → WS-2A → WS-2B → (WS-2C ‖ WS-2D) → WS-3 → (WS-4A+4B parallel) → WS-4C → (WS-5A..5H parallel; 5B before 5D; 5G before 5H)
+```
+Integration branch: `feature/review-remediation`. Manifest: `prompts/10-review-remediation/parallel-manifest.md`.
 
 > **Cleanup needed:** Run `git rm prompts/0*.md` and `git rm -r prompts/test-fixtures prompts/unit-tests-civix prompts/unit-tests-legacy prompts/unit-tests-writer prompts/integration-tests prompts/cli-fetch-all prompts/data-refresh-workflow prompts/cleanup-and-verification prompts/voterfile-match prompts/project-alignment` locally to remove the deprecated unnumbered directories.
 
@@ -155,3 +162,34 @@ One `##` section per prompt. Each prompt lives in its own numbered subdirectory 
 
 ### Changelog
 - `1.0.0` (2026-05-24) — Initial version
+
+---
+
+## 10-review-remediation
+
+**Current version:** 1.1.0
+**Model:** claude-sonnet-4-6
+**Last updated:** 2026-05-25
+**Path:** `prompts/10-review-remediation/current.md`
+**Purpose:** Apply every actionable finding from the 2026-05-25 Notion review suite via **file-locked workstreams** and a merge train on `feature/review-remediation`. Same scope as v1.0.0; dispatch is parallel by wave. See `parallel-manifest.md` and `workstreams/WS-*.md`.
+**Depends on:** all prior prompts (08-cleanup-and-verification should be green first).
+
+**Artifacts:**
+- `v1.0.0.md` — frozen sequential five-phase plan
+- `v1.1.0.md` — parallel edition index
+- `parallel-manifest.md` — DAG, file locks, merge train, coordinator checklist
+- `workstreams/` — WS-0 through WS-5H agent briefs
+
+**Parallel execution:**
+```
+WS-0 → (WS-1A..1G parallel) → WS-1H → WS-2A → WS-2B → (WS-2C ‖ WS-2D) → WS-3 → (WS-4A+4B parallel) → WS-4C → (WS-5A..5H parallel; 5B before 5D; 5G before 5H)
+```
+
+**Linked Notion reports:**
+- Code Review — https://www.notion.so/36c7d7f5629881568bddf40b099c2979
+- Refactoring & Code Smell — https://www.notion.so/36c7d7f56298816a9f2af0f0b7169cde
+- Developer Assessment — https://www.notion.so/36c7d7f5629881e1b2faf76bed72972e
+
+### Changelog
+- `1.1.0` (2026-05-25) — Parallel edition: manifest, 25 workstreams, merge train; v1.0.0 frozen.
+- `1.0.0` (2026-05-25) — Initial sequential version. Consolidates 22 distinct refactoring issues + Code-Review priorities + 6 strategic initiatives (S1–S6).

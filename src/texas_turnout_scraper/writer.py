@@ -30,7 +30,7 @@ from datetime import date
 from pathlib import Path
 
 from .enums import VoteMethod
-from .models import AuditFinding, AuditReport, CountyRoster, VoterRecord
+from .models import CountyRoster, CountyTurnout, VoterRecord
 
 
 def _duplicate_flags(duplicate_type: str) -> set[str]:
@@ -138,11 +138,7 @@ def accumulate_roster(rosters: list[CountyRoster]) -> list[VoterRecord]:
             flags.append("precinct_mismatch")
 
         # Tokens from every other row with the same VUID (index-based, not token-based)
-        other_tokens = [
-            appearance_tokens[j]
-            for j in vuid_row_indices[vuid]
-            if j != i
-        ]
+        other_tokens = [appearance_tokens[j] for j in vuid_row_indices[vuid] if j != i]
         unique_others = _dedupe_tokens_preserve_order(other_tokens)
 
         flagged.append(
@@ -266,105 +262,28 @@ def read_roster_csv(path: Path) -> list[VoterRecord]:
         for row in reader:
             method_raw = row["VOTING_METHOD"]
             try:
-                voting_method = VoteMethod(method_raw)
+                VoteMethod(method_raw)
             except ValueError as exc:
-                raise ValueError(f"Invalid VOTING_METHOD value in roster CSV: {method_raw!r}") from exc
+                raise ValueError(
+                    f"Invalid VOTING_METHOD value in roster CSV: {method_raw!r}"
+                ) from exc
+            report_date = datetime.strptime(row["REPORT_DATE"], "%Y-%m-%d").date()
+            rec = VoterRecord.from_csv_row(
+                row,
+                county=row["COUNTY"],
+                election_id=str(row["ELECTION_ID"]),
+                report_date=report_date,
+            )
             records.append(
-                VoterRecord(
-                    voter_name=row["VOTER_NAME"],  # PII — do not log
-                    id_voter=str(row["ID_VOTER"]).zfill(10),  # always str — never int
-                    voting_method=voting_method,
-                    precinct=row["PRECINCT"],
-                    county=row["COUNTY"],
-                    election_id=str(row["ELECTION_ID"]),
-                    report_date=datetime.strptime(row["REPORT_DATE"], "%Y-%m-%d").date(),
-                    duplicate_flag=row["DUPLICATE_FLAG"].lower() == "true",
-                    duplicate_type=row["DUPLICATE_TYPE"],
-                    also_found_on=row["ALSO_FOUND_ON"],
+                rec.model_copy(
+                    update={
+                        "duplicate_flag": row["DUPLICATE_FLAG"].lower() == "true",
+                        "duplicate_type": row["DUPLICATE_TYPE"],
+                        "also_found_on": row["ALSO_FOUND_ON"],
+                    }
                 )
             )
     return records
-
-
-# ---------------------------------------------------------------------------
-# AuditReport from accumulated records
-# ---------------------------------------------------------------------------
-
-
-def audit_from_records(
-    records: list[VoterRecord],
-    election_id: str | None = None,
-    report_date: date | None = None,
-    source: str = "unknown",
-) -> AuditReport:
-    """Build an AuditReport from an already-accumulated (flagged) record list.
-
-    Counts each duplicate type. Does NOT re-run detection — reads the flags
-    already set by ``accumulate_roster()``.
-
-    PII note: finding details contain only counts and county names — never VUIDs or names.
-    """
-    total = len(records)
-    unique_vuids = len({r.id_voter for r in records})
-
-    multiple_dates = [r for r in records if _has_duplicate_flag(r.duplicate_type, "multiple_dates")]
-    conflicting = [r for r in records if _has_duplicate_flag(r.duplicate_type, "conflicting_method")]
-    multi_county = [r for r in records if _has_duplicate_flag(r.duplicate_type, "multiple_counties")]
-    name_mismatch = [r for r in records if _has_duplicate_flag(r.duplicate_type, "name_mismatch")]
-    precinct_mismatch = [r for r in records if _has_duplicate_flag(r.duplicate_type, "precinct_mismatch")]
-
-    findings: list[AuditFinding] = []
-
-    if multiple_dates:
-        findings.append(AuditFinding(
-            finding_type="multiple_dates",
-            severity="error",
-            detail=f"{len(multiple_dates)} appearances where same VUID found on multiple report dates",
-        ))
-
-    if conflicting:
-        findings.append(AuditFinding(
-            finding_type="conflicting_method",
-            severity="error",
-            detail=f"{len(conflicting)} appearances where same VUID has both IN-PERSON and MAIL-IN",
-        ))
-
-    if multi_county:
-        counties_affected = {r.county for r in multi_county}
-        findings.append(AuditFinding(
-            finding_type="multiple_counties",
-            severity="error",
-            detail=f"{len(multi_county)} appearances where same VUID found in multiple counties "
-                   f"({len(counties_affected)} counties affected)",
-        ))
-
-    if name_mismatch:
-        findings.append(AuditFinding(
-            finding_type="name_mismatch",
-            severity="warning",
-            detail=f"{len(name_mismatch)} appearances where same VUID has differing voter names",
-        ))
-
-    if precinct_mismatch:
-        findings.append(AuditFinding(
-            finding_type="precinct_mismatch",
-            severity="warning",
-            detail=f"{len(precinct_mismatch)} appearances where same VUID has differing precincts",
-        ))
-
-    eid = election_id or (records[0].election_id if records else "unknown")
-    rdate = report_date or (records[0].report_date if records else date.today())
-
-    return AuditReport(
-        election_id=eid,
-        report_date=rdate,
-        source=source,
-        total_records=total,
-        unique_vuids=unique_vuids,
-        duplicate_vuid_count=len({r.id_voter for r in records if r.duplicate_flag}),
-        cross_method_duplicate_count=len({r.id_voter for r in conflicting}),
-        findings=findings,
-    )
 
 
 def stored_roster_ev_path(data_dir: Path, source: str, election_id: str) -> Path:
@@ -383,3 +302,124 @@ def report_date_from_roster_csv(csv_path: Path) -> date:
     if not records:
         return date.today()
     return max(r.report_date for r in records)
+
+
+_TURNOUT_CSV_COLUMNS = (
+    "election_id",
+    "report_date",
+    "county",
+    "county_id",
+    "registered_voters",
+    "in_person_votes_on_date",
+    "total_in_person_votes",
+    "total_mail_votes",
+    "roster_available",
+    "source",
+)
+
+
+def _turnout_glob_pattern(source: str) -> str:
+    return "turnout_ev_*.csv" if source == "civix" else "turnout_*.csv"
+
+
+def _date_from_turnout_filename(path: Path, source: str) -> date | None:
+    stem = path.stem
+    if source == "civix" and stem.startswith("turnout_ev_"):
+        try:
+            return date.fromisoformat(stem.removeprefix("turnout_ev_"))
+        except ValueError:
+            return None
+    if source == "legacy" and stem.startswith("turnout_"):
+        try:
+            return date.fromisoformat(stem.removeprefix("turnout_"))
+        except ValueError:
+            return None
+    return None
+
+
+def stored_turnout_paths(data_dir: Path, source: str, election_id: str) -> list[Path]:
+    """Sorted paths to per-date turnout CSV files for an election, if any exist."""
+    election_dir = data_dir / "elections" / source / election_id
+    if not election_dir.is_dir():
+        return []
+    return sorted(election_dir.glob(_turnout_glob_pattern(source)))
+
+
+def read_turnout_csv(path: Path) -> list[CountyTurnout]:
+    """Read a stored county turnout CSV into :class:`CountyTurnout` rows."""
+    from datetime import datetime
+
+    rows: list[CountyTurnout] = []
+    with path.open("r", newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            raise ValueError("Turnout CSV is missing a header row")
+        missing = [col for col in _TURNOUT_CSV_COLUMNS if col not in reader.fieldnames]
+        if missing:
+            raise ValueError(f"Turnout CSV missing required columns: {', '.join(missing)}")
+        for row in reader:
+            county_id_raw = row.get("county_id", "").strip()
+            county_id = int(county_id_raw) if county_id_raw else None
+            roster_raw = row.get("roster_available", "").strip().lower()
+            rows.append(
+                CountyTurnout(
+                    election_id=str(row["election_id"]),
+                    report_date=datetime.strptime(row["report_date"], "%Y-%m-%d").date(),
+                    county=row["county"],
+                    county_id=county_id,
+                    registered_voters=int(row["registered_voters"]),
+                    in_person_votes_on_date=int(row["in_person_votes_on_date"]),
+                    total_in_person_votes=int(row["total_in_person_votes"]),
+                    total_mail_votes=int(row["total_mail_votes"]),
+                    roster_available=roster_raw in {"true", "1", "yes"},
+                    source=row["source"],
+                )
+            )
+    return rows
+
+
+def load_stored_turnout_for_audit(
+    data_dir: Path,
+    source: str,
+    election_id: str,
+    *,
+    report_dates: set[date] | None = None,
+) -> list[CountyTurnout] | None:
+    """Load stored turnout CSVs for audit when present under ``data/elections/{source}/{id}/``."""
+    paths = stored_turnout_paths(data_dir, source, election_id)
+    if not paths:
+        return None
+
+    turnout_rows: list[CountyTurnout] = []
+    for path in paths:
+        if report_dates is not None:
+            file_date = _date_from_turnout_filename(path, source)
+            if file_date is not None and file_date not in report_dates:
+                continue
+        turnout_rows.extend(read_turnout_csv(path))
+
+    return turnout_rows if turnout_rows else None
+
+
+def write_turnout_csv(rows: list[CountyTurnout], path: Path) -> Path:
+    """Write county turnout rows to a CSV file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_TURNOUT_CSV_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "election_id": row.election_id,
+                    "report_date": row.report_date.isoformat(),
+                    "county": row.county,
+                    "county_id": row.county_id if row.county_id is not None else "",
+                    "registered_voters": row.registered_voters,
+                    "in_person_votes_on_date": row.in_person_votes_on_date,
+                    "total_in_person_votes": row.total_in_person_votes,
+                    "total_mail_votes": row.total_mail_votes,
+                    "roster_available": str(row.roster_available).lower(),
+                    "source": row.source,
+                }
+            )
+    return path

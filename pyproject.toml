@@ -17,6 +17,7 @@ dependencies = [
     "duckdb>=1.0.0",
     "cloudscraper>=1.2.71",
     "questionary>=2.1.1",
+    "rich>=13.9.0",
 ]
 
 [project.scripts]
@@ -45,8 +46,36 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "UP", "B", "C4", "RUF"]
+# Selector additions (2026-05-25, post review-suite):
+#   BLE   — flake8-blind-except. Catches the bare `except Exception:` pattern
+#           that bypassed our NEVER-DO rule in roster.py:319 (P1-SEC-001).
+#   DTZ   — flake8-datetimez. Catches `datetime.utcnow()` and other naive
+#           datetime calls (audit.py:211 — P2-CODE-001).
+#   SLF   — flake8-self. Catches external `_private` attribute access — the
+#           pattern that hid in roster.py:103 reaching into LegacySession internals.
+#   C901  — mccabe complexity. Flags over-long fetch_all loops (cli.py ~130 LOC).
+#   PLR0915/PLR0912/PLR0913 — pylint statement / branch / arg counts.
+# Generous thresholds; tighten as refactoring lands.
+select = ["E", "W", "F", "I", "UP", "B", "C4", "RUF", "BLE", "DTZ", "SLF", "C901", "PLR0915", "PLR0912", "PLR0913"]
 ignore = ["E501"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.pylint]
+max-statements = 60
+max-branches = 15
+max-args = 8
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately reach into internals and use long fixtures.
+"tests/**/*.py" = ["SLF", "PLR0915", "PLR0912", "PLR0913", "C901"]
+# CLI commands are being decomposed; grant temporary amnesty on complexity
+# while the dual-source consolidation lands (RosterSource protocol).
+"src/texas_turnout_scraper/cli.py" = ["C901", "PLR0915", "PLR0912", "PLR0913"]
+# Audit pipeline merge is in flight; check funcs will split after consolidation.
+"src/texas_turnout_scraper/audit.py" = ["C901", "PLR0912"]
+"src/texas_turnout_scraper/writer.py" = ["C901", "PLR0912"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["texas_turnout_scraper"]

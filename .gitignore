@@ -9,6 +9,8 @@
 *.csv
 !data/**/*.csv
 !tests/fixtures/**/*.csv
+# Voterfile match output (enriched roster; local only; often >100MB — not for GitHub)
+data/**/matched_*.csv
 
 # Local scratch: Strategy B ZIP downloads, legacy roster archives (not for GitHub Pages)
 src/texas_turnout_scraper/tmp/

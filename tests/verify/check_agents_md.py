@@ -2,6 +2,7 @@
 Structural verification: check AGENTS.md required sections are present.
 Run with: pytest tests/verify/ -q
 """
+
 from pathlib import Path
 
 AGENTS_MD = Path(__file__).parent.parent.parent / "AGENTS.md"
@@ -38,5 +39,6 @@ def test_claude_md_symlink():
     claude_md = AGENTS_MD.parent / "CLAUDE.md"
     assert claude_md.exists(), "CLAUDE.md is missing"
     assert claude_md.is_symlink(), "CLAUDE.md must be a symlink to AGENTS.md"
-    assert claude_md.resolve() == AGENTS_MD.resolve(), \
+    assert claude_md.resolve() == AGENTS_MD.resolve(), (
         "CLAUDE.md symlink does not resolve to AGENTS.md"
+    )

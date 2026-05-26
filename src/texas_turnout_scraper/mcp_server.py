@@ -97,7 +97,7 @@ def civix_fetch_turnout(election_id: int, election_date: str) -> list[dict]:
 
     ev_date = _parse_date(election_date)
     with CivixClient() as client:
-        rows = client.fetch_ev_turnout(election_id=election_id, ev_date=ev_date)
+        rows = client.fetch_ev_turnout(election_id=election_id, election_date=ev_date)
 
     return [
         {
@@ -141,19 +141,17 @@ def civix_fetch_county_roster(
       - mail_in (int): number of mail-in voters
       - source (str): 'civix'
     """
-    from .civix import CivixClient
+    from .civix import CivixClient, fetch_county_roster
 
     ev_date = _parse_date(election_date)
     with CivixClient() as client:
-        roster = client.fetch_county_roster(
+        roster = fetch_county_roster(
+            client,
             election_id=election_id,
-            ev_date=ev_date,
-            county_id=county_id,
+            election_date=ev_date,
             county_name=county_name,
+            county_id=county_id,
         )
-
-    in_person = sum(1 for r in roster.records if r.voting_method.value == "IN-PERSON")
-    mail_in = sum(1 for r in roster.records if r.voting_method.value == "MAIL-IN")
 
     return {
         "county": roster.county,
@@ -161,8 +159,8 @@ def civix_fetch_county_roster(
         "election_id": roster.election_id,
         "report_date": str(roster.report_date),
         "total_voters": roster.total_voters,
-        "in_person": in_person,
-        "mail_in": mail_in,
+        "in_person": roster.in_person_count,
+        "mail_in": roster.mail_in_count,
         "source": roster.source,
     }
 
@@ -191,7 +189,7 @@ def civix_fetch_ed_turnout(election_id: int, election_date: str) -> list[dict]:
 
     ed_date = _parse_date(election_date)
     with CivixClient() as client:
-        rows = client.fetch_ed_turnout(election_id=election_id, ed_date=ed_date)
+        rows = client.fetch_ed_turnout(election_id=election_id, election_date=ed_date)
 
     return [
         {
@@ -227,7 +225,7 @@ def civix_fetch_polling_places(
     with CivixClient() as client:
         csv_text = client.fetch_polling_places(
             election_id=election_id,
-            county_name=county_name,
+            name=county_name,
         )
 
     return csv_text
@@ -345,16 +343,13 @@ def legacy_fetch_county_roster(
         county_id=county_id,
     )
 
-    in_person = sum(1 for r in roster.records if r.voting_method.value == "IN-PERSON")
-    mail_in = sum(1 for r in roster.records if r.voting_method.value == "MAIL-IN")
-
     return {
         "county": roster.county,
         "election_id": roster.election_id,
         "report_date": str(roster.report_date),
         "total_voters": roster.total_voters,
-        "in_person": in_person,
-        "mail_in": mail_in,
+        "in_person": roster.in_person_count,
+        "mail_in": roster.mail_in_count,
         "source": roster.source,
     }
 
@@ -398,8 +393,9 @@ def run_audit(
     """
     from pathlib import Path
 
+    from .audit import audit_records
     from .writer import (
-        audit_from_records,
+        load_stored_turnout_for_audit,
         read_roster_csv,
         report_date_from_roster_csv,
         stored_roster_ev_path,
@@ -429,8 +425,15 @@ def run_audit(
     )
 
     records = read_roster_csv(roster_path)
-    report = audit_from_records(
+    turnout = load_stored_turnout_for_audit(
+        Path(data_dir),
+        source_key,
+        election_id,
+        report_dates={r.report_date for r in records} or None,
+    )
+    report = audit_records(
         records,
+        turnout=turnout,
         election_id=election_id,
         report_date=report_date,
         source=source_key,

@@ -6,12 +6,19 @@ import json
 from datetime import date
 from pathlib import Path
 
+from unittest.mock import patch
+
 from typer.testing import CliRunner
 
 from texas_turnout_scraper.cli import app
 from texas_turnout_scraper.enums import VoteMethod
-from texas_turnout_scraper.models import VoterRecord
-from texas_turnout_scraper.writer import write_roster_csv
+from texas_turnout_scraper.models import (
+    CivixElection,
+    CivixElectionDate,
+    CountyTurnout,
+    VoterRecord,
+)
+from texas_turnout_scraper.writer import write_roster_csv, write_turnout_csv
 
 runner = CliRunner()
 
@@ -228,3 +235,79 @@ def test_voterfile_match_overwrites_sidecar_after_success(tmp_path: Path) -> Non
     assert result.exit_code == 0
     data = json.loads(sidecar.read_text(encoding="utf-8"))
     assert data["vuid"] == "VUID"
+
+
+def test_voterfile_match_includes_gap_report_for_civix_roster(tmp_path: Path) -> None:
+    election_dir = tmp_path / "data" / "elections" / "civix" / "58315"
+    election_dir.mkdir(parents=True)
+    roster = election_dir / "roster_ev_58315.csv"
+    write_roster_csv(
+        [
+            VoterRecord(
+                id_voter="0000000001",
+                voter_name="TEST, VOTER",
+                voting_method=VoteMethod.IN_PERSON,
+                precinct="100",
+                county="HARRIS",
+                election_id="58315",
+                report_date=date(2026, 5, 22),
+            )
+        ],
+        roster,
+    )
+    write_turnout_csv(
+        [
+            CountyTurnout(
+                election_id="58315",
+                report_date=date(2026, 5, 22),
+                county="HARRIS",
+                county_id=101,
+                registered_voters=1000,
+                in_person_votes_on_date=1,
+                total_in_person_votes=100,
+                total_mail_votes=25,
+                roster_available=True,
+                source="civix",
+            )
+        ],
+        election_dir / "turnout_ev_2026-05-22.csv",
+    )
+
+    election = CivixElection(
+        source_election_id="58315",
+        id=58315,
+        type="EV",
+        election_date=date(2026, 5, 26),
+        election_name="2026 REPUBLICAN PRIMARY RUNOFF ELECTION",
+        certified=False,
+        early_voting_dates=[CivixElectionDate(date=date(2026, 5, 22), date_turnout_id=1)],
+        counties=[],
+    )
+
+    with patch("texas_turnout_scraper.civix.CivixClient") as mock_client_cls:
+        mock_client = mock_client_cls.return_value.__enter__.return_value
+        mock_client.list_elections.return_value = [election]
+
+        result = runner.invoke(
+            app,
+            [
+                "voterfile",
+                "match",
+                str(roster),
+                str(FIXTURE_VOTERFILE),
+                "--no-interactive",
+                "--output-dir",
+                str(election_dir),
+                "--no-save-mapping",
+                "--gap-turnout-source",
+                "stored",
+            ],
+        )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Turnout vs Roster Gap" in result.stdout
+    gap_json = election_dir / "gap_report_roster_ev_58315.json"
+    assert gap_json.exists()
+    match_report = json.loads((election_dir / "match_report_roster_ev_58315.json").read_text())
+    assert match_report["turnout_roster_gap"] is not None
+    assert match_report["turnout_roster_gap"]["gap_total"] == 124

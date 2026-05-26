@@ -1,6 +1,6 @@
 # AGENTS.md
-# Version: 1.2.0
-# Last Updated: 2026-05-24
+# Version: 1.3.0
+# Last Updated: 2026-05-25
 # Environment: dev
 # Model: claude-sonnet-4-6
 # Fallback Model: claude-haiku-4-5-20251001
@@ -193,11 +193,17 @@ Results are written to `data/elections/{id}/audit_{date}.json` and returned as `
 
 When looking for context, read in this order:
 
-1. `docs/ARCHITECTURE_SPEC.md` — full design decisions and model schemas
-2. `docs/EARLY_VOTING_ROSTER.md` — SOS HTTP flow reference (endpoints, schemas, session)
-3. `docs/GUARDRAILS.md` — what not to do
-4. `docs/TESTING.md` — test strategy
-5. This file (`AGENTS.md`)
+1. **Context7 MCP** — for any third-party library API (httpx, Pydantic v2, Typer, FastMCP, DuckDB, BeautifulSoup, cloudscraper, respx, ty, ruff). Use `resolve-library-id` then `get-library-docs` before quoting any library API. **Never quote APIs from memory.**
+2. `docs/ARCHITECTURE_SPEC.md` — full design decisions and model schemas
+3. `docs/EARLY_VOTING_ROSTER.md` — SOS HTTP flow reference (endpoints, schemas, session)
+4. `docs/CIVIX_EVR_API.md` — Civix EVR API reference (envelope schema, county IDs)
+5. `docs/GUARDRAILS.md` — what not to do
+6. `docs/TESTING.md` — test strategy
+7. `docs/RUNBOOK.md` — operational runbook (cloudscraper notes, pacing)
+8. `docs/GITBUTLER.md` — virtual branch reference (this project uses GitButler)
+9. `docs/playbooks/` — project-specific playbooks (dual-source pattern, MCP testing)
+10. `docs/adr/` — decision history; consult before re-litigating a settled design choice
+11. This file (`AGENTS.md`)
 
 ---
 
@@ -224,11 +230,13 @@ Before implementing any significant change:
 
 ## Notion References
 
-- **Notion Page ID:** `(not registered — add after project board is created)`
+- **Tasks DB:** `collection://2e97d7f5-6298-80a5-acef-000bb9796a9d`
+- **Project Page:** https://www.notion.so/36c7d7f5629881a0841df6b1da456fca (`texas-turnout-scraper`)
+- **Client Page:** https://www.notion.so/2f37d7f5629881bb814de76479af10db (Abstract Data Internal)
+- **Docs DB (for review reports, ADR exports):** `collection://2e97d7f5-6298-804c-b8a5-000b18b72684`
+- **Skill Run Log:** `collection://d22fe5bc-922a-4872-9859-99318bf98b61`
 - **Dev Environment:** [DEV-ENV-INDEX](https://www.notion.so/3617d7f56298814899f2d14b8f1e5145)
 - **AGENTS.md Template:** [AGENTS.md (Base) v1.2.0](https://www.notion.so/2ee7d7f5629880fea6f0e412b3ac6a64)
-- **Architecture Spec:** internal doc (see `docs/ARCHITECTURE_SPEC.md` for local copy)
-- **Project Board:** Abstract Data workspace
 - **Prompt Library:** `prompts/README.md` (local version registry)
 
 ---
@@ -247,6 +255,87 @@ Each prohibition is paired with the correct alternative:
 - 🚫 Never use `print()` for diagnostic output — ✅ use `logging.getLogger(__name__)` with appropriate levels
 - 🚫 Never catch bare `except:` — ✅ catch specific exceptions (e.g. `except httpx.HTTPStatusError:`, `except ValueError:`)
 - 🚫 Never include voter names or VUIDs in exception messages or tracebacks — ✅ log counts and field names only; redact PII from error context
+- 🚫 Never quote third-party library APIs (httpx, Pydantic, FastMCP, DuckDB, etc.) from memory — ✅ use Context7 MCP (`resolve-library-id` then `get-library-docs`) for current API surface
+- 🚫 Never use raw `git checkout -b`, `git branch`, or `git merge` — ✅ this project uses GitButler; use `gb branch create/apply/push` (see `docs/GITBUTLER.md`). The `.claude/hooks/block-raw-git.sh` PreToolUse hook will block these.
+- 🚫 Never silence `ty` warnings by adding `# type: ignore` without a one-line rationale comment — ✅ if the warning is real but not actionable now, raise it in `docs/adr/007-ty-migration-to-error-mode.md` and add a `# ty: ignore[code]  # reason: ...` directive
+
+---
+
+## Tool Permissions by Mode
+
+This table maps each subagent (defined in `.claude/agents/`) to the tools it may use. Project
+hooks under `.claude/hooks/` fire on every tool call regardless of which agent invoked it; the
+table here describes the agent's *allowlist*, not its *block list*.
+
+| Agent | Read | Write `src/` | Write `tests/` | Write `docs/` | Bash | Notion write |
+|---|---|---|---|---|---|---|
+| `code-reviewer` | ✅ | ❌ | ❌ | ❌ | ✅ (read-only commands) | ❌ |
+| `test-writer` | ✅ | ❌ | ✅ | ❌ | ✅ (pytest only) | ❌ |
+| `researcher` | ✅ | ❌ | ❌ | ✅ (`docs/research/` + HANDOFF.md only) | ✅ | ❌ |
+| `session-closer` | ✅ | ❌ | ❌ | ❌ (HANDOFF.md + `.claude/handoffs/` only) | ✅ | ❌ |
+| `security-auditor` | ✅ | ❌ | ❌ | ❌ | ✅ (read-only commands) | ❌ |
+| `notion-publisher` | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ (sole owner of Notion writes) |
+| `task-critic` | ✅ | ❌ | ❌ | ❌ | ✅ (read-only commands) | ❌ |
+| `mcp-contract-checker` | ✅ | ❌ | ❌ | ❌ | ✅ (read-only) | ❌ |
+| `architecture-guardian` | ✅ | ❌ | ❌ | ❌ | ✅ (read-only) | ❌ |
+
+**Never grant Write `src/` to a checker agent.** Checkers report; they don't fix. Pair a checker with the main agent that can fix, and have the main agent re-invoke the checker after applying changes.
+
+---
+
+## Anti-Pattern Warnings
+
+These are the *failure modes* that have been observed in this codebase and ratcheted into
+guardrails (lint rules, hooks, or contract tests). They're separate from `## NEVER DO` because
+they're stack-specific patterns rather than absolute prohibitions.
+
+### Stack patterns to avoid
+
+| Anti-pattern | Where it bit us | Guardrail |
+|---|---|---|
+| MCP tool call keyword names drifted from the underlying client method signature | `mcp_server.py:100, 148, 194` — three of seven tools raise `TypeError` on first call | `tests/verify/check_mcp_tools_have_tests.py` + per-file strict `ty` (see ADR-0007) + `mcp-contract-checker` subagent |
+| Bare `except Exception:` with `exc_info=True` in code that touches PII | `roster.py:319` — risks leaking voter names through CSV-parse tracebacks | ruff `BLE` selector + `.claude/hooks/check-pii-exc-info.sh` PostToolUse hook |
+| Parallel implementations for civix/legacy that drift in normalization | 22 distinct refactoring issues / 74 occurrences in the 5/25 review | ruff `C901`/`PLR0915`/`PLR0912` + `architecture-guardian` subagent + `docs/playbooks/dual-source-pattern.md` |
+| Reaching into another module's `_private` attributes (worse: *mutating* them) | `roster.py:103` mutates `LegacySession._pace_seconds` mid-fetch | ruff `SLF` selector |
+| Naive `datetime.utcnow()` or `datetime.now()` without tz | `audit.py:211` — deprecated in 3.12, removed in 3.13 | ruff `DTZ` selector |
+| `# type: ignore` without rationale comment, or `tool.ty.rules.all = "warn"` masking real correctness errors | The MCP keyword-arg drift above was silenced by warn-only `ty` | ADR-0007 ratchet plan + per-file `[[tool.ty.overrides]]` strict on `mcp_server.py` first |
+| Two functions/modules emit different vocabularies for the same domain condition | `audit.py` vs `writer.audit_from_records` produce different `finding_type` strings for the same condition | `tests/unit/test_audit_contract.py` + make shared vocabulary a `Literal`/`Enum` |
+| Hardcoded base URLs without env-var override | `session.py:43`, `civix.py:42` | Architecture-guardian flag at review time; tracked as strategic item S4 in `prompts/10-review-remediation/current.md` |
+
+### Agent process anti-patterns
+
+- **Don't quote library APIs from memory.** Always Context7 → resolve-library-id → get-library-docs first.
+- **Don't redesign a module on a one-line change request.** Per the Learned User Preferences, propose and get approval first.
+- **Don't fabricate findings.** Every code review or refactoring claim must cite a real `file:line` ref.
+- **Don't merge a feature that adds a new MCP tool without a corresponding test in `tests/unit/test_mcp_server.py`.** The verify-suite check will block CI.
+
+---
+
+## GitButler
+
+This project uses [GitButler](https://gitbutler.com/) for virtual branch management. The prompt-
+driven workflow has parallel feature work in flight regularly (multiple subagents on independent
+tranches); GitButler tracks per-virtual diffs without forcing `git checkout` switches.
+
+**NEVER DO:** raw `git checkout -b`, `git branch`, or `git merge` — these bypass GitButler's
+tracking and create silent drift. The `.claude/hooks/block-raw-git.sh` PreToolUse hook blocks
+these subcommands.
+
+**Use the `gb` CLI instead:**
+
+| Operation | Command |
+|---|---|
+| Create virtual branch | `gb branch create feature/{name}` |
+| List active virtuals | `gb branch list` |
+| Switch (apply) | `gb branch apply feature/{name}` |
+| Push to remote | `gb branch push feature/{name}` |
+| Drop unapplied | `gb branch drop feature/{name}` |
+
+Read-only git (`status`, `diff`, `log`, `show`, `blame`) works normally. For genuine native-git
+workflows (release tagging, manual upstream sync), bypass the hook with `GITBUTLER_BYPASS=1` for
+that single invocation.
+
+Full reference: `docs/GITBUTLER.md`. Rationale for adoption: `docs/adr/006-gitbutler-virtual-branches.md`.
 
 ---
 
@@ -258,6 +347,7 @@ Each prohibition is paired with the correct alternative:
 - Create git commits only when the user explicitly requests them.
 - Prefer parallel subagents for independent multi-module or multi-tranche work (e.g. civix + legacy CLI, review-fix plans).
 - When implementing from an attached plan, do not edit the plan file; treat it as read-only scope.
+- When a plan already has todos, do not recreate them; mark each `in_progress` then `completed` as you work through the list.
 - When asked to fix review findings, run fix → `/review` repeatedly until no issues remain (e.g. “Fix everything” / “until we're all clear”).
 
 ## Learned Workspace Facts
@@ -270,10 +360,10 @@ Each prohibition is paired with the correct alternative:
 - **`writer.py`** exposes **`ROSTER_CSV_COLUMNS`** for CSV header parity; duplicate **`also_found_on`** uses row-index matching (same county/date duplicates still cross-reference).
 - Integration tests require **`--live`** (`tests/conftest.py` skips them otherwise); run with `uv run pytest tests/integration/ -v --live`.
 - Full local verification: `uv sync --dev`, ruff `E,W,F,I`, `uv run ty check`, `pytest tests/unit`, `pytest tests/verify`, then optional live integration.
-- **CLI** is namespaced: **`tx-turnout civix|legacy|audit|voterfile`** (not flat `elections list` / `roster fetch` shapes in older docs).
-- **All EV days for one election:** `civix fetch-all <id>` / `legacy fetch-all <id>` → `data/elections/{civix|legacy}/{id}/roster_ev_{id}.csv`; batch stale elections: **`civix|legacy refresh-all`** (drives **`data-refresh.yml`**).
-- **`civix elections`** — interactive **questionary** menus on TTY (newest election first); **`--no-interactive`** for scripts/CI.
+- **CLI:** namespaced **`tx-turnout civix|legacy|audit|voterfile`**; **`fetch-all <id>`** → `data/elections/{civix|legacy}/{id}/roster_ev_{id}.csv`; **`refresh-all`** for batch stale elections; **`civix elections`** uses **questionary** on TTY (`--no-interactive` for CI).
 - **HTTP/Typer:** default Civix/legacy HTTP uses **cloudscraper** — catch **`requests.HTTPError`** as well as **`httpx.HTTPError`**; CLI EV dates use string **`EvDateStr`**, not **`Annotated[date]`** (Typer 0.25 registration fails on `date`).
+- **Release Please:** `.github/workflows/release-please.yml` + `release-please-config.json`; conventional commits on **`main`** open release PRs updating **`CHANGELOG.md`** and **`pyproject.toml`** version.
+- **Audit:** canonical **`audit.audit_records()`** + **`FindingType`** enum (`tests/unit/test_audit_contract.py`); combined EV audits at **`data/elections/{source}/{id}/audit_ev_{id}.json`** via **`writer.stored_audit_ev_path`**.
 
 ---
 
@@ -281,6 +371,7 @@ Each prohibition is paired with the correct alternative:
 
 | Version | Date | Change |
 |---------|------|--------|
+| 1.3.0 | 2026-05-25 | Post-alignment pass: real Notion References (Project + Client + Tasks DB + Docs DB + Skill Run Log); added `## Tool Permissions by Mode`, `## Anti-Pattern Warnings`, `## GitButler` sections; Context7 promoted to top of Documentation Priority + NEVER DO; added ty `# type: ignore` rationale rule and GitButler raw-git prohibition to NEVER DO; documented 8 stack anti-patterns surfaced in the 5/25 review with their guardrails |
 | 1.2.0 | 2026-05-24 | Added `legacy_api` facades, `LegacySession.prime_election`, `fetch_ev_details_html`; CLI/MCP wired to facades; RUNBOOK.md; cloudscraper ops documented |
 | 1.1.0 | 2026-05-24 | Added version header, Agent Scope, Model Configuration, Session Management archive pattern, paired NEVER DO alternatives, 6-field Notion References; added voterfile/writer modules to layout |
 | 1.0.0 | 2026-05-24 | Initial release — httpx refactor, Pydantic v2 models, DuckDB voterfile matching |
