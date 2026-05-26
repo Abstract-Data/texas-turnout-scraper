@@ -395,6 +395,7 @@ def run_audit(
 
     from .audit import audit_records
     from .writer import (
+        load_stored_turnout_for_audit,
         read_roster_csv,
         report_date_from_roster_csv,
         stored_roster_ev_path,
@@ -424,8 +425,15 @@ def run_audit(
     )
 
     records = read_roster_csv(roster_path)
+    turnout = load_stored_turnout_for_audit(
+        Path(data_dir),
+        source_key,
+        election_id,
+        report_dates={r.report_date for r in records} or None,
+    )
     report = audit_records(
         records,
+        turnout=turnout,
         election_id=election_id,
         report_date=report_date,
         source=source_key,

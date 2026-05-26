@@ -2,6 +2,9 @@
 
 from datetime import date
 
+import pytest
+from pydantic import ValidationError
+
 from texas_turnout_scraper.enums import ElectionType, VoteMethod
 from texas_turnout_scraper.models import (
     AuditReport,
@@ -62,6 +65,19 @@ def test_voter_record_duplicate_defaults():
 def test_voter_record_voter_name_defaults_empty():
     r = _voter()
     assert r.voter_name == ""
+
+
+def test_voter_record_rejects_unknown_fields():
+    with pytest.raises(ValidationError):
+        VoterRecord(
+            id_voter="0123456789",
+            voting_method=VoteMethod.IN_PERSON,
+            precinct="100",
+            county="HARRIS",
+            election_id="53813",
+            report_date=date(2026, 2, 27),
+            extra_field="not-allowed",  # type: ignore[call-arg]
+        )
 
 
 # ---------------------------------------------------------------------------

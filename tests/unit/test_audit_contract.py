@@ -56,6 +56,11 @@ def _make_record(
             {FindingType.CONFLICTING_METHOD.value},
             id="conflicting_method_finding",
         ),
+        pytest.param(
+            [_make_record(vuid="1"), _make_record(vuid="1")],
+            {FindingType.DUPLICATE_VUID.value},
+            id="duplicate_vuid_finding",
+        ),
     ],
 )
 def test_audit_roster_emits_canonical_finding_types(records, expected_types):

@@ -32,7 +32,6 @@ import httpx
 from requests.exceptions import HTTPError as RequestsHTTPError
 from requests.exceptions import RequestException
 
-from .enums import VoteMethod
 from .legacy_forms import legacy_ev_form_fields
 from .models import CountyRoster, VoterRecord
 from .session import LegacySession

@@ -57,6 +57,25 @@ def _check_multiple_dates(records: list[VoterRecord]) -> list[AuditFinding]:
     ]
 
 
+def _check_duplicate_vuids(records: list[VoterRecord]) -> list[AuditFinding]:
+    if not records:
+        return []
+    vuid_row_counts = collections.Counter(r.id_voter for r in records)
+    affected = sum(1 for count in vuid_row_counts.values() if count > 1)
+    if not affected:
+        return []
+    return [
+        AuditFinding(
+            finding_type=FindingType.DUPLICATE_VUID.value,
+            severity="warning",
+            detail=(
+                f"{affected} VUID(s) appear more than once in the roster "
+                f"({len(records)} total records)"
+            ),
+        )
+    ]
+
+
 def _check_conflicting_methods(records: list[VoterRecord]) -> list[AuditFinding]:
     if not records:
         return []
@@ -194,6 +213,7 @@ def audit_records(
     materialized = list(records)
     findings: list[AuditFinding] = []
     findings.extend(_check_multiple_dates(materialized))
+    findings.extend(_check_duplicate_vuids(materialized))
     findings.extend(_check_conflicting_methods(materialized))
     findings.extend(_check_multiple_counties(materialized))
     findings.extend(_check_name_mismatches(materialized))

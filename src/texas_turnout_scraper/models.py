@@ -31,7 +31,8 @@ def _utc_now() -> datetime:
 class VoterRecord(BaseModel):
     """A single voter's record from a roster CSV.
 
-    ``voter_name`` is intentionally excluded — it is PII and must not be stored.
+    ``voter_name`` is stored only for duplicate name-mismatch detection across
+    appearances; it is PII and must not be logged or returned from MCP tools.
     ``id_voter`` is always a 10-digit string; never coerce to int.
 
     Duplicate detection fields are populated by ``accumulate_roster()`` after all
@@ -42,7 +43,7 @@ class VoterRecord(BaseModel):
     appearance is its own row — duplicates are flagged, not collapsed.
     """
 
-    model_config = ConfigDict(frozen=False)
+    model_config = ConfigDict(frozen=False, extra="forbid")
 
     id_voter: str  # 10-digit Texas VUID string — NEVER int
     voting_method: VoteMethod

@@ -39,6 +39,7 @@ class Source(str, enum.Enum):
 class FindingType(str, enum.Enum):
     """Canonical audit finding types (schema 2.0)."""
 
+    DUPLICATE_VUID = "duplicate_vuid"
     MULTIPLE_COUNTIES = "multiple_counties"
     CONFLICTING_METHOD = "conflicting_method"
     MULTIPLE_DATES = "multiple_dates"

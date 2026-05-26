@@ -20,7 +20,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MCP_SERVER = REPO_ROOT / "src" / "texas_turnout_scraper" / "mcp_server.py"
 TEST_FILE = REPO_ROOT / "tests" / "unit" / "test_mcp_server.py"
@@ -84,8 +83,8 @@ def check_mcp_tools_have_tests() -> None:
     if missing:
         lines = [
             "",
-            f"The following @mcp.tool() functions in mcp_server.py have NO corresponding test",
-            f"in tests/unit/test_mcp_server.py:",
+            "The following @mcp.tool() functions in mcp_server.py have NO corresponding test",
+            "in tests/unit/test_mcp_server.py:",
             "",
             *(f"  - {name}" for name in missing),
             "",

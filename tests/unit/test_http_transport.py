@@ -90,6 +90,72 @@ def test_stream_iter_bytes_httpx() -> None:
         client.close()
 
 
+@respx.mock
+def test_get_retries_on_502_then_succeeds() -> None:
+    route = respx.get(f"{_BASE}/retry-get").mock(
+        side_effect=[
+            httpx.Response(502, text="bad gateway"),
+            httpx.Response(502, text="bad gateway"),
+            httpx.Response(200, text="ok"),
+        ]
+    )
+
+    client = PacedHttpClient(_BASE, backend="httpx")
+    try:
+        resp = client.get("/retry-get")
+        assert resp.text == "ok"
+        assert route.call_count == 3
+    finally:
+        client.close()
+
+
+@respx.mock
+def test_post_retries_on_502_then_succeeds() -> None:
+    route = respx.post(f"{_BASE}/retry-post").mock(
+        side_effect=[
+            httpx.Response(502, text="bad gateway"),
+            httpx.Response(502, text="bad gateway"),
+            httpx.Response(200, text="ok-post"),
+        ]
+    )
+
+    client = PacedHttpClient(_BASE, backend="httpx")
+    try:
+        resp = client.post("/retry-post", data={"idElection": "49664"})
+        assert resp.text == "ok-post"
+        assert route.call_count == 3
+    finally:
+        client.close()
+
+
+@respx.mock
+def test_get_exhausts_retries_on_persistent_502() -> None:
+    respx.get(f"{_BASE}/retry-fail").mock(return_value=httpx.Response(502, text="bad gateway"))
+
+    client = PacedHttpClient(_BASE, backend="httpx")
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            client.get("/retry-fail")
+        assert len(respx.calls) == 3
+    finally:
+        client.close()
+
+
+@respx.mock
+def test_post_exhausts_retries_on_persistent_502() -> None:
+    respx.post(f"{_BASE}/retry-fail-post").mock(
+        return_value=httpx.Response(502, text="bad gateway")
+    )
+
+    client = PacedHttpClient(_BASE, backend="httpx")
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            client.post("/retry-fail-post", data={"idElection": "49664"})
+        assert len(respx.calls) == 3
+    finally:
+        client.close()
+
+
 def test_stream_iter_bytes_cloudscraper_adapter() -> None:
     """cloudscraper path uses requests stream + _RequestsStreamAdapter.iter_bytes."""
     mock_response = MagicMock()

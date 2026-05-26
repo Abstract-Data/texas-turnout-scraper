@@ -347,6 +347,7 @@ Full reference: `docs/GITBUTLER.md`. Rationale for adoption: `docs/adr/006-gitbu
 - Create git commits only when the user explicitly requests them.
 - Prefer parallel subagents for independent multi-module or multi-tranche work (e.g. civix + legacy CLI, review-fix plans).
 - When implementing from an attached plan, do not edit the plan file; treat it as read-only scope.
+- When a plan already has todos, do not recreate them; mark each `in_progress` then `completed` as you work through the list.
 - When asked to fix review findings, run fix → `/review` repeatedly until no issues remain (e.g. “Fix everything” / “until we're all clear”).
 
 ## Learned Workspace Facts
@@ -359,10 +360,10 @@ Full reference: `docs/GITBUTLER.md`. Rationale for adoption: `docs/adr/006-gitbu
 - **`writer.py`** exposes **`ROSTER_CSV_COLUMNS`** for CSV header parity; duplicate **`also_found_on`** uses row-index matching (same county/date duplicates still cross-reference).
 - Integration tests require **`--live`** (`tests/conftest.py` skips them otherwise); run with `uv run pytest tests/integration/ -v --live`.
 - Full local verification: `uv sync --dev`, ruff `E,W,F,I`, `uv run ty check`, `pytest tests/unit`, `pytest tests/verify`, then optional live integration.
-- **CLI** is namespaced: **`tx-turnout civix|legacy|audit|voterfile`** (not flat `elections list` / `roster fetch` shapes in older docs).
-- **All EV days for one election:** `civix fetch-all <id>` / `legacy fetch-all <id>` → `data/elections/{civix|legacy}/{id}/roster_ev_{id}.csv`; batch stale elections: **`civix|legacy refresh-all`** (drives **`data-refresh.yml`**).
-- **`civix elections`** — interactive **questionary** menus on TTY (newest election first); **`--no-interactive`** for scripts/CI.
+- **CLI:** namespaced **`tx-turnout civix|legacy|audit|voterfile`**; **`fetch-all <id>`** → `data/elections/{civix|legacy}/{id}/roster_ev_{id}.csv`; **`refresh-all`** for batch stale elections; **`civix elections`** uses **questionary** on TTY (`--no-interactive` for CI).
 - **HTTP/Typer:** default Civix/legacy HTTP uses **cloudscraper** — catch **`requests.HTTPError`** as well as **`httpx.HTTPError`**; CLI EV dates use string **`EvDateStr`**, not **`Annotated[date]`** (Typer 0.25 registration fails on `date`).
+- **Release Please:** `.github/workflows/release-please.yml` + `release-please-config.json`; conventional commits on **`main`** open release PRs updating **`CHANGELOG.md`** and **`pyproject.toml`** version.
+- **Audit:** canonical **`audit.audit_records()`** + **`FindingType`** enum (`tests/unit/test_audit_contract.py`); combined EV audits at **`data/elections/{source}/{id}/audit_ev_{id}.json`** via **`writer.stored_audit_ev_path`**.
 
 ---
 

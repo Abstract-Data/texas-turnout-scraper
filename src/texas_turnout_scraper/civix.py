@@ -24,7 +24,6 @@ import zipfile
 from datetime import date
 from typing import Any
 
-from .enums import VoteMethod
 from .http_transport import HttpBackend, PacedHttpClient
 from .models import (
     CivixCountyRef,

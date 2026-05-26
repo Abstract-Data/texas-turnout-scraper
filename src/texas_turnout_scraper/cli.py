@@ -784,7 +784,7 @@ def civix_fetch_all(
     from .audit import audit_records
     from .civix import CivixClient, fetch_county_roster
     from .http_transport import HTTP_FETCH_EXCEPTIONS, format_fetch_error
-    from .writer import accumulate_roster, write_roster_csv
+    from .writer import accumulate_roster, load_stored_turnout_for_audit, write_roster_csv
 
     logger = logging.getLogger(__name__)
     with CivixClient(pace_seconds=pace) as client:
@@ -870,9 +870,23 @@ def civix_fetch_all(
     typer.echo(f"Wrote: {output_path}")
 
     if write_audit:
+        audit_report_date = max(r.report_date for r in records)
+        data_root = (
+            output_dir.parent.parent
+            if output_dir.name in {"civix", "legacy"}
+            else output_dir
+        )
+        turnout = load_stored_turnout_for_audit(
+            data_root,
+            "civix",
+            election_id,
+            report_dates={r.report_date for r in records},
+        )
         report = audit_records(
             records,
+            turnout=turnout,
             election_id=election_id,
+            report_date=audit_report_date,
             source="civix",
         )
         audit_path = output_dir / election_id / f"audit_ev_{election_id}.json"
@@ -1152,11 +1166,12 @@ def legacy_fetch_all(
 
     from . import legacy_api
     from .audit import audit_records
+    from .http_transport import HTTP_FETCH_EXCEPTIONS, format_fetch_error
     from .models import CountyRoster
     from .roster import fetch_roster_strategy_a
     from .session import LegacySession
     from .turnout import extract_county_ids, fetch_ev_details_html
-    from .writer import accumulate_roster, write_roster_csv
+    from .writer import accumulate_roster, load_stored_turnout_for_audit, write_roster_csv
 
     logger = logging.getLogger(__name__)
     filter_ids: set[str] | None = None
@@ -1204,7 +1219,19 @@ def legacy_fetch_all(
             date_label = ev_date.isoformat()
             typer.echo(f"[{date_label}] Fetching counties...", nl=False)
 
-            html = fetch_ev_details_html(session, source_election_id, ev_date)
+            try:
+                html = fetch_ev_details_html(session, source_election_id, ev_date)
+            except (*HTTP_FETCH_EXCEPTIONS, ValueError, RuntimeError) as exc:
+                detail = format_fetch_error(exc)
+                fetch_failures.append(f"{date_label}: turnout HTML failed ({detail})")
+                logger.warning(
+                    "Turnout HTML fetch failed for election %s on %s: %s",
+                    source_election_id,
+                    date_label,
+                    detail,
+                )
+                continue
+
             id_by_name = extract_county_ids(html)
             if not id_by_name:
                 typer.echo("  warning: no county IDs in turnout HTML", err=True)
@@ -1244,8 +1271,9 @@ def legacy_fetch_all(
                         skip_prime=True,
                     )
                     date_rosters.extend(county_rosters)
-                except RuntimeError:
-                    fetch_failures.append(f"{county_label}/{date_label}: county fetch failed")
+                except (*HTTP_FETCH_EXCEPTIONS, ValueError, RuntimeError) as exc:
+                    detail = format_fetch_error(exc)
+                    fetch_failures.append(f"{county_label}/{date_label}: {detail}")
                     logger.warning(
                         "County fetch failed for county_id=%s on %s.",
                         county_id,
@@ -1292,9 +1320,23 @@ def legacy_fetch_all(
     typer.echo(f"Wrote: {roster_path}")
 
     if audit:
+        audit_report_date = max(r.report_date for r in records)
+        data_root = (
+            output_dir.parent.parent
+            if output_dir.name in {"civix", "legacy"}
+            else output_dir
+        )
+        turnout = load_stored_turnout_for_audit(
+            data_root,
+            "legacy",
+            source_election_id,
+            report_dates={r.report_date for r in records},
+        )
         report = audit_records(
             records,
+            turnout=turnout,
             election_id=source_election_id,
+            report_date=audit_report_date,
             source="legacy",
         )
         audit_path.write_text(json.dumps(report.model_dump(mode="json"), indent=2))
@@ -1426,6 +1468,7 @@ def audit_run(
     """Run data quality audit on a stored combined roster (roster_ev_{id}.csv)."""
     from .audit import audit_records
     from .writer import (
+        load_stored_turnout_for_audit,
         read_roster_csv,
         report_date_from_roster_csv,
         stored_audit_ev_path,
@@ -1447,8 +1490,16 @@ def audit_run(
     )
 
     records = read_roster_csv(roster_path)
+    report_dates = {r.report_date for r in records}
+    turnout = load_stored_turnout_for_audit(
+        data_dir,
+        source_key,
+        election_id,
+        report_dates=report_dates or None,
+    )
     report = audit_records(
         records,
+        turnout=turnout,
         election_id=election_id,
         report_date=parsed_date,
         source=source_key,
