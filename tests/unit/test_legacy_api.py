@@ -23,9 +23,7 @@ _LOVING_CSV = (FIXTURES / "legacy_voter_info_loving.csv").read_text()
 def _synthetic_county_csv(county_label: str, count: int) -> str:
     lines = ['"VOTER_NAME","ID_VOTER","VOTING_METHOD","PRECINCT"']
     for i in range(1, count + 1):
-        lines.append(
-            f'"DOE, {county_label} {i}","300000000{i:02d}","IN-PERSON","1"'
-        )
+        lines.append(f'"DOE, {county_label} {i}","300000000{i:02d}","IN-PERSON","1"')
     return "\n".join(lines) + "\n"
 
 
@@ -115,9 +113,7 @@ def test_fetch_roster_resolves_county_ids_from_turnout_html() -> None:
                 return httpx.Response(200, text=_COUNTY_CSV_BY_ID[county_id])
         return httpx.Response(200, text="")
 
-    respx.post(f"{BASE_URL}/Elections/downloadVoterInfoReport.do").mock(
-        side_effect=roster_handler
-    )
+    respx.post(f"{BASE_URL}/Elections/downloadVoterInfoReport.do").mock(side_effect=roster_handler)
 
     rosters = legacy_api.fetch_roster(
         _ELECTION_ID,
@@ -187,6 +183,7 @@ def test_fetch_roster_strategy_a_writes_per_county_csvs(tmp_path: Path) -> None:
     respx.post(f"{BASE_URL}/Elections/getEVDetails.do").mock(
         return_value=httpx.Response(200, text=_load_text("legacy_ev_details_49664.html"))
     )
+
     def roster_handler(request: httpx.Request) -> httpx.Response:
         body = request.content.decode()
         for county_id in _COUNTY_CSV_BY_ID:
@@ -194,9 +191,7 @@ def test_fetch_roster_strategy_a_writes_per_county_csvs(tmp_path: Path) -> None:
                 return httpx.Response(200, text=_COUNTY_CSV_BY_ID[county_id])
         return httpx.Response(200, text="")
 
-    respx.post(f"{BASE_URL}/Elections/downloadVoterInfoReport.do").mock(
-        side_effect=roster_handler
-    )
+    respx.post(f"{BASE_URL}/Elections/downloadVoterInfoReport.do").mock(side_effect=roster_handler)
 
     rosters = legacy_api.fetch_roster(
         _ELECTION_ID,

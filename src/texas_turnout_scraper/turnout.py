@@ -62,7 +62,7 @@ def fetch_ev_details_html(
         Raw HTML string from the portal.
     """
     session.prime_election(source_election_id)
-    resp = session._post_form(
+    resp = session.post_form(
         _EV_DETAILS_PATH,
         legacy_ev_form_fields(source_election_id, ev_date),
     )

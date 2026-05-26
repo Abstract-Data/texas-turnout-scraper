@@ -21,8 +21,8 @@ from texas_turnout_scraper.civix import (
     _decode_envelope,
     fetch_county_roster,
 )
-from texas_turnout_scraper.http_transport import _MAX_HTTP_RETRIES
 from texas_turnout_scraper.enums import ElectionType, VoteMethod
+from texas_turnout_scraper.http_transport import _MAX_HTTP_RETRIES
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "early_voting"
 
@@ -257,9 +257,7 @@ def test_fetch_ev_roster_csv_returns_voter_records() -> None:
     _mock_ev_roster_csv()
 
     with CivixClient(http_backend="httpx") as client:
-        records = client.fetch_ev_roster_csv(
-            53813, date(2026, 2, 27), "HARRIS", 101
-        )
+        records = client.fetch_ev_roster_csv(53813, date(2026, 2, 27), "HARRIS", 101)
 
     assert len(records) == 10
     assert all(isinstance(r.id_voter, str) for r in records)
@@ -278,9 +276,7 @@ def test_fetch_ev_roster_csv_id_voter_is_always_string() -> None:
     _mock_ev_roster_csv()
 
     with CivixClient(http_backend="httpx") as client:
-        records = client.fetch_ev_roster_csv(
-            53813, date(2026, 2, 27), "HARRIS", 101
-        )
+        records = client.fetch_ev_roster_csv(53813, date(2026, 2, 27), "HARRIS", 101)
 
     for record in records:
         assert isinstance(record.id_voter, str)
@@ -309,9 +305,7 @@ def test_fetch_ev_roster_csv_normalizes_unpadded_vuid() -> None:
     ).mock(return_value=_civix_csv_response(csv_text))
 
     with CivixClient(http_backend="httpx") as client:
-        records = client.fetch_ev_roster_csv(
-            53813, date(2026, 2, 27), "HARRIS", 101
-        )
+        records = client.fetch_ev_roster_csv(53813, date(2026, 2, 27), "HARRIS", 101)
 
     assert len(records) == 1
     assert records[0].id_voter == "0123456789"
@@ -324,9 +318,7 @@ def test_fetch_ev_roster_csv_voter_name_stored() -> None:
     _mock_ev_roster_csv()
 
     with CivixClient(http_backend="httpx") as client:
-        records = client.fetch_ev_roster_csv(
-            53813, date(2026, 2, 27), "HARRIS", 101
-        )
+        records = client.fetch_ev_roster_csv(53813, date(2026, 2, 27), "HARRIS", 101)
 
     assert records[0].voter_name == "DOE, JOHN A"
 
@@ -359,9 +351,7 @@ def test_fetch_ed_roster_zip_parses_all_csvs_in_zip() -> None:
     _mock_ed_roster_zip(row_count_per_csv=2)
 
     with CivixClient(http_backend="httpx") as client:
-        records = client.fetch_ed_roster_zip(
-            53813, date(2026, 3, 3), "HARRIS", 101
-        )
+        records = client.fetch_ed_roster_zip(53813, date(2026, 3, 3), "HARRIS", 101)
 
     # Two rows from part_a + one row from part_b; readme.txt skipped
     assert len(records) == 3
@@ -526,13 +516,13 @@ def test_pacing_enforced(mock_sleep) -> None:
         params={"type": "EVR_ELECTION"},
     ).mock(return_value=_civix_json_response(election_data))
 
-    with CivixClient(http_backend="httpx", pace_seconds=0.1) as client:
+    with CivixClient(http_backend="httpx", pace_seconds=1.0) as client:
         client._last_request = 1.0
         with patch("texas_turnout_scraper.civix.time.monotonic", return_value=1.05):
             client.list_elections()
 
     mock_sleep.assert_called_once()
-    assert mock_sleep.call_args.args[0] == pytest.approx(0.05, abs=0.001)
+    assert mock_sleep.call_args.args[0] == pytest.approx(0.95, abs=0.001)
 
     _assert_http_mocked(1)
 

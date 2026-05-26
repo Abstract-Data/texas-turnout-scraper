@@ -34,7 +34,9 @@ def test_exit_on_legacy_api_error_writes_stderr(capsys: pytest.CaptureFixture[st
 def test_legacy_roster_fetch_exits_on_value_error(capsys: pytest.CaptureFixture[str]) -> None:
     with patch(
         "texas_turnout_scraper.legacy_api.fetch_roster",
-        side_effect=ValueError("No county IDs found in turnout HTML for election 49664 on 2024-10-21"),
+        side_effect=ValueError(
+            "No county IDs found in turnout HTML for election 49664 on 2024-10-21"
+        ),
     ):
         with pytest.raises(typer.Exit) as exc_info:
             legacy_roster_fetch("49664", _EV_DATE)
@@ -62,10 +64,7 @@ def test_legacy_turnout_fetch_exits_on_runtime_error(capsys: pytest.CaptureFixtu
 def test_legacy_list_elections_mcp_omits_ev_dates_count() -> None:
     """MCP legacy_list_elections must not expose misleading ev_dates_count on list."""
     mcp_source = (
-        Path(__file__).resolve().parents[2]
-        / "src"
-        / "texas_turnout_scraper"
-        / "mcp_server.py"
+        Path(__file__).resolve().parents[2] / "src" / "texas_turnout_scraper" / "mcp_server.py"
     ).read_text()
     fn_block = mcp_source.split("def legacy_list_elections")[1].split("@mcp.tool()")[0]
 

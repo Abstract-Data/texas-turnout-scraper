@@ -6,6 +6,8 @@ live integration tests default to ``backend="cloudscraper"``.
 
 from __future__ import annotations
 
+import random
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Literal
@@ -35,6 +37,7 @@ def format_fetch_error(exc: BaseException) -> str:
         if status_code is not None:
             return f"HTTP {status_code}"
     return type(exc).__name__
+
 
 _DEFAULT_HEADERS = {
     "User-Agent": (
@@ -100,6 +103,43 @@ class PacedHttpClient:
             return path
         return f"{self._base_url}{path}"
 
+    def _request_with_retry(
+        self,
+        method: str,
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+        retry_status_codes: frozenset[int] = _RETRYABLE_STATUS_CODES,
+        max_retries: int = _MAX_HTTP_RETRIES,
+        **kwargs: Any,
+    ) -> Any:
+        last_response: Any = None
+        for attempt in range(max_retries + 1):
+            if self._httpx is not None:
+                if method.upper() == "GET":
+                    last_response = self._httpx.get(path, **kwargs)
+                else:
+                    last_response = self._httpx.request(method, path, data=data, **kwargs)
+            else:
+                last_response = self._scraper.request(
+                    method,
+                    self._url(path),
+                    data=data,
+                    timeout=self._timeout,
+                    allow_redirects=self._follow_redirects,
+                    **kwargs,
+                )
+            status_code = getattr(last_response, "status_code", None)
+            if status_code in retry_status_codes and attempt < max_retries:
+                time.sleep((2**attempt) + random.uniform(0, 0.5))
+                continue
+            last_response.raise_for_status()
+            return last_response
+        if last_response is not None:
+            last_response.raise_for_status()
+        msg = f"{method.upper()} request failed without a response"
+        raise RuntimeError(msg)
+
     def get(
         self,
         path: str,
@@ -108,50 +148,34 @@ class PacedHttpClient:
         max_retries: int = _MAX_HTTP_RETRIES,
         **kwargs: Any,
     ) -> Any:
-        last_response: Any = None
-        for attempt in range(max_retries + 1):
-            if self._httpx is not None:
-                last_response = self._httpx.get(path, **kwargs)
-            else:
-                last_response = self._scraper.get(
-                    self._url(path),
-                    timeout=self._timeout,
-                    allow_redirects=self._follow_redirects,
-                    **kwargs,
-                )
-            status_code = getattr(last_response, "status_code", None)
-            if (
-                status_code in retry_status_codes
-                and attempt < max_retries
-            ):
-                import time
-
-                time.sleep(2.0 * (attempt + 1))
-                continue
-            last_response.raise_for_status()
-            return last_response
-        if last_response is not None:
-            last_response.raise_for_status()
-        msg = "GET request failed without a response"
-        raise RuntimeError(msg)
+        return self._request_with_retry(
+            "GET",
+            path,
+            retry_status_codes=retry_status_codes,
+            max_retries=max_retries,
+            **kwargs,
+        )
 
     def post(
-        self, path: str, data: dict[str, str] | None = None, **kwargs: Any
+        self,
+        path: str,
+        data: dict[str, str] | None = None,
+        *,
+        retry_status_codes: frozenset[int] = _RETRYABLE_STATUS_CODES,
+        max_retries: int = _MAX_HTTP_RETRIES,
+        **kwargs: Any,
     ) -> Any:
-        if self._httpx is not None:
-            return self._httpx.post(path, data=data, **kwargs)
-        return self._scraper.post(
-            self._url(path),
+        return self._request_with_retry(
+            "POST",
+            path,
             data=data,
-            timeout=self._timeout,
-            allow_redirects=self._follow_redirects,
+            retry_status_codes=retry_status_codes,
+            max_retries=max_retries,
             **kwargs,
         )
 
     @contextmanager
-    def stream(
-        self, method: str, path: str, **kwargs: Any
-    ) -> Iterator[Any]:
+    def stream(self, method: str, path: str, **kwargs: Any) -> Iterator[Any]:
         """Stream a request body (httpx native; requests via ``stream=True``)."""
         if self._httpx is not None:
             with self._httpx.stream(method, path, **kwargs) as response:

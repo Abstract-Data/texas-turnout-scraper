@@ -6,14 +6,17 @@ Two data sources:
 
 Both produce the same shared output models: VoterRecord, CountyRoster, CountyTurnout, AuditReport.
 """
+
 from __future__ import annotations
 
 __version__ = "0.2.0"
 
 # Enums
 # Civix client
+# Writer / accumulation
+from .audit import audit_records
 from .civix import CivixClient
-from .enums import ElectionType, PoliticalParty, VoteMethod, infer_election_type
+from .enums import ElectionType, VoteMethod, infer_election_type
 from .legacy_api import (
     fetch_county_turnout,
     fetch_roster,
@@ -52,11 +55,8 @@ from .voterfile import (
     write_enriched_csv,
     write_match_report_json,
 )
-
-# Writer / accumulation
 from .writer import (
     accumulate_roster,
-    audit_from_records,
     read_roster_csv,
     roster_csv_to_text,
     write_roster_csv,
@@ -77,14 +77,13 @@ __all__ = [
     "EnrichedVoterRecord",
     "LegacyEVDate",
     "LegacyElection",
-    "PoliticalParty",
     "VoteMethod",
     "VoterRecord",
     "VoterfileMatchReport",
     "__version__",
     "accumulate_roster",
     "age_bracket",
-    "audit_from_records",
+    "audit_records",
     "detect_columns",
     "fetch_county_turnout",
     "fetch_roster",

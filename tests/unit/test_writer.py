@@ -1,4 +1,5 @@
-"""Unit tests for writer.py — accumulate_roster, CSV I/O, audit_from_records."""
+"""Unit tests for writer.py — accumulate_roster, CSV I/O, audit_records."""
+
 from __future__ import annotations
 
 import csv
@@ -8,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from texas_turnout_scraper.enums import VoteMethod
+from texas_turnout_scraper.audit import audit_records
+from texas_turnout_scraper.enums import FindingType, VoteMethod
 from texas_turnout_scraper.models import CountyRoster, VoterRecord
 from texas_turnout_scraper.writer import (
     ROSTER_CSV_COLUMNS,
     accumulate_roster,
-    audit_from_records,
     read_roster_csv,
     roster_csv_to_text,
     write_roster_csv,
@@ -69,6 +70,7 @@ def _duplicate_flags_from_csv(path: Path) -> list[str]:
 # accumulate_roster — basic
 # ---------------------------------------------------------------------------
 
+
 def test_accumulate_returns_all_records():
     r1 = _roster("HARRIS", [_rec("0000000001"), _rec("0000000002")])
     result = accumulate_roster([r1])
@@ -96,6 +98,7 @@ def test_accumulate_no_duplicate_flag_for_unique_vuids():
 # accumulate_roster — multiple_dates flag
 # ---------------------------------------------------------------------------
 
+
 def test_multiple_dates_flagged():
     """Same VUID on two different report dates → multiple_dates flag."""
     rosters = [
@@ -111,13 +114,17 @@ def test_multiple_dates_flagged():
 # accumulate_roster — conflicting_method flag
 # ---------------------------------------------------------------------------
 
+
 def test_conflicting_method_flagged():
     """Same VUID with IN_PERSON + MAIL_IN → conflicting_method flag."""
     rosters = [
-        _roster("HARRIS", [
-            _rec("2222222222", method=VoteMethod.IN_PERSON),
-            _rec("2222222222", method=VoteMethod.MAIL_IN),
-        ])
+        _roster(
+            "HARRIS",
+            [
+                _rec("2222222222", method=VoteMethod.IN_PERSON),
+                _rec("2222222222", method=VoteMethod.MAIL_IN),
+            ],
+        )
     ]
     result = accumulate_roster(rosters)
     assert all(rec.duplicate_flag for rec in result)
@@ -127,10 +134,13 @@ def test_conflicting_method_flagged():
 def test_also_found_on_same_county_and_date_duplicates():
     """Same VUID twice on one county/date still populates also_found_on."""
     rosters = [
-        _roster("HARRIS", [
-            _rec("2222222222", method=VoteMethod.IN_PERSON),
-            _rec("2222222222", method=VoteMethod.MAIL_IN),
-        ])
+        _roster(
+            "HARRIS",
+            [
+                _rec("2222222222", method=VoteMethod.IN_PERSON),
+                _rec("2222222222", method=VoteMethod.MAIL_IN),
+            ],
+        )
     ]
     result = accumulate_roster(rosters)
     assert len(result) == 2
@@ -141,6 +151,7 @@ def test_also_found_on_same_county_and_date_duplicates():
 # ---------------------------------------------------------------------------
 # accumulate_roster — multiple_counties flag
 # ---------------------------------------------------------------------------
+
 
 def test_multiple_counties_flagged():
     """Same VUID in two different counties → multiple_counties flag."""
@@ -157,13 +168,17 @@ def test_multiple_counties_flagged():
 # accumulate_roster — name_mismatch flag
 # ---------------------------------------------------------------------------
 
+
 def test_name_mismatch_flagged():
     """Same VUID with different voter names → name_mismatch flag."""
     rosters = [
-        _roster("HARRIS", [
-            _rec("4444444444", voter_name=_SYNTHETIC_NAME_A),
-            _rec("4444444444", voter_name=_SYNTHETIC_NAME_B),
-        ])
+        _roster(
+            "HARRIS",
+            [
+                _rec("4444444444", voter_name=_SYNTHETIC_NAME_A),
+                _rec("4444444444", voter_name=_SYNTHETIC_NAME_B),
+            ],
+        )
     ]
     result = accumulate_roster(rosters)
     assert all(rec.duplicate_flag for rec in result)
@@ -173,10 +188,13 @@ def test_name_mismatch_flagged():
 def test_name_mismatch_empty_vs_nonempty():
     """Empty VOTER_NAME vs populated name on same VUID → name_mismatch."""
     rosters = [
-        _roster("HARRIS", [
-            _rec("4444444445", voter_name=""),
-            _rec("4444444445", voter_name=_SYNTHETIC_NAME_A),
-        ])
+        _roster(
+            "HARRIS",
+            [
+                _rec("4444444445", voter_name=""),
+                _rec("4444444445", voter_name=_SYNTHETIC_NAME_A),
+            ],
+        )
     ]
     result = accumulate_roster(rosters)
     assert all("name_mismatch" in rec.duplicate_type for rec in result)
@@ -194,13 +212,17 @@ def test_name_mismatch_not_flagged_when_both_empty():
 # accumulate_roster — precinct_mismatch flag
 # ---------------------------------------------------------------------------
 
+
 def test_precinct_mismatch_flagged():
     """Same VUID in two different precincts → precinct_mismatch flag."""
     rosters = [
-        _roster("HARRIS", [
-            _rec("5555555555", precinct="100"),
-            _rec("5555555555", precinct="200"),
-        ])
+        _roster(
+            "HARRIS",
+            [
+                _rec("5555555555", precinct="100"),
+                _rec("5555555555", precinct="200"),
+            ],
+        )
     ]
     result = accumulate_roster(rosters)
     assert all(rec.duplicate_flag for rec in result)
@@ -210,6 +232,7 @@ def test_precinct_mismatch_flagged():
 # ---------------------------------------------------------------------------
 # accumulate_roster — also_found_on
 # ---------------------------------------------------------------------------
+
 
 def test_also_found_on_contains_other_appearances():
     rosters = [
@@ -240,11 +263,20 @@ def test_also_found_on_three_appearances_deduped():
 # accumulate_roster — multiple flags at once
 # ---------------------------------------------------------------------------
 
+
 def test_multiple_flags_combined():
     """A VUID appearing on two dates with conflicting methods gets both flags."""
     rosters = [
-        _roster("HARRIS", [_rec("7777777777", method=VoteMethod.IN_PERSON, report_date=_D1)], report_date=_D1),
-        _roster("HARRIS", [_rec("7777777777", method=VoteMethod.MAIL_IN, report_date=_D2)], report_date=_D2),
+        _roster(
+            "HARRIS",
+            [_rec("7777777777", method=VoteMethod.IN_PERSON, report_date=_D1)],
+            report_date=_D1,
+        ),
+        _roster(
+            "HARRIS",
+            [_rec("7777777777", method=VoteMethod.MAIL_IN, report_date=_D2)],
+            report_date=_D2,
+        ),
     ]
     result = accumulate_roster(rosters)
     for rec in result:
@@ -288,6 +320,7 @@ def test_accumulate_does_not_mutate_input_records():
 # ---------------------------------------------------------------------------
 # CSV round-trip
 # ---------------------------------------------------------------------------
+
 
 def test_write_and_read_roster_csv_roundtrip():
     records = [
@@ -403,41 +436,48 @@ def test_read_roster_csv_zfills_unpadded_vuid():
 
 
 # ---------------------------------------------------------------------------
-# audit_from_records
+# audit_records
 # ---------------------------------------------------------------------------
 
-def test_audit_from_records_counts_correctly():
+
+def test_audit_records_counts_correctly():
     rosters = [
-        _roster("HARRIS", [
-            _rec("8888888888", method=VoteMethod.IN_PERSON),
-            _rec("8888888888", method=VoteMethod.MAIL_IN),
-            _rec("9999999999"),
-        ])
+        _roster(
+            "HARRIS",
+            [
+                _rec("8888888888", method=VoteMethod.IN_PERSON),
+                _rec("8888888888", method=VoteMethod.MAIL_IN),
+                _rec("9999999999"),
+            ],
+        )
     ]
     flagged = accumulate_roster(rosters)
-    report = audit_from_records(flagged, election_id=_EID, report_date=_D1, source="civix")
+    report = audit_records(flagged, election_id=_EID, report_date=_D1, source="civix")
     assert report.total_records == 3
     assert report.unique_vuids == 2
     assert report.duplicate_vuid_count == 1
     assert report.cross_method_duplicate_count == 1
 
 
-def test_audit_from_records_findings_non_empty_for_duplicates():
+def test_audit_records_findings_non_empty_for_duplicates():
     rosters = [
-        _roster("HARRIS", [
-            _rec("8888888888", method=VoteMethod.IN_PERSON),
-            _rec("8888888888", method=VoteMethod.MAIL_IN),
-        ])
+        _roster(
+            "HARRIS",
+            [
+                _rec("8888888888", method=VoteMethod.IN_PERSON),
+                _rec("8888888888", method=VoteMethod.MAIL_IN),
+            ],
+        )
     ]
     flagged = accumulate_roster(rosters)
-    report = audit_from_records(flagged, election_id=_EID, report_date=_D1, source="civix")
+    report = audit_records(flagged, election_id=_EID, report_date=_D1, source="civix")
     assert len(report.findings) > 0
     finding_types = {f.finding_type for f in report.findings}
     assert "conflicting_method" in finding_types
 
 
-def test_audit_from_records_empty_records():
-    report = audit_from_records([], election_id="49664", report_date=_D1, source="legacy")
+def test_audit_records_empty_records():
+    report = audit_records([], election_id="49664", report_date=_D1, source="legacy")
     assert report.election_id == "49664"
     assert report.report_date == _D1
     assert report.source == "legacy"
@@ -448,16 +488,19 @@ def test_audit_from_records_empty_records():
     assert report.findings == []
 
 
-def test_audit_from_records_overrides_election_id_and_report_date():
+def test_audit_records_overrides_election_id_and_report_date():
     rosters = [
-        _roster("HARRIS", [
-            _rec("8888888888", method=VoteMethod.IN_PERSON),
-            _rec("8888888888", method=VoteMethod.MAIL_IN),
-        ])
+        _roster(
+            "HARRIS",
+            [
+                _rec("8888888888", method=VoteMethod.IN_PERSON),
+                _rec("8888888888", method=VoteMethod.MAIL_IN),
+            ],
+        )
     ]
     flagged = accumulate_roster(rosters)
     override_date = date(2024, 10, 21)
-    report = audit_from_records(
+    report = audit_records(
         flagged,
         election_id="49664",
         report_date=override_date,
@@ -468,37 +511,30 @@ def test_audit_from_records_overrides_election_id_and_report_date():
     assert report.source == "legacy"
 
 
-def test_audit_from_records_no_false_positive_on_substring_flags():
-    """Comma-separated flags must match exactly, not via substring."""
+def test_audit_records_detects_precinct_mismatch_from_data():
+    """audit_records re-detects mismatches from row data, not duplicate_type flags."""
     records = [
-        VoterRecord(
-            id_voter="0000000099",
-            voting_method=VoteMethod.IN_PERSON,
-            precinct="1",
-            county="HARRIS",
-            election_id=_EID,
-            report_date=_D1,
-            duplicate_flag=True,
-            duplicate_type="precinct_mismatch",
-            also_found_on="",
-        )
+        _rec("0000000099", precinct="1"),
+        _rec("0000000099", precinct="2"),
     ]
-    report = audit_from_records(records)
+    report = audit_records(records)
     finding_types = {f.finding_type for f in report.findings}
-    assert "multiple_dates" not in finding_types
-    assert "precinct_mismatch" in finding_types
+    assert FindingType.PRECINCT_MISMATCH.value in finding_types
 
 
-def test_audit_from_records_no_pii_in_findings():
+def test_audit_records_no_pii_in_findings():
     """Finding details must not contain VUIDs or voter name literals."""
     rosters = [
-        _roster("HARRIS", [
-            _rec("1234567890", method=VoteMethod.IN_PERSON, voter_name=_SYNTHETIC_NAME_A),
-            _rec("1234567890", method=VoteMethod.MAIL_IN, voter_name=_SYNTHETIC_NAME_B),
-        ])
+        _roster(
+            "HARRIS",
+            [
+                _rec("1234567890", method=VoteMethod.IN_PERSON, voter_name=_SYNTHETIC_NAME_A),
+                _rec("1234567890", method=VoteMethod.MAIL_IN, voter_name=_SYNTHETIC_NAME_B),
+            ],
+        )
     ]
     flagged = accumulate_roster(rosters)
-    report = audit_from_records(flagged, election_id=_EID, report_date=_D1, source="civix")
+    report = audit_records(flagged, election_id=_EID, report_date=_D1, source="civix")
     for finding in report.findings:
         assert "1234567890" not in finding.detail
         assert _SYNTHETIC_NAME_A not in finding.detail

@@ -16,7 +16,7 @@ from datetime import date, datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .enums import ElectionType, PoliticalParty, VoteMethod, infer_election_type  # noqa: F401
+from .enums import ElectionType, VoteMethod, infer_election_type
 
 
 def _utc_now() -> datetime:
@@ -44,26 +44,57 @@ class VoterRecord(BaseModel):
 
     model_config = ConfigDict(frozen=False)
 
-    id_voter: str           # 10-digit Texas VUID string — NEVER int
+    id_voter: str  # 10-digit Texas VUID string — NEVER int
     voting_method: VoteMethod
     precinct: str
-    county: str             # county name (all-caps)
-    election_id: str        # source_election_id (always str)
-    report_date: date       # the EV date this record was fetched for
+    county: str  # county name (all-caps)
+    election_id: str  # source_election_id (always str)
+    report_date: date  # the EV date this record was fetched for
 
     # Duplicate detection — populated by accumulate_roster()
     # voter_name is stored ONLY to enable name-mismatch detection across appearances;
     # it must not be logged or included in MCP/API responses.
-    voter_name: str = ""    # raw SOS name string — PII, for mismatch detection only
+    voter_name: str = ""  # raw SOS name string — PII, for mismatch detection only
 
     duplicate_flag: bool = False
-    duplicate_type: str = ""        # comma-sep flags, any of:
-                                    #   "multiple_dates"     — same VUID on >1 report date
-                                    #   "conflicting_method" — same VUID with IN-PERSON + MAIL-IN
-                                    #   "multiple_counties"  — same VUID in >1 county
-                                    #   "name_mismatch"      — same VUID but different VOTER_NAME
-                                    #   "precinct_mismatch"  — same VUID but different PRECINCT
-    also_found_on: str = ""         # semicolon-sep "COUNTY|YYYY-MM-DD" pairs for other appearances
+    duplicate_type: str = ""  # comma-sep flags, any of:
+    #   "multiple_dates"     — same VUID on >1 report date
+    #   "conflicting_method" — same VUID with IN-PERSON + MAIL-IN
+    #   "multiple_counties"  — same VUID in >1 county
+    #   "name_mismatch"      — same VUID but different VOTER_NAME
+    #   "precinct_mismatch"  — same VUID but different PRECINCT
+    also_found_on: str = ""  # semicolon-sep "COUNTY|YYYY-MM-DD" pairs for other appearances
+
+    @classmethod
+    def from_csv_row(
+        cls,
+        row: dict[str, str],
+        *,
+        county: str,
+        election_id: str,
+        report_date: date,
+    ) -> VoterRecord:
+        """Build a roster record from a Civix or legacy CSV row dict."""
+        raw_id = row.get("ID_VOTER", "").strip()
+        return cls(
+            id_voter=raw_id.zfill(10),
+            voter_name=row.get("VOTER_NAME", "").strip(),
+            precinct=row.get("PRECINCT", "").strip(),
+            voting_method=_parse_voting_method(row.get("VOTING_METHOD", "")),
+            county=county,
+            election_id=election_id,
+            report_date=report_date,
+        )
+
+
+def _parse_voting_method(raw: str) -> VoteMethod:
+    upper = raw.upper().strip()
+    if "MAIL" in upper:
+        return VoteMethod.MAIL_IN
+    try:
+        return VoteMethod(upper)
+    except ValueError:
+        return VoteMethod.IN_PERSON
 
 
 class CountyRoster(BaseModel):
@@ -86,6 +117,14 @@ class CountyRoster(BaseModel):
     @property
     def total_voters(self) -> int:
         return len(self.records)
+
+    @property
+    def in_person_count(self) -> int:
+        return sum(1 for r in self.records if r.voting_method is VoteMethod.IN_PERSON)
+
+    @property
+    def mail_in_count(self) -> int:
+        return sum(1 for r in self.records if r.voting_method is VoteMethod.MAIL_IN)
 
 
 class CountyTurnout(BaseModel):
@@ -110,7 +149,7 @@ class AuditFinding(BaseModel):
 
     model_config = ConfigDict(frozen=False)
 
-    finding_type: str  # "duplicate_vuid", "cross_method_duplicate", "turnout_anomaly", "missing_county"
+    finding_type: str
     county: str | None = None
     detail: str
     severity: str  # "error", "warning", "info"
@@ -130,6 +169,7 @@ class AuditReport(BaseModel):
     cross_method_duplicate_count: int
     findings: list[AuditFinding] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=_utc_now)
+    audit_schema_version: str = "2.0"
 
 
 # ---------------------------------------------------------------------------
@@ -230,16 +270,16 @@ class ColumnMapping(BaseModel):
     model_config = ConfigDict(frozen=False)
 
     # Primary join key — required
-    vuid: str | None = None          # column containing Texas VUID
+    vuid: str | None = None  # column containing Texas VUID
 
     # District fields
-    cd: str | None = None            # Congressional District column
-    hd: str | None = None            # State House District column
-    sd: str | None = None            # State Senate District column
+    cd: str | None = None  # Congressional District column
+    hd: str | None = None  # State House District column
+    sd: str | None = None  # State Senate District column
 
     # Geographic
-    county: str | None = None        # County column
-    precinct: str | None = None      # Precinct column
+    county: str | None = None  # County column
+    precinct: str | None = None  # Precinct column
 
     # Name fields (use full_name OR first_name + last_name)
     full_name: str | None = None
@@ -247,16 +287,16 @@ class ColumnMapping(BaseModel):
     last_name: str | None = None
 
     # Demographics
-    dob: str | None = None           # Date of birth — expects YYYYMMDD or YYYY-MM-DD
+    dob: str | None = None  # Date of birth — expects YYYYMMDD or YYYY-MM-DD
     sex: str | None = None
     hispanic: str | None = None
 
     # Registration
-    status: str | None = None        # Voter status (V = active)
+    status: str | None = None  # Voter status (V = active)
 
     # Source metadata
-    voterfile_path: str | None = None    # path to the voterfile this mapping was built for
-    created_at: str | None = None        # ISO timestamp
+    voterfile_path: str | None = None  # path to the voterfile this mapping was built for
+    created_at: str | None = None  # ISO timestamp
 
 
 class EnrichedVoterRecord(BaseModel):
@@ -285,10 +325,10 @@ class EnrichedVoterRecord(BaseModel):
 
     # Voterfile-enriched fields (None when voter not found in voterfile)
     in_voterfile: bool = False
-    cd: str | None = None           # Congressional District
-    hd: str | None = None           # State House District
-    sd: str | None = None           # State Senate District
-    vf_county: str | None = None    # County from voterfile (cross-check)
+    cd: str | None = None  # Congressional District
+    hd: str | None = None  # State House District
+    sd: str | None = None  # State Senate District
+    vf_county: str | None = None  # County from voterfile (cross-check)
     vf_precinct: str | None = None  # Precinct from voterfile (cross-check)
     age_bracket: str | None = None  # "18-24", "25-34", ..., "75+"
     sex: str | None = None
@@ -315,9 +355,9 @@ class VoterfileMatchReport(BaseModel):
     # Match summary
     total_roster_records: int
     total_voterfile_records: int | None = None  # full-file count; None if skipped
-    matched_count: int                  # roster records found in voterfile
-    unmatched_count: int                # roster records NOT in voterfile
-    match_rate: float                   # matched / total_roster_records
+    matched_count: int  # roster records found in voterfile
+    unmatched_count: int  # roster records NOT in voterfile
+    match_rate: float  # matched / total_roster_records
 
     # Breakdowns (matched records only)
     by_cd: dict[str, int] = {}

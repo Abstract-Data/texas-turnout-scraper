@@ -29,45 +29,40 @@ class VoteMethod(str, enum.Enum):
     MAIL_IN = "MAIL-IN"
 
 
-class PoliticalParty(str, enum.Enum):
-    """Political party affiliation recorded on a voter roster entry."""
+class Source(str, enum.Enum):
+    """Data source for roster and turnout artifacts."""
 
-    REPUBLICAN = "REPUBLICAN"
-    DEMOCRATIC = "DEMOCRATIC"
-    LIBERTARIAN = "LIBERTARIAN"
-    GREEN = "GREEN"
-    NONPARTISAN = "NONPARTISAN"
-    UNKNOWN = "UNKNOWN"
+    CIVIX = "civix"
+    LEGACY = "legacy"
+
+
+class FindingType(str, enum.Enum):
+    """Canonical audit finding types (schema 2.0)."""
+
+    MULTIPLE_COUNTIES = "multiple_counties"
+    CONFLICTING_METHOD = "conflicting_method"
+    MULTIPLE_DATES = "multiple_dates"
+    NAME_MISMATCH = "name_mismatch"
+    PRECINCT_MISMATCH = "precinct_mismatch"
+    TURNOUT_ANOMALY = "turnout_anomaly"
+    MISSING_COUNTY = "missing_county"
+
+
+_ELECTION_TYPE_PATTERNS: tuple[tuple[str, ElectionType], ...] = (
+    ("primary runoff", ElectionType.PRIMARY_RUNOFF),
+    ("primary", ElectionType.PRIMARY),
+    ("general", ElectionType.GENERAL),
+    ("special runoff", ElectionType.SPECIAL),
+    ("special", ElectionType.SPECIAL),
+    ("constitutional", ElectionType.CONSTITUTIONAL_AMENDMENT),
+    ("local", ElectionType.LOCAL),
+)
 
 
 def infer_election_type(name: str) -> ElectionType:
-    """Infer an :class:`ElectionType` from an election name string.
-
-    Matching is case-insensitive and uses substring checks applied in
-    priority order so that more-specific patterns take precedence over
-    shorter ones (e.g. ``"PRIMARY RUNOFF"`` is tested before ``"PRIMARY"``).
-
-    Args:
-        name: The election name as returned by the SOS portal (any case).
-
-    Returns:
-        The best-matching :class:`ElectionType`, or :attr:`ElectionType.UNKNOWN`
-        when no pattern matches.
-    """
-    upper = name.upper()
-
-    if "PRIMARY RUNOFF" in upper:
-        return ElectionType.PRIMARY_RUNOFF
-    if "PRIMARY" in upper:
-        return ElectionType.PRIMARY
-    if "GENERAL" in upper:
-        return ElectionType.GENERAL
-    if "SPECIAL RUNOFF" in upper:
-        return ElectionType.SPECIAL
-    if "SPECIAL" in upper:
-        return ElectionType.SPECIAL
-    if "CONSTITUTIONAL" in upper:
-        return ElectionType.CONSTITUTIONAL_AMENDMENT
-    if "LOCAL" in upper:
-        return ElectionType.LOCAL
+    """Infer an :class:`ElectionType` from an election name string."""
+    lower = name.lower()
+    for needle, election_type in _ELECTION_TYPE_PATTERNS:
+        if needle in lower:
+            return election_type
     return ElectionType.UNKNOWN

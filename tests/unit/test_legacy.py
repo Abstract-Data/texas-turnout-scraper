@@ -232,8 +232,7 @@ def test_parse_county_csv_id_voter_always_string() -> None:
 
 def test_parse_county_csv_zfills_short_vuid() -> None:
     csv_text = (
-        '"VOTER_NAME","ID_VOTER","VOTING_METHOD","PRECINCT"\n'
-        '"DOE, TEST","12345","IN-PERSON","1"\n'
+        '"VOTER_NAME","ID_VOTER","VOTING_METHOD","PRECINCT"\n"DOE, TEST","12345","IN-PERSON","1"\n'
     )
     roster = _parse_county_csv(
         raw_text=csv_text,
@@ -440,8 +439,8 @@ def test_legacy_session_pace_enforced() -> None:
     try:
         session._last_request_at = time.monotonic()
         start = time.monotonic()
-        session._pace()
-        session._pace()
+        session.pace()
+        session.pace()
         elapsed = time.monotonic() - start
         assert elapsed >= 0.1
     finally:

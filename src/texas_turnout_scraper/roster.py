@@ -24,6 +24,7 @@ import csv
 import io
 import logging
 import time
+from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
 
@@ -77,9 +78,9 @@ def fetch_roster_strategy_a(
         county_ids: Ordered list of county ``townId`` strings (not poll-place
             select values), typically extracted from the turnout page via
             :func:`~texas_turnout_scraper.turnout.extract_county_ids`.
-        pace_seconds: Minimum seconds between county requests. Applied to
-            ``session._pace_seconds`` for the duration of this fetch (session
-            pacing via :meth:`~texas_turnout_scraper.session.LegacySession._post_form`).
+        pace_seconds: Minimum seconds between county requests. Applied via
+            :meth:`~texas_turnout_scraper.session.LegacySession.with_pace` for
+            the duration of this fetch.
         county_names: Optional mapping of county_id -> county name (all-caps).
             When provided, the resolved name is used on each VoterRecord.
             When absent, falls back to ``"COUNTY_{county_id}"``.
@@ -99,8 +100,6 @@ def fetch_roster_strategy_a(
         Neither ``ID_VOTER`` nor ``VOTER_NAME`` values are written to logs at
         any severity level.
     """
-    if pace_seconds > 0:
-        session._pace_seconds = max(pace_seconds, 1.0)
     date_str = ev_date.strftime("%Y-%m-%d")
     rosters: list[CountyRoster] = []
     failed_counties: list[str] = []
@@ -108,44 +107,49 @@ def fetch_roster_strategy_a(
     if not skip_prime:
         session.prime_election(source_election_id)
 
-    for county_id in county_ids:
-        try:
-            resp = session._post_form(
-                _EV_REPORT_PATH,
-                legacy_ev_form_fields(
-                    source_election_id,
-                    ev_date,
-                    id_town=county_id,
-                ),
+    pace_ctx = session.with_pace(pace_seconds) if pace_seconds > 0 else nullcontext()
+
+    with pace_ctx:
+        for county_id in county_ids:
+            try:
+                resp = session.post_form(
+                    _EV_REPORT_PATH,
+                    legacy_ev_form_fields(
+                        source_election_id,
+                        ev_date,
+                        id_town=county_id,
+                    ),
+                )
+            except (httpx.HTTPStatusError, RequestsHTTPError, RequestException):
+                logger.error(
+                    "Request failed for county_id=%s on %s.",
+                    county_id,
+                    date_str,
+                )
+                failed_counties.append(county_id)
+                continue
+
+            raw_text = resp.text.strip()
+            if not raw_text:
+                logger.warning(
+                    "Empty response for county_id=%s on %s.", county_id, date_str
+                )
+                failed_counties.append(county_id)
+                continue
+
+            county_name = (county_names or {}).get(county_id, f"COUNTY_{county_id}")
+            roster = _parse_county_csv(
+                raw_text=raw_text,
+                county_id=county_id,
+                county_name=county_name,
+                source_election_id=source_election_id,
+                ev_date=ev_date,
             )
-        except (httpx.HTTPStatusError, RequestsHTTPError, RequestException):
-            logger.error(
-                "Request failed for county_id=%s on %s.",
-                county_id,
-                date_str,
-            )
-            failed_counties.append(county_id)
-            continue
+            if roster is None:
+                failed_counties.append(county_id)
+                continue
 
-        raw_text = resp.text.strip()
-        if not raw_text:
-            logger.warning("Empty response for county_id=%s on %s.", county_id, date_str)
-            failed_counties.append(county_id)
-            continue
-
-        county_name = (county_names or {}).get(county_id, f"COUNTY_{county_id}")
-        roster = _parse_county_csv(
-            raw_text=raw_text,
-            county_id=county_id,
-            county_name=county_name,
-            source_election_id=source_election_id,
-            ev_date=ev_date,
-        )
-        if roster is None:
-            failed_counties.append(county_id)
-            continue
-
-        rosters.append(roster)
+            rosters.append(roster)
 
     if failed_counties:
         msg = (
@@ -209,9 +213,7 @@ def fetch_roster_strategy_b(
     session.prime_election(source_election_id)
 
     # Pace before the request
-    session._pace()
-
-    with session._client.stream(
+    with session.stream(
         "POST",
         _BULK_DOWNLOAD_PATH,
         data=legacy_ev_form_fields(source_election_id, ev_date),
@@ -271,35 +273,15 @@ def _parse_county_csv(
         records: list[VoterRecord] = []
 
         for row in reader:
-            # Normalise keys: strip whitespace and quotes
             row = {k.strip().strip('"'): v.strip().strip('"') for k, v in row.items() if k}
-
-            # ID_VOTER must remain a string (Texas VUID, may have leading zeros)
-            raw_id = row.get("ID_VOTER", "")
-            if not raw_id:
+            if not row.get("ID_VOTER", "").strip():
                 continue
-            id_voter = str(raw_id).zfill(10)  # always str, never int
-
-            # VOTER_NAME stored for mismatch detection only — never logged
-            voter_name = row.get("VOTER_NAME", "")
-
-            raw_method = row.get("VOTING_METHOD", "").upper().strip()
-            if "MAIL" in raw_method:
-                voting_method = VoteMethod.MAIL_IN
-            else:
-                voting_method = VoteMethod.IN_PERSON
-
-            precinct = row.get("PRECINCT", "").strip()
-
             records.append(
-                VoterRecord(
-                    id_voter=id_voter,
-                    voting_method=voting_method,
-                    precinct=precinct,
+                VoterRecord.from_csv_row(
+                    row,
                     county=county_name,
                     election_id=source_election_id,
                     report_date=ev_date,
-                    voter_name=voter_name,  # PII — do not log
                 )
             )
 
@@ -316,12 +298,12 @@ def _parse_county_csv(
             records=records,
         )
 
-    except Exception:
+    except (csv.Error, ValueError, KeyError) as exc:
         logger.warning(
-            "Failed to parse CSV for county_id=%s (election %s, date %s).",
+            "Failed to parse CSV for county_id=%s (election %s, date %s) — %s.",
             county_id,
             source_election_id,
             ev_date,
-            exc_info=True,
+            type(exc).__name__,
         )
         return None

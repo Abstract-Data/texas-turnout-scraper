@@ -30,7 +30,7 @@ from datetime import date
 from pathlib import Path
 
 from .enums import VoteMethod
-from .models import AuditFinding, AuditReport, CountyRoster, VoterRecord
+from .models import CountyRoster, VoterRecord
 
 
 def _duplicate_flags(duplicate_type: str) -> set[str]:
@@ -138,11 +138,7 @@ def accumulate_roster(rosters: list[CountyRoster]) -> list[VoterRecord]:
             flags.append("precinct_mismatch")
 
         # Tokens from every other row with the same VUID (index-based, not token-based)
-        other_tokens = [
-            appearance_tokens[j]
-            for j in vuid_row_indices[vuid]
-            if j != i
-        ]
+        other_tokens = [appearance_tokens[j] for j in vuid_row_indices[vuid] if j != i]
         unique_others = _dedupe_tokens_preserve_order(other_tokens)
 
         flagged.append(
@@ -268,7 +264,9 @@ def read_roster_csv(path: Path) -> list[VoterRecord]:
             try:
                 voting_method = VoteMethod(method_raw)
             except ValueError as exc:
-                raise ValueError(f"Invalid VOTING_METHOD value in roster CSV: {method_raw!r}") from exc
+                raise ValueError(
+                    f"Invalid VOTING_METHOD value in roster CSV: {method_raw!r}"
+                ) from exc
             records.append(
                 VoterRecord(
                     voter_name=row["VOTER_NAME"],  # PII — do not log
@@ -284,87 +282,6 @@ def read_roster_csv(path: Path) -> list[VoterRecord]:
                 )
             )
     return records
-
-
-# ---------------------------------------------------------------------------
-# AuditReport from accumulated records
-# ---------------------------------------------------------------------------
-
-
-def audit_from_records(
-    records: list[VoterRecord],
-    election_id: str | None = None,
-    report_date: date | None = None,
-    source: str = "unknown",
-) -> AuditReport:
-    """Build an AuditReport from an already-accumulated (flagged) record list.
-
-    Counts each duplicate type. Does NOT re-run detection — reads the flags
-    already set by ``accumulate_roster()``.
-
-    PII note: finding details contain only counts and county names — never VUIDs or names.
-    """
-    total = len(records)
-    unique_vuids = len({r.id_voter for r in records})
-
-    multiple_dates = [r for r in records if _has_duplicate_flag(r.duplicate_type, "multiple_dates")]
-    conflicting = [r for r in records if _has_duplicate_flag(r.duplicate_type, "conflicting_method")]
-    multi_county = [r for r in records if _has_duplicate_flag(r.duplicate_type, "multiple_counties")]
-    name_mismatch = [r for r in records if _has_duplicate_flag(r.duplicate_type, "name_mismatch")]
-    precinct_mismatch = [r for r in records if _has_duplicate_flag(r.duplicate_type, "precinct_mismatch")]
-
-    findings: list[AuditFinding] = []
-
-    if multiple_dates:
-        findings.append(AuditFinding(
-            finding_type="multiple_dates",
-            severity="error",
-            detail=f"{len(multiple_dates)} appearances where same VUID found on multiple report dates",
-        ))
-
-    if conflicting:
-        findings.append(AuditFinding(
-            finding_type="conflicting_method",
-            severity="error",
-            detail=f"{len(conflicting)} appearances where same VUID has both IN-PERSON and MAIL-IN",
-        ))
-
-    if multi_county:
-        counties_affected = {r.county for r in multi_county}
-        findings.append(AuditFinding(
-            finding_type="multiple_counties",
-            severity="error",
-            detail=f"{len(multi_county)} appearances where same VUID found in multiple counties "
-                   f"({len(counties_affected)} counties affected)",
-        ))
-
-    if name_mismatch:
-        findings.append(AuditFinding(
-            finding_type="name_mismatch",
-            severity="warning",
-            detail=f"{len(name_mismatch)} appearances where same VUID has differing voter names",
-        ))
-
-    if precinct_mismatch:
-        findings.append(AuditFinding(
-            finding_type="precinct_mismatch",
-            severity="warning",
-            detail=f"{len(precinct_mismatch)} appearances where same VUID has differing precincts",
-        ))
-
-    eid = election_id or (records[0].election_id if records else "unknown")
-    rdate = report_date or (records[0].report_date if records else date.today())
-
-    return AuditReport(
-        election_id=eid,
-        report_date=rdate,
-        source=source,
-        total_records=total,
-        unique_vuids=unique_vuids,
-        duplicate_vuid_count=len({r.id_voter for r in records if r.duplicate_flag}),
-        cross_method_duplicate_count=len({r.id_voter for r in conflicting}),
-        findings=findings,
-    )
 
 
 def stored_roster_ev_path(data_dir: Path, source: str, election_id: str) -> Path:

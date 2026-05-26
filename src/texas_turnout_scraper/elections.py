@@ -59,7 +59,7 @@ def list_elections(session: LegacySession) -> list[LegacyElection]:
             for e in elections:
                 print(e.source_election_id, e.election_name)
     """
-    html = session._election_details_html
+    html = session.cached_election_html
     if html is None:
         resp = session.get(_ELECTION_DETAILS_PATH)
         html = resp.text
@@ -119,7 +119,7 @@ def get_ev_dates(session: LegacySession, source_election_id: str) -> list[Legacy
             for d in dates:
                 print(d.date, d.label)
     """
-    resp = session._post_form(
+    resp = session.post_form(
         _EV_DATES_PATH,
         {"idElection": source_election_id},
     )
@@ -136,9 +136,7 @@ def get_ev_dates(session: LegacySession, source_election_id: str) -> list[Legacy
                 break
 
     if select is None:
-        logger.warning(
-            "Could not find EV date <select> for election %s.", source_election_id
-        )
+        logger.warning("Could not find EV date <select> for election %s.", source_election_id)
         return []
 
     results: list[LegacyEVDate] = []
@@ -155,15 +153,14 @@ def get_ev_dates(session: LegacySession, source_election_id: str) -> list[Legacy
 
         results.append(LegacyEVDate(date=parsed_date, label=label))
 
-    logger.debug(
-        "Found %d EV dates for election %s.", len(results), source_election_id
-    )
+    logger.debug("Found %d EV dates for election %s.", len(results), source_election_id)
     return results
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _looks_like_date_value(value: str) -> bool:
     """Return True if *value* looks like a SOS portal EV date option value.

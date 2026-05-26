@@ -1,4 +1,5 @@
 """Unit tests for models.py."""
+
 from datetime import date
 
 from texas_turnout_scraper.enums import ElectionType, VoteMethod
@@ -14,9 +15,15 @@ from texas_turnout_scraper.models import (
 # VoterRecord helpers
 # ---------------------------------------------------------------------------
 
-def _voter(vuid: str = "0123456789", method: VoteMethod = VoteMethod.IN_PERSON,
-           precinct: str = "100", county: str = "HARRIS",
-           election_id: str = "53813", report_date: date = date(2026, 2, 27)) -> VoterRecord:
+
+def _voter(
+    vuid: str = "0123456789",
+    method: VoteMethod = VoteMethod.IN_PERSON,
+    precinct: str = "100",
+    county: str = "HARRIS",
+    election_id: str = "53813",
+    report_date: date = date(2026, 2, 27),
+) -> VoterRecord:
     """Build a minimal VoterRecord for testing."""
     return VoterRecord(
         id_voter=vuid,
@@ -31,6 +38,7 @@ def _voter(vuid: str = "0123456789", method: VoteMethod = VoteMethod.IN_PERSON,
 # ---------------------------------------------------------------------------
 # VoterRecord tests
 # ---------------------------------------------------------------------------
+
 
 def test_voter_record_id_voter_stays_string():
     r = _voter("0123456789")
@@ -60,22 +68,30 @@ def test_voter_record_voter_name_defaults_empty():
 # CountyRoster tests
 # ---------------------------------------------------------------------------
 
+
 def test_county_roster_total_voters():
     records = [
         _voter("0000000001", county="HARRIS"),
         _voter("0000000002", county="HARRIS", method=VoteMethod.MAIL_IN),
     ]
     roster = CountyRoster(
-        county="HARRIS", county_id=101, election_id="53813",
-        report_date=date(2026, 2, 27), source="civix", records=records
+        county="HARRIS",
+        county_id=101,
+        election_id="53813",
+        report_date=date(2026, 2, 27),
+        source="civix",
+        records=records,
     )
     assert roster.total_voters == 2
 
 
 def test_county_roster_empty_records():
     roster = CountyRoster(
-        county="TRAVIS", county_id=227, election_id="53813",
-        report_date=date(2026, 2, 27), source="civix",
+        county="TRAVIS",
+        county_id=227,
+        election_id="53813",
+        report_date=date(2026, 2, 27),
+        source="civix",
     )
     assert roster.total_voters == 0
 
@@ -83,6 +99,7 @@ def test_county_roster_empty_records():
 # ---------------------------------------------------------------------------
 # CivixElection tests
 # ---------------------------------------------------------------------------
+
 
 def test_civix_election_parses_mmddyyyy():
     election = CivixElection(
@@ -103,9 +120,14 @@ def test_civix_election_parses_mmddyyyy():
 
 def test_civix_election_id_always_string():
     election = CivixElection(
-        source_election_id="53813", id=53813, type="EV",
-        election_date="03/03/2026", election_name="2026 REPUBLICAN PRIMARY ELECTION",
-        certified=True, early_voting_dates=[], counties=[],
+        source_election_id="53813",
+        id=53813,
+        type="EV",
+        election_date="03/03/2026",
+        election_name="2026 REPUBLICAN PRIMARY ELECTION",
+        certified=True,
+        early_voting_dates=[],
+        counties=[],
     )
     assert isinstance(election.source_election_id, str)
 
@@ -113,6 +135,7 @@ def test_civix_election_id_always_string():
 # ---------------------------------------------------------------------------
 # LegacyElection tests
 # ---------------------------------------------------------------------------
+
 
 def test_legacy_election_infers_type():
     e = LegacyElection(
@@ -134,11 +157,16 @@ def test_legacy_special_election_infers_type():
 # AuditReport tests
 # ---------------------------------------------------------------------------
 
+
 def test_audit_report_defaults():
     report = AuditReport(
-        election_id="53813", report_date=date(2026, 2, 27),
-        source="civix", total_records=1000, unique_vuids=998,
-        duplicate_vuid_count=2, cross_method_duplicate_count=1,
+        election_id="53813",
+        report_date=date(2026, 2, 27),
+        source="civix",
+        total_records=1000,
+        unique_vuids=998,
+        duplicate_vuid_count=2,
+        cross_method_duplicate_count=1,
     )
     assert report.findings == []
     assert report.duplicate_vuid_count == 2
