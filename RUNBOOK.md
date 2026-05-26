@@ -57,6 +57,22 @@ Use `legacy_api` facades from CLI/MCP — they manage the session and priming.
 - **Production / live tests:** `http_backend="cloudscraper"` (default on `LegacySession`)
 - **Unit tests:** `http_backend="httpx"` so respx can mock requests
 
+## Releases (Release Please)
+
+Version and `CHANGELOG.md` are managed on `main` by the **Release Please** workflow
+(`.github/workflows/release-please.yml`). After merges that use [Conventional Commits](https://www.conventionalcommits.org/),
+the bot opens or updates a **release PR**. Merging that PR bumps `pyproject.toml`, updates the changelog, creates a
+`v*` tag, and publishes a GitHub Release.
+
+```bash
+# Manual trigger (maintainers)
+gh workflow run release-please.yml
+```
+
+- Use `feat:`, `fix:`, `docs:`, `chore:`, etc. on `main` for library changes.
+- Scheduled `data: refresh ...` commits are ignored for semver; they do not block releases.
+- See [ADR-005](docs/adr/005-release-please.md) for rationale.
+
 ## Common issues
 
 | Symptom | Fix |
