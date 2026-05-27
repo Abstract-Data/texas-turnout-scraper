@@ -6,6 +6,20 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.2](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.1...texas-turnout-scraper-v0.2.2) (2026-05-27)
+
+
+### Features
+
+* **cli:** add election day turnout fetch and storage for civix ([e63b6ad](https://github.com/Abstract-Data/texas-turnout-scraper/commit/e63b6adac229ddeebec8b27a84a76fced2645046))
+* **elections:** add civix 58315 early voting turnout snapshot for 2026-05-26 ([9434c6a](https://github.com/Abstract-Data/texas-turnout-scraper/commit/9434c6a2d9241d5267ee4c5e78401bfb44419f22))
+
+
+### Bug Fixes
+
+* **data:** update turnout and roster records for election 58315 (2026-05-20/21) ([456306e](https://github.com/Abstract-Data/texas-turnout-scraper/commit/456306e45b14de80cdb45db899ca0e22873497b3))
+* **data:** update turnout and roster records for election 58315 (2026-05-20/21) ([aadd9b7](https://github.com/Abstract-Data/texas-turnout-scraper/commit/aadd9b7587ae42d44dde6710d6b4f06e2af194d8))
+
 ## [0.2.1](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.0...texas-turnout-scraper-v0.2.1) (2026-05-26)
 
 
