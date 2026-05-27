@@ -1,6 +1,6 @@
 [project]
 name = "texas-turnout-scraper"
-version = "0.2.1"
+version = "0.2.2"
 description = "Texas SOS early-voting turnout scraper — httpx, Pydantic v2, Typer CLI, FastMCP server"
 readme = "README.md"
 authors = [{ name = "John R. Eakin", email = "johnreakin@gmail.com" }]
