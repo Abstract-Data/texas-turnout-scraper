@@ -296,6 +296,16 @@ def stored_audit_ev_path(data_dir: Path, source: str, election_id: str) -> Path:
     return data_dir / "elections" / source / election_id / f"audit_ev_{election_id}.json"
 
 
+def stored_ed_turnout_path(output_dir: Path, election_id: str, election_date: date) -> Path:
+    """Path to the per-election Election Day turnout CSV.
+
+    The ED file mirrors the EV per-date turnout file naming convention
+    (``turnout_ed_{YYYY-MM-DD}.csv``) so the audit loader can find it
+    with the same per-source glob.
+    """
+    return output_dir / election_id / f"turnout_ed_{election_date.isoformat()}.csv"
+
+
 def report_date_from_roster_csv(csv_path: Path) -> date:
     """Return the latest report_date present in a combined roster CSV."""
     records = read_roster_csv(csv_path)
@@ -318,17 +328,28 @@ _TURNOUT_CSV_COLUMNS = (
 )
 
 
-def _turnout_glob_pattern(source: str) -> str:
-    return "turnout_ev_*.csv" if source == "civix" else "turnout_*.csv"
+def _turnout_glob_patterns(source: str) -> tuple[str, ...]:
+    """Glob patterns that match per-date turnout CSV files for a source.
+
+    Civix tracks two stages — early voting (``turnout_ev_*.csv``) and
+    election day (``turnout_ed_*.csv``). Legacy only writes the unprefixed
+    ``turnout_*.csv`` form.
+    """
+    if source == "civix":
+        return ("turnout_ev_*.csv", "turnout_ed_*.csv")
+    return ("turnout_*.csv",)
 
 
 def _date_from_turnout_filename(path: Path, source: str) -> date | None:
     stem = path.stem
-    if source == "civix" and stem.startswith("turnout_ev_"):
-        try:
-            return date.fromisoformat(stem.removeprefix("turnout_ev_"))
-        except ValueError:
-            return None
+    if source == "civix":
+        for prefix in ("turnout_ev_", "turnout_ed_"):
+            if stem.startswith(prefix):
+                try:
+                    return date.fromisoformat(stem.removeprefix(prefix))
+                except ValueError:
+                    return None
+        return None
     if source == "legacy" and stem.startswith("turnout_"):
         try:
             return date.fromisoformat(stem.removeprefix("turnout_"))
@@ -338,11 +359,19 @@ def _date_from_turnout_filename(path: Path, source: str) -> date | None:
 
 
 def stored_turnout_paths(data_dir: Path, source: str, election_id: str) -> list[Path]:
-    """Sorted paths to per-date turnout CSV files for an election, if any exist."""
+    """Sorted paths to per-date turnout CSV files for an election, if any exist.
+
+    For Civix, this includes both early-voting (``turnout_ev_*.csv``) and
+    election-day (``turnout_ed_*.csv``) files. For legacy, only the
+    unprefixed ``turnout_*.csv`` form is matched.
+    """
     election_dir = data_dir / "elections" / source / election_id
     if not election_dir.is_dir():
         return []
-    return sorted(election_dir.glob(_turnout_glob_pattern(source)))
+    matches: set[Path] = set()
+    for pattern in _turnout_glob_patterns(source):
+        matches.update(election_dir.glob(pattern))
+    return sorted(matches)
 
 
 def read_turnout_csv(path: Path) -> list[CountyTurnout]:

@@ -505,7 +505,10 @@ def match_voterfile_to_roster(
             AuditFinding(
                 finding_type="county_mismatch",
                 severity="warning",
-                detail=f"{county_mismatches} matched records: county differs between EV roster and voterfile",
+                detail=(
+                    f"{county_mismatches} matched records: "
+                    "county differs between EV roster and voterfile"
+                ),
             )
         )
 
@@ -519,7 +522,10 @@ def match_voterfile_to_roster(
             AuditFinding(
                 finding_type="precinct_mismatch",
                 severity="info",
-                detail=f"{precinct_mismatches} matched records: precinct differs between EV roster and voterfile",
+                detail=(
+                    f"{precinct_mismatches} matched records: "
+                    "precinct differs between EV roster and voterfile"
+                ),
             )
         )
 

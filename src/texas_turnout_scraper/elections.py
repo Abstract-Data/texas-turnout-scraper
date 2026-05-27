@@ -10,7 +10,8 @@ Provides two public functions:
   available early-voting dates for a given election, returning a list of
   :class:`~texas_turnout_scraper.models.LegacyEVDate` objects.
 
-No Selenium. No election_utils. HTTP via :class:`~texas_turnout_scraper.http_transport.PacedHttpClient`
+No Selenium. No election_utils. HTTP via
+:class:`~texas_turnout_scraper.http_transport.PacedHttpClient`
 (``cloudscraper`` by default, ``httpx`` in unit tests) + BeautifulSoup.
 """
 

@@ -575,7 +575,10 @@ def civix_elections_list(
         bool | None,
         typer.Option(
             "--interactive/--no-interactive",
-            help="Prompt to select an election and scrape action (default: on when stdout is a TTY)",
+            help=(
+                "Prompt to select an election and scrape action "
+                "(default: on when stdout is a TTY)"
+            ),
         ),
     ] = None,
 ) -> None:
@@ -787,6 +790,7 @@ def civix_fetch_all(
     from .writer import (
         accumulate_roster,
         load_stored_turnout_for_audit,
+        stored_ed_turnout_path,
         write_roster_csv,
         write_turnout_csv,
     )
@@ -803,6 +807,7 @@ def civix_fetch_all(
     civix_id = election.id
     ev_dates = election.early_voting_dates
     output_path = output_dir / election_id / f"roster_ev_{election_id}.csv"
+    ed_turnout_path = stored_ed_turnout_path(output_dir, election_id, election.election_date)
 
     typer.echo(f"Election: {election.election_name} ({election_id})")
     typer.echo(f"EV dates: {len(ev_dates)}")
@@ -815,6 +820,9 @@ def civix_fetch_all(
                 "(roster availability not checked in dry-run)...",
             )
         typer.echo(f"Would write: {output_path}")
+        typer.echo(
+            f"[{election.election_date}] Would fetch Election Day turnout → {ed_turnout_path}"
+        )
         return
 
     all_rosters = []
@@ -865,6 +873,34 @@ def civix_fetch_all(
             typer.echo(f"  done ({date_records:,} records)")
             all_rosters.extend(date_rosters)
 
+        typer.echo(
+            f"[{election.election_date}] Fetching Election Day turnout...",
+            nl=False,
+        )
+        try:
+            ed_turnout_rows = client.fetch_ed_turnout(
+                election_id=civix_id,
+                election_date=election.election_date,
+            )
+        except (*HTTP_FETCH_EXCEPTIONS, ValueError, RuntimeError) as exc:
+            detail = format_fetch_error(exc)
+            typer.echo(f"  unavailable ({detail})")
+            logger.info(
+                "Election Day turnout unavailable for election %s on %s: %s",
+                election_id,
+                election.election_date,
+                detail,
+            )
+        else:
+            if ed_turnout_rows:
+                write_turnout_csv(
+                    [CountyTurnout(**row.model_dump()) for row in ed_turnout_rows],
+                    ed_turnout_path,
+                )
+                typer.echo(f"  done ({len(ed_turnout_rows):,} counties → {ed_turnout_path.name})")
+            else:
+                typer.echo("  no data yet")
+
     if not all_rosters:
         typer.echo("Error: no rosters fetched across any EV date", err=True)
         raise typer.Exit(code=1)
@@ -882,9 +918,7 @@ def civix_fetch_all(
     if write_audit:
         audit_report_date = max(r.report_date for r in records)
         data_root = (
-            output_dir.parent.parent
-            if output_dir.name in {"civix", "legacy"}
-            else output_dir
+            output_dir.parent.parent if output_dir.name in {"civix", "legacy"} else output_dir
         )
         turnout = load_stored_turnout_for_audit(
             data_root,
@@ -976,9 +1010,7 @@ def civix_gap_report(
         raise typer.Exit(code=1)
 
     data_root = (
-        output_dir.parent.parent
-        if output_dir.name in {"civix", "legacy"}
-        else output_dir.parent
+        output_dir.parent.parent if output_dir.name in {"civix", "legacy"} else output_dir.parent
     )
 
     parsed_ev_date = (
@@ -1428,9 +1460,7 @@ def legacy_fetch_all(
     if audit:
         audit_report_date = max(r.report_date for r in records)
         data_root = (
-            output_dir.parent.parent
-            if output_dir.name in {"civix", "legacy"}
-            else output_dir
+            output_dir.parent.parent if output_dir.name in {"civix", "legacy"} else output_dir
         )
         turnout = load_stored_turnout_for_audit(
             data_root,
@@ -1615,7 +1645,8 @@ def audit_run(
         typer.echo(json.dumps(report.model_dump(mode="json"), indent=2))
     else:
         typer.echo(
-            f"Audit Report — Election {report.election_id}  |  {report.report_date}  |  {report.source}"
+            f"Audit Report — Election {report.election_id}  |  "
+            f"{report.report_date}  |  {report.source}"
         )
         typer.echo(f"  Total records        : {report.total_records:,}")
         typer.echo(f"  Unique VUIDs         : {report.unique_vuids:,}")

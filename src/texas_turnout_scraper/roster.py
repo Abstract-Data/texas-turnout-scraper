@@ -83,7 +83,8 @@ def fetch_roster_strategy_a(
         county_names: Optional mapping of county_id -> county name (all-caps).
             When provided, the resolved name is used on each VoterRecord.
             When absent, falls back to ``"COUNTY_{county_id}"``.
-        skip_prime: When ``True``, skip :meth:`~texas_turnout_scraper.session.LegacySession.prime_election`
+        skip_prime: When ``True``, skip
+            :meth:`~texas_turnout_scraper.session.LegacySession.prime_election`
             because the session was already primed (e.g. via
             :func:`~texas_turnout_scraper.turnout.fetch_ev_details_html`).
 
