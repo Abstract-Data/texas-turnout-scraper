@@ -786,11 +786,13 @@ def civix_fetch_all(
     from .audit import audit_records
     from .civix import CivixClient, fetch_county_roster
     from .http_transport import HTTP_FETCH_EXCEPTIONS, format_fetch_error
-    from .models import CountyTurnout
+    from .models import CountyRoster, CountyTurnout, VoterRecord
     from .writer import (
         accumulate_roster,
         load_stored_turnout_for_audit,
         stored_ed_turnout_path,
+        stored_roster_ed_path,
+        stored_statewide_ed_zip_path,
         write_roster_csv,
         write_turnout_csv,
     )
@@ -808,6 +810,10 @@ def civix_fetch_all(
     ev_dates = election.early_voting_dates
     output_path = output_dir / election_id / f"roster_ev_{election_id}.csv"
     ed_turnout_path = stored_ed_turnout_path(output_dir, election_id, election.election_date)
+    ed_roster_path = stored_roster_ed_path(output_dir, election_id, election.election_date)
+    ed_statewide_zip_path = stored_statewide_ed_zip_path(
+        output_dir, election_id, election.election_date
+    )
 
     typer.echo(f"Election: {election.election_name} ({election_id})")
     typer.echo(f"EV dates: {len(ev_dates)}")
@@ -823,6 +829,11 @@ def civix_fetch_all(
         typer.echo(
             f"[{election.election_date}] Would fetch Election Day turnout → {ed_turnout_path}"
         )
+        typer.echo(
+            f"[{election.election_date}] Would fetch Election Day statewide ZIP "
+            f"→ {ed_statewide_zip_path}"
+        )
+        typer.echo(f"[{election.election_date}] Would write Election Day roster → {ed_roster_path}")
         return
 
     all_rosters = []
@@ -900,6 +911,66 @@ def civix_fetch_all(
                 typer.echo(f"  done ({len(ed_turnout_rows):,} counties → {ed_turnout_path.name})")
             else:
                 typer.echo("  no data yet")
+
+            if ed_turnout_rows:
+                typer.echo(
+                    f"[{election.election_date}] Fetching Election Day statewide roster...",
+                    nl=False,
+                )
+                try:
+                    ed_zip_bytes = client.fetch_ed_statewide_zip(
+                        election_id=civix_id,
+                        election_date=election.election_date,
+                    )
+                except (*HTTP_FETCH_EXCEPTIONS, ValueError, RuntimeError) as exc:
+                    detail = format_fetch_error(exc)
+                    typer.echo(f"  unavailable ({detail})")
+                    fetch_failures.append(
+                        f"election-day-statewide/{election.election_date}: {detail}"
+                    )
+                    logger.warning(
+                        "Election Day statewide roster unavailable for election %s on %s: %s",
+                        election_id,
+                        election.election_date,
+                        detail,
+                    )
+                else:
+                    ed_statewide_zip_path.parent.mkdir(parents=True, exist_ok=True)
+                    ed_statewide_zip_path.write_bytes(ed_zip_bytes)
+                    from .civix import parse_ed_statewide_voter_records
+
+                    ed_records = parse_ed_statewide_voter_records(
+                        ed_zip_bytes,
+                        election_id=election_id,
+                        report_date=election.election_date,
+                    )
+                    ed_by_county: dict[str, list[VoterRecord]] = {}
+                    for rec in ed_records:
+                        ed_by_county.setdefault(rec.county, []).append(rec)
+                    ed_county_rosters = [
+                        CountyRoster(
+                            county=county,
+                            county_id=next(
+                                (
+                                    row.county_id
+                                    for row in ed_turnout_rows
+                                    if row.county == county
+                                ),
+                                None,
+                            ),
+                            election_id=election_id,
+                            report_date=election.election_date,
+                            source="civix",
+                            records=county_records,
+                        )
+                        for county, county_records in ed_by_county.items()
+                    ]
+                    flagged_ed = accumulate_roster(ed_county_rosters)
+                    write_roster_csv(flagged_ed, ed_roster_path)
+                    typer.echo(
+                        f"  done ({len(flagged_ed):,} records → "
+                        f"{ed_statewide_zip_path.name}, {ed_roster_path.name})"
+                    )
 
     if not all_rosters:
         typer.echo("Error: no rosters fetched across any EV date", err=True)

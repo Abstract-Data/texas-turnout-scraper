@@ -17,9 +17,11 @@ import respx
 from texas_turnout_scraper.civix import (
     API_PREFIX,
     BASE_URL,
+    STATEWIDE_ED_VOTER_CSV,
     CivixClient,
     _decode_envelope,
     fetch_county_roster,
+    parse_ed_statewide_voter_records,
 )
 from texas_turnout_scraper.enums import ElectionType, VoteMethod
 from texas_turnout_scraper.http_transport import _MAX_HTTP_RETRIES
@@ -113,6 +115,62 @@ def _mock_ed_roster_zip(*, row_count_per_csv: int = 2) -> bytes:
         },
     ).mock(return_value=_civix_zip_response(zip_bytes))
     return zip_bytes
+
+
+def _mock_ed_statewide_zip(*, voter_rows: int = 2) -> bytes:
+    """Build election-day statewide ZIP mock and register the respx route."""
+    csv_text = (
+        '"COUNTY_NAME","VOTER_NAME","ID_VOTER","VOTING_METHOD","PRECINCT"\n'
+        + "\n".join(
+            f'"TRAVIS","DOE, VOTER {i}","000000000{i}","IN-PERSON","{100 + i}"'
+            for i in range(1, voter_rows + 1)
+        )
+        + "\n"
+    )
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr(STATEWIDE_ED_VOTER_CSV, csv_text)
+        zf.writestr("STATEWIDE_POLLING_PLACE_INFO.csv", '"COUNTY","POLL PLACE ID"\n"TRAVIS","1"\n')
+    zip_bytes = zip_buffer.getvalue()
+
+    respx.get(
+        f"{BASE_URL}{API_PREFIX}/getFile",
+        params={
+            "type": "EVR_STATEWIDE_ELECTIONDAY",
+            "electionId": "53813",
+            "electionDate": "03/03/2026",
+        },
+    ).mock(return_value=_civix_zip_response(zip_bytes))
+    return zip_bytes
+
+
+@respx.mock
+def test_fetch_ed_statewide_zip_returns_zip_bytes() -> None:
+    zip_bytes = _mock_ed_statewide_zip()
+
+    with CivixClient(http_backend="httpx") as client:
+        result = client.fetch_ed_statewide_zip(53813, date(2026, 3, 3))
+
+    assert result == zip_bytes
+    assert result[:2] == b"PK"
+
+    _assert_http_mocked(1)
+
+
+@respx.mock
+def test_parse_ed_statewide_voter_records_reads_voter_info_csv() -> None:
+    zip_bytes = _mock_ed_statewide_zip(voter_rows=2)
+
+    records = parse_ed_statewide_voter_records(
+        zip_bytes,
+        election_id="53813",
+        report_date=date(2026, 3, 3),
+    )
+
+    assert len(records) == 2
+    assert all(r.county == "TRAVIS" for r in records)
+    assert records[0].id_voter == "0000000001"
+    assert records[0].report_date == date(2026, 3, 3)
 
 
 @respx.mock

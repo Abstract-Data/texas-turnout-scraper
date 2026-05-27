@@ -306,6 +306,24 @@ def stored_ed_turnout_path(output_dir: Path, election_id: str, election_date: da
     return output_dir / election_id / f"turnout_ed_{election_date.isoformat()}.csv"
 
 
+def stored_roster_ed_path(output_dir: Path, election_id: str, election_date: date) -> Path:
+    """Path to the election-day voter roster CSV parsed from the statewide ZIP."""
+    return output_dir / election_id / f"roster_ed_{election_date.isoformat()}.csv"
+
+
+def stored_statewide_ed_zip_path(
+    output_dir: Path,
+    election_id: str,
+    election_date: date,
+) -> Path:
+    """Path to the raw election-day statewide report ZIP from Civix."""
+    return (
+        output_dir
+        / election_id
+        / f"statewide_ed_{election_id}_{election_date.isoformat()}.zip"
+    )
+
+
 def report_date_from_roster_csv(csv_path: Path) -> date:
     """Return the latest report_date present in a combined roster CSV."""
     records = read_roster_csv(csv_path)
