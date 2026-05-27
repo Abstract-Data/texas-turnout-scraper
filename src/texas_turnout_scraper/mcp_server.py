@@ -388,7 +388,8 @@ def run_audit(
       - unique_vuids (int)
       - duplicate_vuid_count (int)
       - cross_method_duplicate_count (int)
-      - findings (list[dict]): list of individual findings with finding_type, county, detail, severity
+      - findings (list[dict]): individual findings with finding_type,
+        county, detail, severity
       - generated_at (str): ISO 8601 timestamp
     """
     from pathlib import Path
