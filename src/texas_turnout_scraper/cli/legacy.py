@@ -467,8 +467,3 @@ def legacy_refresh_all(
     if attempted > 0 and updated == 0:
         typer.echo("Error: all refresh attempts failed", err=True)
         raise typer.Exit(code=1)
-
-
-# ---------------------------------------------------------------------------
-# Audit subcommands (root-level, not namespaced under civix/legacy)
-# ---------------------------------------------------------------------------

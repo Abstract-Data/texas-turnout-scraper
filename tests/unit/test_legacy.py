@@ -53,13 +53,19 @@ def test_legacy_ev_form_fields_roster_includes_id_town() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_detect_column_map_maps_county_and_registered_voters() -> None:
+def test_detect_column_map_maps_all_turnout_columns() -> None:
     from bs4 import BeautifulSoup
 
     html = """
     <table>
-      <tr><th>COUNTY</th><th>REGISTERED VOTERS</th><th>IN PERSON</th><th>MAIL</th></tr>
-      <tr><td>HARRIS</td><td>1,000</td><td>50</td><td>10</td></tr>
+      <tr>
+        <th>COUNTY</th>
+        <th>REGISTERED VOTERS</th>
+        <th>IN PERSON ON DATE</th>
+        <th>IN PERSON CUMULATIVE</th>
+        <th>MAIL</th>
+      </tr>
+      <tr><td>HARRIS</td><td>1,000</td><td>50</td><td>500</td><td>10</td></tr>
     </table>
     """
     soup = BeautifulSoup(html, "html.parser")
@@ -68,8 +74,11 @@ def test_detect_column_map_maps_county_and_registered_voters() -> None:
     rows = table.find_all("tr")
     col_map = _detect_column_map(rows)
     assert col_map is not None
-    assert "county" in col_map
-    assert "registered_voters" in col_map
+    assert col_map["county"] == 0
+    assert col_map["registered_voters"] == 1
+    assert col_map["in_person_on_date"] == 2
+    assert col_map["total_in_person"] == 3
+    assert col_map["total_mail"] == 4
 
 
 # ---------------------------------------------------------------------------

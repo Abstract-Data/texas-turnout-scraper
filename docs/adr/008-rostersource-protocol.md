@@ -8,14 +8,13 @@
 The 2026-05-25 Refactoring Report identified the civix/legacy parallel implementations as the
 single biggest refactoring opportunity (RF-DRY-001 — Critical):
 
-- `cli.py:759–882` (`civix_fetch_all`) ≅ `cli.py:1095–1278` (`legacy_fetch_all`) — ~350 LOC duplicate
-- `cli.py:884–965` (`civix_refresh_all`) ≅ `cli.py:1280–1372` (`legacy_refresh_all`)
-- `cli.py:236–270` (`_build_civix_index_entries`) ≅ `cli.py:273–308` (`_build_legacy_index_entries`)
+- `cli/civix.py` (`fetch_all`) ≅ `cli/legacy.py` (`fetch_all`) — parallel fetch-all flows
+- `cli/civix.py` (`refresh_all`) ≅ `cli/legacy.py` (`refresh_all`) — parallel refresh flows
+- `cli/_common.py` (`_build_civix_index_entries`) ≅ `cli/_common.py` (`_build_legacy_index_entries`)
 - The two CSV row parsers in `civix.py:317–332` and `roster.py:262–299` independently
   normalize VUIDs and voting methods, with subtle behavior differences
-- Before WS-3, the audit pipeline was split (`audit.py` vs `writer.audit_from_records`) and
-  emitted *different* `finding_type` strings for the same domain condition (RF-ARCH-001).
-  WS-3 unified on `audit.audit_records()` and `FindingType`; `writer.audit_from_records` was removed.
+- Before WS-3, audit findings used inconsistent `finding_type` strings across modules (RF-ARCH-001).
+  WS-3 unified on `audit.audit_records()` and the `FindingType` enum.
 
 The root cause isn't that the developer wrote duplicate code carelessly — it's that there's
 no shared abstraction for "an EV roster source". Each source's quirks (Civix uses

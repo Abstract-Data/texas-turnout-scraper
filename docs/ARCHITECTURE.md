@@ -24,7 +24,7 @@
 │                         ↓                                   │
 │          ┌──────────────┼──────────────┐                    │
 │          ↓              ↓              ↓                    │
-│      cli.py       mcp_server.py    data/ files              │
+│   cli/ package    mcp_server.py    data/ files              │
 │    (Typer)        (FastMCP)       (CSV/JSON)                 │
 │    tx-turnout                                                │
 └─────────────────────────────────────────────────────────────┘
@@ -80,5 +80,5 @@ GitHub Actions (daily schedule)
 | `audit.py` | Post-process roster: detect duplicate VUIDs, cross-method duplicates, anomalies |
 | `models.py` | All Pydantic output models |
 | `enums.py` | `ElectionType`, `VoteMethod`, `PoliticalParty` enums |
-| `cli.py` | Typer CLI (`tx-turnout`) |
+| `cli/` | Typer CLI package (`tx-turnout`; entry `cli/__init__.py` → `app`) |
 | `mcp_server.py` | FastMCP server exposing 5 tools to AI agents |

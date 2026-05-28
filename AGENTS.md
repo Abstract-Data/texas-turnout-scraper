@@ -60,7 +60,7 @@ texas-turnout-scraper/
 │   ├── audit.py          # Data quality audit: duplicate VUIDs, anomaly detection
 │   ├── writer.py         # accumulate_roster, write_roster_csv, audit helpers
 │   ├── voterfile.py      # DuckDB-based voterfile match engine + column detection
-│   ├── cli.py            # Typer CLI entry point (`tx-turnout`)
+│   ├── cli/              # Typer CLI package (`tx-turnout`; `cli/__init__.py` → `app`)
 │   └── mcp_server.py     # FastMCP server exposing core tools to AI agents
 ├── data/
 │   └── elections/
