@@ -1,6 +1,6 @@
 ---
 name: Remediation Gap Closure
-overview: Prompt 10 scaffolding is complete and waves 0–3 are largely landed on HEAD (`b59f1102`), but the plan file incorrectly marks all waves done. WS-4C and most of Wave 5 exist only in the uncommitted working tree; a focused commit-and-verify pass will close the gap.
+overview: Prompt 10 remediation gap closed on GitButler workspace (May 27). WS-4C `cli/` package, WS-5G ColumnDetector, WS-5H BS4/ty cleanup, and doc drift fixes are in the working tree; verification matrix is green (288 unit+verify tests).
 todos:
   - id: stage-cli-package
     content: "Stage and verify complete cli/ package split (WS-4C): all new modules + slim app.py, tx-turnout --help smoke, test_cli_*.py"

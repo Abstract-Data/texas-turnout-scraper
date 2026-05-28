@@ -88,8 +88,7 @@ def _check_conflicting_methods(records: list[VoterRecord]) -> list[AuditFinding]
             finding_type=FindingType.CONFLICTING_METHOD.value,
             severity="error",
             detail=(
-                f"{len(affected)} VUID(s) appear with both IN-PERSON and MAIL-IN "
-                f"voting methods"
+                f"{len(affected)} VUID(s) appear with both IN-PERSON and MAIL-IN voting methods"
             ),
         )
     ]
@@ -107,8 +106,7 @@ def _check_multiple_counties(records: list[VoterRecord]) -> list[AuditFinding]:
             finding_type=FindingType.MULTIPLE_COUNTIES.value,
             severity="error",
             detail=(
-                f"{len(affected)} VUID(s) appear in more than one county "
-                f"(cross-county duplicates)"
+                f"{len(affected)} VUID(s) appear in more than one county (cross-county duplicates)"
             ),
         )
     ]
@@ -125,9 +123,7 @@ def _check_name_mismatches(records: list[VoterRecord]) -> list[AuditFinding]:
         AuditFinding(
             finding_type=FindingType.NAME_MISMATCH.value,
             severity="warning",
-            detail=(
-                f"{len(affected)} VUID(s) have differing voter names across appearances"
-            ),
+            detail=(f"{len(affected)} VUID(s) have differing voter names across appearances"),
         )
     ]
 
@@ -143,9 +139,7 @@ def _check_precinct_mismatches(records: list[VoterRecord]) -> list[AuditFinding]
         AuditFinding(
             finding_type=FindingType.PRECINCT_MISMATCH.value,
             severity="warning",
-            detail=(
-                f"{len(affected)} VUID(s) have differing precincts across appearances"
-            ),
+            detail=(f"{len(affected)} VUID(s) have differing precincts across appearances"),
         )
     ]
 
@@ -230,7 +224,7 @@ def audit_records(
 
     eid = election_id or (materialized[0].election_id if materialized else "unknown")
     rdate = report_date or (
-        materialized[0].report_date if materialized else date.today()
+        materialized[0].report_date if materialized else datetime.now(timezone.utc).date()
     )
 
     return AuditReport(

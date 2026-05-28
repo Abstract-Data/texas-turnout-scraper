@@ -120,9 +120,7 @@ def build_turnout_roster_gap_report(  # noqa: PLR0913
         totals["gap_total"] += gap_total
 
     unique_vuids = len({rec.id_voter for rec in roster_records})
-    gap_pct = (
-        totals["gap_total"] / totals["turnout_total"] if totals["turnout_total"] else 0.0
-    )
+    gap_pct = totals["gap_total"] / totals["turnout_total"] if totals["turnout_total"] else 0.0
 
     return TurnoutRosterGapReport(
         election_id=election_id,
@@ -272,9 +270,7 @@ def stored_gap_report_path(data_dir: Path, source: str, election_id: str) -> Pat
 
 def stored_gap_counties_csv_path(data_dir: Path, source: str, election_id: str) -> Path:
     """Default county-level CSV path for a gap report."""
-    return (
-        data_dir / "elections" / source / election_id / f"gap_counties_ev_{election_id}.csv"
-    )
+    return data_dir / "elections" / source / election_id / f"gap_counties_ev_{election_id}.csv"
 
 
 def write_gap_report_json(report: TurnoutRosterGapReport, path: Path) -> Path:

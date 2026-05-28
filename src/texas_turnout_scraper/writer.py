@@ -317,18 +317,14 @@ def stored_statewide_ed_zip_path(
     election_date: date,
 ) -> Path:
     """Path to the raw election-day statewide report ZIP from Civix."""
-    return (
-        output_dir
-        / election_id
-        / f"statewide_ed_{election_id}_{election_date.isoformat()}.zip"
-    )
+    return output_dir / election_id / f"statewide_ed_{election_id}_{election_date.isoformat()}.zip"
 
 
 def report_date_from_roster_csv(csv_path: Path) -> date:
     """Return the latest report_date present in a combined roster CSV."""
     records = read_roster_csv(csv_path)
     if not records:
-        return date.today()
+        return datetime.now(timezone.utc).date()
     return max(r.report_date for r in records)
 
 

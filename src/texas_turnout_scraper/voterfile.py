@@ -33,7 +33,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from .models import (
@@ -75,7 +75,7 @@ def age_bracket(dob_raw: str, reference_date: date | None = None) -> str | None:
     if not dob_raw or not str(dob_raw).strip():
         return None
     raw = str(dob_raw).strip()
-    ref = reference_date or date.today()
+    ref = reference_date or datetime.now(timezone.utc).date()
     dob: date | None = None
     for fmt in ("%Y%m%d", "%Y-%m-%d", "%m/%d/%Y"):
         try:
@@ -208,20 +208,31 @@ def detect_columns(voterfile_path: Path) -> tuple[ColumnMapping, dict[str, str]]
             matched = norm_map[field_norm]
             conf = _CONFIDENCE_EXACT
 
-        # 2. Known pattern list
+        # 2-3. Pattern list then prefix (table-driven matchers)
         if matched is None:
-            for norm, original in norm_map.items():
-                if norm in _FIELD_PATTERNS.get(field, []):
-                    matched = original
-                    conf = _CONFIDENCE_PATTERN
-                    break
+            candidates = list(norm_map.items())
 
-        # 3. Prefix pattern (CD*, HD*, SD*)
-        if matched is None:
-            for norm, original in norm_map.items():
-                if _check_prefix(norm, field):
-                    matched = original
-                    conf = _CONFIDENCE_PREFIX
+            def _pattern_match(items: list[tuple[str, str]], _field: str = field) -> str | None:
+                for norm, original in items:
+                    if norm in _FIELD_PATTERNS.get(_field, []):
+                        return original
+                return None
+
+            def _prefix_match(items: list[tuple[str, str]], _field: str = field) -> str | None:
+                for norm, original in items:
+                    if _check_prefix(norm, _field):
+                        return original
+                return None
+
+            _MATCH_STRATEGIES: list[tuple[str, str, object]] = [
+                (_CONFIDENCE_PATTERN, "pattern", _pattern_match),
+                (_CONFIDENCE_PREFIX, "prefix", _prefix_match),
+            ]
+            for label, _name, predicate in _MATCH_STRATEGIES:
+                hit = predicate(candidates)
+                if hit is not None:
+                    matched = hit
+                    conf = label
                     break
 
         mapping_kwargs[field] = matched
@@ -342,7 +353,7 @@ def match_voterfile_to_roster(
             + "; ".join(conflicts)
         )
 
-    ref = reference_date or date.today()
+    ref = reference_date or datetime.now(timezone.utc).date()
 
     # Normalize roster VUIDs; dedupe for the DuckDB IN filter (order preserved)
     roster_vuids: list[str] = list(
@@ -376,16 +387,10 @@ def match_voterfile_to_roster(
     # Build SQL — quote/escape column names before embedding in identifiers
     quoted_cols = ", ".join(_quote_sql_identifier(c) for c in select_cols)
     quoted_vuid_col = _quote_sql_identifier(vuid_col)
-    vf_path_str = str(voterfile_path).replace("'", "''")
 
     sql = f"""
         SELECT {quoted_cols}
-        FROM read_csv(
-            '{vf_path_str}',
-            header = true,
-            all_varchar = true,
-            encoding = 'utf-8'
-        )
+        FROM voterfile
         WHERE right(lpad(trim(cast({quoted_vuid_col} as varchar)), 10, '0'), 10)
               IN (SELECT unnest(?))
     """
@@ -397,6 +402,13 @@ def match_voterfile_to_roster(
     )
 
     conn = duckdb.connect()
+    voterfile_view = conn.read_csv(
+        str(voterfile_path),
+        header=True,
+        all_varchar=True,
+        encoding="UTF8",
+    )
+    conn.register("voterfile", voterfile_view)
     rows = conn.execute(sql, [roster_vuids]).fetchall()
     col_names = [desc[0] for desc in conn.description]
     conn.close()
@@ -584,11 +596,14 @@ def count_voterfile_rows(voterfile_path: Path) -> int:
         raise ImportError(
             "duckdb is required to count voterfile rows. Install it with: pip install duckdb"
         ) from exc
-    vf_path_str = str(voterfile_path).replace("'", "''")
     conn = duckdb.connect()
-    result = conn.execute(
-        f"SELECT COUNT(*) FROM read_csv('{vf_path_str}', header=true, all_varchar=true)"
-    ).fetchone()
+    voterfile_view = conn.read_csv(
+        str(voterfile_path),
+        header=True,
+        all_varchar=True,
+    )
+    conn.register("voterfile", voterfile_view)
+    result = conn.execute("SELECT COUNT(*) FROM voterfile").fetchone()
     conn.close()
     return result[0] if result else 0
 

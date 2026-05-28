@@ -13,8 +13,9 @@ single biggest refactoring opportunity (RF-DRY-001 — Critical):
 - `cli.py:236–270` (`_build_civix_index_entries`) ≅ `cli.py:273–308` (`_build_legacy_index_entries`)
 - The two CSV row parsers in `civix.py:317–332` and `roster.py:262–299` independently
   normalize VUIDs and voting methods, with subtle behavior differences
-- The two audit pipelines (`audit.py` vs `writer.audit_from_records`) emit *different*
-  `finding_type` strings for the same domain condition (RF-ARCH-001)
+- Before WS-3, the audit pipeline was split (`audit.py` vs `writer.audit_from_records`) and
+  emitted *different* `finding_type` strings for the same domain condition (RF-ARCH-001).
+  WS-3 unified on `audit.audit_records()` and `FindingType`; `writer.audit_from_records` was removed.
 
 The root cause isn't that the developer wrote duplicate code carelessly — it's that there's
 no shared abstraction for "an EV roster source". Each source's quirks (Civix uses

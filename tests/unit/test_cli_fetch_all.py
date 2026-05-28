@@ -145,6 +145,7 @@ def test_civix_fetch_all_exits_on_partial_county_failure(tmp_path: Path) -> None
         mock_client.__exit__.return_value = None
         mock_client.list_elections.return_value = [election]
         mock_client.fetch_ev_turnout.return_value = [turnout_row_ok, turnout_row_fail]
+        mock_client.fetch_ed_turnout.return_value = []
         mock_client_cls.return_value = mock_client
         mock_fetch.side_effect = [roster, RuntimeError("county failed")]
 
@@ -213,6 +214,7 @@ def test_civix_fetch_all_continues_on_requests_http_error(tmp_path: Path) -> Non
         mock_client.__exit__.return_value = None
         mock_client.list_elections.return_value = [election]
         mock_client.fetch_ev_turnout.return_value = [turnout_row_ok, turnout_row_fail]
+        mock_client.fetch_ed_turnout.return_value = []
         mock_client_cls.return_value = mock_client
         mock_fetch.side_effect = [roster, http_error]
 

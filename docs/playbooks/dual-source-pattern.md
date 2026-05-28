@@ -96,13 +96,13 @@ the Protocol shape is wrong. Stop and revisit.
 
 ## Audit vocabulary
 
-A related class of dual-source drift: the audit pipeline. `audit.py` and
-`writer.audit_from_records` historically emitted *different* `finding_type` strings for the
-same condition (e.g. `duplicate_vuid` vs `multiple_counties`). The fix is the same shape as
-above:
+A related class of dual-source drift: the audit pipeline. Before WS-3, a second path
+(`writer.audit_from_records`, removed in WS-3) historically emitted *different* `finding_type`
+strings for the same condition (e.g. `duplicate_vuid` vs `multiple_counties`). The fix is the
+same shape as above:
 
 - One canonical entry point: `audit.audit_records(records, *, turnout=None) -> AuditReport`
-- `finding_type` is a `Literal[...]` (or `Enum`) so the set is closed
+- `finding_type` is the closed `FindingType` enum so the vocabulary is fixed
 - `tests/unit/test_audit_contract.py` pins the vocabulary so future drift is a CI failure
 
 ## Smell checklist (when reviewing PRs)
