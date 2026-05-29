@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-05-27T20:49:58Z",
+  "last_updated": "2026-05-29T01:49:29Z",
   "civix": {
     "elections": [
       {
@@ -8,9 +8,9 @@
         "election_date": "2026-05-26",
         "election_type": "primary_runoff",
         "roster_path": "civix/58315/roster_ev_58315.csv",
-        "last_refreshed": "2026-05-27T20:49:15Z",
-        "total_records": 782456,
-        "unique_vuids": 782456,
+        "last_refreshed": "2026-05-29T01:48:34Z",
+        "total_records": 782060,
+        "unique_vuids": 782060,
         "duplicate_vuid_count": 0,
         "certified": false
       }
