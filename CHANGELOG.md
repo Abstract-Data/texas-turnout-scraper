@@ -6,6 +6,13 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.3](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.2...texas-turnout-scraper-v0.2.3) (2026-05-29)
+
+
+### Features
+
+* **civix:** add election-day statewide voter roster fetch and parse ([#9](https://github.com/Abstract-Data/texas-turnout-scraper/issues/9)) ([416c973](https://github.com/Abstract-Data/texas-turnout-scraper/commit/416c9730de3f737a36591135ef59e0b072e98dde))
+
 ## [0.2.2](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.1...texas-turnout-scraper-v0.2.2) (2026-05-27)
 
 
