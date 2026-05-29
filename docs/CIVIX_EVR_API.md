@@ -70,6 +70,9 @@ GET /api-ivis-system/api/v1/getFileByFormat?type=EVR_COUNTYPLACEINFO&electionId=
 GET /api-ivis-system/api/v1/getFile?type=EVR_ELECTIONDAYTURNOUT&electionId={id}&electionDate={date}
     → County Election Day turnout table (JSON)
 
+GET /api-ivis-system/api/v1/getFile?type=EVR_STATEWIDE_ELECTIONDAY&electionId={id}&electionDate={date}
+    → Election Day statewide report ZIP (voter info + polling places)
+
 GET /api-ivis-system/api/v1/getFileByFormat?type=EVR_ELECTIONDAYTURNOUT&electionId={id}&electionDate={date}&county={name}&countyId={id}&format=zip
     → Per-county Election Day voter roster (ZIP containing CSV)
 ```
@@ -323,7 +326,27 @@ Identical structure to EVR_EARLYVOTING (Endpoint 2):
 
 ---
 
-## Endpoint 7 — Election Day Per-County Voter Roster (ZIP)
+## Endpoint 7 — Election Day Statewide Report (ZIP)
+
+```
+GET /api-ivis-system/api/v1/getFile?type=EVR_STATEWIDE_ELECTIONDAY
+    &electionId={id}&electionDate={date}
+```
+
+Matches the Civix UI **Generate Statewide Report** button on the official election-day
+voting page. The decoded payload is a ZIP archive with two CSV files:
+
+| Member | Contents |
+|--------|----------|
+| `STATEWIDE_VOTER_INFO.csv` | Statewide voter roster (`COUNTY_NAME`, `VOTER_NAME`, `ID_VOTER`, `VOTING_METHOD`, `PRECINCT`) |
+| `STATEWIDE_POLLING_PLACE_INFO.csv` | Polling-place summary |
+
+Parse voter rows from `STATEWIDE_VOTER_INFO.csv` only (see `parse_ed_statewide_voter_records`
+in `civix.py`).
+
+---
+
+## Endpoint 8 — Election Day Per-County Voter Roster (ZIP)
 
 ```
 GET /api-ivis-system/api/v1/getFileByFormat?type=EVR_ELECTIONDAYTURNOUT

@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 
 _EV_DETAILS_PATH = "/Elections/getEVDetails.do"
 
+
+def _as_tag(node: object) -> Tag:
+    """Narrow a BeautifulSoup node to Tag for static type checking."""
+    if not isinstance(node, Tag):
+        raise TypeError("expected bs4.Tag")
+    return node
+
+
 # The portal encodes the county ID inside onclick attributes such as:
 #   onclick="downloadReport('123')"
 #   onclick="getReport(123, '...')"
@@ -142,7 +150,7 @@ def extract_county_ids(html: str) -> dict[str, str]:
             onclick_elem = tr.find(onclick=True)
             if onclick_elem is None:
                 continue
-            onclick_val = onclick_elem.get("onclick", "")  # type: ignore[assignment]
+            onclick_val = str(onclick_elem.get("onclick", ""))
         id_match = _ONCLICK_ID_RE.search(onclick_val)
         if id_match is None:
             continue
@@ -212,7 +220,7 @@ def _parse_turnout_html(
         return []
 
     # Detect header row and column indices
-    col_map = _detect_column_map(rows)
+    col_map = ColumnDetector().detect(rows)
     if col_map is None:
         logger.warning(
             "Could not determine column layout for election %s on %s.",
@@ -264,64 +272,57 @@ def _find_turnout_table(soup: BeautifulSoup) -> Tag | None:
             continue
         header_text = header_row.get_text(" ", strip=True).upper()
         if "COUNTY" in header_text:
-            return table  # type: ignore[return-value]
+            return _as_tag(table)
 
     # Heuristic 2: largest table by row count
-    return max(tables, key=lambda t: len(t.find_all("tr")))  # type: ignore[return-value]
+    return _as_tag(max(tables, key=lambda t: len(t.find_all("tr"))))
+
+
+class ColumnDetector:
+    """Table-driven column header matcher for legacy turnout HTML tables."""
+
+    def detect(self, rows: list[Tag]) -> dict[str, int] | None:
+        """Detect column positions from the header row of the turnout table."""
+        if not rows:
+            return None
+
+        header_row = rows[0]
+        cells = header_row.find_all(["th", "td"])
+        headers = [c.get_text(" ", strip=True).upper() for c in cells]
+
+        if not headers:
+            return None
+
+        col_map: dict[str, int] = {}
+        for i, header in enumerate(headers):
+            self._apply_header(header, i, col_map)
+
+        if "county" not in col_map:
+            return None
+        return col_map
+
+    def _apply_header(self, header: str, index: int, col_map: dict[str, int]) -> None:
+        if "COUNTY" in header and "county" not in col_map:
+            col_map["county"] = index
+            return
+        if "REGISTERED" in header and "registered_voters" not in col_map:
+            col_map["registered_voters"] = index
+            return
+        if "IN PERSON" in header or "IN-PERSON" in header or "INPERSON" in header:
+            if "DATE" in header or "DAY" in header or " ON DATE" in header:
+                col_map["in_person_on_date"] = index
+            elif "CUMULATIVE" in header and "total_in_person" not in col_map:
+                col_map["total_in_person"] = index
+            elif "in_person_on_date" not in col_map and "CUMULATIVE" not in header:
+                col_map["in_person_on_date"] = index
+            return
+        if ("MAIL" in header or "ABSENTEE" in header) and "total_mail" not in col_map:
+            col_map["total_mail"] = index
 
 
 def _detect_column_map(rows: list[Tag]) -> dict[str, int] | None:
-    """Detect column positions from the header row of the turnout table.
-
-    Maps the following logical field names to column indices:
-
-    * ``"county"``
-    * ``"registered_voters"``
-    * ``"in_person_on_date"``
-    * ``"total_in_person"``
-    * ``"total_mail"``
-
-    Args:
-        rows: All ``<tr>`` elements in the table, header first.
-
-    Returns:
-        A dict of field → column index, or ``None`` if the header cannot be
-        parsed.
-    """
-    if not rows:
-        return None
-
-    header_row = rows[0]
-    cells = header_row.find_all(["th", "td"])
-    headers = [c.get_text(" ", strip=True).upper() for c in cells]
-
-    if not headers:
-        return None
-
-    col_map: dict[str, int] = {}
-
-    for i, h in enumerate(headers):
-        if "COUNTY" in h and "county" not in col_map:
-            col_map["county"] = i
-        elif "REGISTERED" in h and "registered_voters" not in col_map:
-            col_map["registered_voters"] = i
-        elif "IN PERSON" in h or "IN-PERSON" in h or "INPERSON" in h:
-            # Prefer "on date" column first; cumulative in-person second
-            if "DATE" in h or "DAY" in h or " ON DATE" in h:
-                col_map["in_person_on_date"] = i
-            elif "CUMULATIVE" in h and "total_in_person" not in col_map:
-                col_map["total_in_person"] = i
-            elif "in_person_on_date" not in col_map and "CUMULATIVE" not in h:
-                # First in-person column encountered — treat as on-date
-                col_map["in_person_on_date"] = i
-        elif ("MAIL" in h or "ABSENTEE" in h) and "total_mail" not in col_map:
-            col_map["total_mail"] = i
-
-    # Require at minimum a county name column
-    if "county" not in col_map:
-        return None
-
-    return col_map
+    """Backward-compatible wrapper around :class:`ColumnDetector`."""
+    return ColumnDetector().detect(rows)
 
 
 def _parse_row(

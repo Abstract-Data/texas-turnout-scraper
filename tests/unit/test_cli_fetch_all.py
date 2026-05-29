@@ -26,9 +26,12 @@ from texas_turnout_scraper.models import (
     VoterRecord,
 )
 from texas_turnout_scraper.writer import (
+    read_roster_csv,
     read_turnout_csv,
     stored_ed_turnout_path,
+    stored_roster_ed_path,
     stored_roster_ev_path,
+    stored_statewide_ed_zip_path,
     write_roster_csv,
 )
 
@@ -142,6 +145,7 @@ def test_civix_fetch_all_exits_on_partial_county_failure(tmp_path: Path) -> None
         mock_client.__exit__.return_value = None
         mock_client.list_elections.return_value = [election]
         mock_client.fetch_ev_turnout.return_value = [turnout_row_ok, turnout_row_fail]
+        mock_client.fetch_ed_turnout.return_value = []
         mock_client_cls.return_value = mock_client
         mock_fetch.side_effect = [roster, RuntimeError("county failed")]
 
@@ -210,6 +214,7 @@ def test_civix_fetch_all_continues_on_requests_http_error(tmp_path: Path) -> Non
         mock_client.__exit__.return_value = None
         mock_client.list_elections.return_value = [election]
         mock_client.fetch_ev_turnout.return_value = [turnout_row_ok, turnout_row_fail]
+        mock_client.fetch_ed_turnout.return_value = []
         mock_client_cls.return_value = mock_client
         mock_fetch.side_effect = [roster, http_error]
 
@@ -279,10 +284,23 @@ def test_civix_fetch_all_writes_election_day_turnout(tmp_path: Path) -> None:
         _civix_ed_turnout_row("HARRIS", 1),
         _civix_ed_turnout_row("DALLAS", 2),
     ]
+    ed_zip = b"PK\x03\x04mock-ed-statewide-zip"
+    ed_voter = VoterRecord(
+        id_voter="0123456789",
+        voting_method=VoteMethod.IN_PERSON,
+        precinct="100",
+        county="HARRIS",
+        election_id="53813",
+        report_date=date(2026, 3, 3),
+    )
 
     with (
         patch("texas_turnout_scraper.civix.CivixClient") as mock_client_cls,
         patch("texas_turnout_scraper.civix.fetch_county_roster") as mock_fetch,
+        patch(
+            "texas_turnout_scraper.civix.parse_ed_statewide_voter_records",
+            return_value=[ed_voter],
+        ),
         patch("texas_turnout_scraper.cli._update_election_index"),
     ):
         mock_client = MagicMock()
@@ -291,6 +309,7 @@ def test_civix_fetch_all_writes_election_day_turnout(tmp_path: Path) -> None:
         mock_client.list_elections.return_value = [election]
         mock_client.fetch_ev_turnout.return_value = [ev_row]
         mock_client.fetch_ed_turnout.return_value = ed_rows
+        mock_client.fetch_ed_statewide_zip.return_value = ed_zip
         mock_client_cls.return_value = mock_client
         mock_fetch.return_value = _civix_roster("HARRIS", 1)
 
@@ -304,6 +323,10 @@ def test_civix_fetch_all_writes_election_day_turnout(tmp_path: Path) -> None:
         election_id=53813,
         election_date=date(2026, 3, 3),
     )
+    mock_client.fetch_ed_statewide_zip.assert_called_once_with(
+        election_id=53813,
+        election_date=date(2026, 3, 3),
+    )
 
     ed_path = stored_ed_turnout_path(tmp_path / "civix", "53813", date(2026, 3, 3))
     assert ed_path.exists()
@@ -311,6 +334,15 @@ def test_civix_fetch_all_writes_election_day_turnout(tmp_path: Path) -> None:
     assert [r.county for r in written] == ["HARRIS", "DALLAS"]
     assert written[0].report_date == date(2026, 3, 3)
     assert written[0].in_person_votes_on_date == 2500
+
+    ed_zip_path = stored_statewide_ed_zip_path(tmp_path / "civix", "53813", date(2026, 3, 3))
+    assert ed_zip_path.read_bytes() == ed_zip
+
+    ed_roster_path = stored_roster_ed_path(tmp_path / "civix", "53813", date(2026, 3, 3))
+    assert ed_roster_path.exists()
+    roster_rows = read_roster_csv(ed_roster_path)
+    assert len(roster_rows) == 1
+    assert roster_rows[0].county == "HARRIS"
 
 
 def test_civix_fetch_all_tolerates_election_day_turnout_failure(tmp_path: Path) -> None:

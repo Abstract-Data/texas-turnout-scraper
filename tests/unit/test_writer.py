@@ -16,6 +16,7 @@ from texas_turnout_scraper.writer import (
     ROSTER_CSV_COLUMNS,
     accumulate_roster,
     read_roster_csv,
+    report_date_from_roster_csv,
     roster_csv_to_text,
     write_roster_csv,
 )
@@ -539,3 +540,27 @@ def test_audit_records_no_pii_in_findings():
         assert "1234567890" not in finding.detail
         assert _SYNTHETIC_NAME_A not in finding.detail
         assert _SYNTHETIC_NAME_B not in finding.detail
+
+
+def test_report_date_from_roster_csv_empty_uses_utc_today(tmp_path: Path) -> None:
+    """Header-only roster CSV falls back to UTC today (audit run without ev_date)."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    fixed = date(2026, 5, 27)
+    csv_path = tmp_path / "roster_ev_58315.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(ROSTER_CSV_COLUMNS)
+
+    with patch("texas_turnout_scraper.writer.datetime") as mock_datetime:
+        mock_datetime.now.return_value = datetime(
+            2026,
+            5,
+            27,
+            12,
+            0,
+            0,
+            tzinfo=timezone.utc,
+        )
+        assert report_date_from_roster_csv(csv_path) == fixed

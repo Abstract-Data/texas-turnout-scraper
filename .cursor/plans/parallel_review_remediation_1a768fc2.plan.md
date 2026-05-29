@@ -10,19 +10,19 @@ todos:
     status: completed
   - id: wave1-dispatch
     content: "Run Wave 1: WS-0/1A–1G in parallel, then WS-1H integrator on integration branch"
-    status: pending
+    status: completed
   - id: wave2-dispatch
     content: "Run Wave 2: 2A then 2B serial on roster.py; 2C+2D parallel where locks allow"
-    status: pending
+    status: completed
   - id: wave3-audit
     content: Single-agent WS-3 audit unification with writer superset FindingType + schema 2.0
-    status: pending
+    status: completed
   - id: wave4-protocol
     content: WS-4A+4B parallel, then WS-4C CLI split; AGENTS.md 1.3.0
-    status: pending
+    status: completed
   - id: wave5-polish
     content: WS-5A–5H parallel with 5B before 5D; final ruff complexity + AGENTS 2.0.0 if needed
-    status: pending
+    status: completed
 isProject: false
 ---
 

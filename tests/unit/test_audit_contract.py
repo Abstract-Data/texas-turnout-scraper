@@ -10,9 +10,7 @@ from texas_turnout_scraper.audit import audit_records, audit_roster
 from texas_turnout_scraper.enums import FindingType, VoteMethod
 from texas_turnout_scraper.models import CountyRoster, VoterRecord
 
-CANONICAL_FINDING_TYPES: frozenset[str] = frozenset(
-    {member.value for member in FindingType}
-)
+CANONICAL_FINDING_TYPES: frozenset[str] = frozenset({member.value for member in FindingType})
 
 
 def _make_record(

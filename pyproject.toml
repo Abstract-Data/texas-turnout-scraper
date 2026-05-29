@@ -72,10 +72,20 @@ max-args = 8
 "tests/**/*.py" = ["SLF", "PLR0915", "PLR0912", "PLR0913", "C901"]
 # CLI commands are being decomposed; grant temporary amnesty on complexity
 # while the dual-source consolidation lands (RosterSource protocol).
-"src/texas_turnout_scraper/cli.py" = ["C901", "PLR0915", "PLR0912", "PLR0913"]
+"src/texas_turnout_scraper/cli/civix.py" = ["C901", "PLR0915", "PLR0912", "PLR0913"]
+"src/texas_turnout_scraper/cli/legacy.py" = ["C901", "PLR0915", "PLR0912", "PLR0913"]
+"src/texas_turnout_scraper/cli/voterfile.py" = ["C901", "PLR0915", "PLR0912", "PLR0913"]
 # Audit pipeline merge is in flight; check funcs will split after consolidation.
 "src/texas_turnout_scraper/audit.py" = ["C901", "PLR0912"]
-"src/texas_turnout_scraper/writer.py" = ["C901", "PLR0912"]
+"src/texas_turnout_scraper/writer.py" = ["C901", "PLR0912", "DTZ007"]
+# Calendar-date parsing from SOS/Civix strings — timezone not applicable (DTZ007).
+"src/texas_turnout_scraper/elections.py" = ["DTZ007"]
+"src/texas_turnout_scraper/mcp_server.py" = ["DTZ007"]
+"src/texas_turnout_scraper/models.py" = ["DTZ007"]
+# Strategy B ZIP download updates session pacing timestamp (SLF001).
+"src/texas_turnout_scraper/roster.py" = ["SLF001"]
+# DuckDB match stays one function per WS-5C; report/enrichment helpers land later.
+"src/texas_turnout_scraper/voterfile.py" = ["C901", "PLR0915", "PLR0912", "DTZ007"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["texas_turnout_scraper"]

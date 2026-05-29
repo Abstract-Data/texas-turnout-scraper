@@ -61,9 +61,7 @@ def test_cross_method_duplicate_detected():
     report = audit_roster(rosters)
     assert report.cross_method_duplicate_count >= 1
     findings = [
-        f
-        for f in report.findings
-        if f.finding_type == FindingType.CONFLICTING_METHOD.value
+        f for f in report.findings if f.finding_type == FindingType.CONFLICTING_METHOD.value
     ]
     assert len(findings) > 0
 

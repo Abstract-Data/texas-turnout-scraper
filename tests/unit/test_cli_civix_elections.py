@@ -77,7 +77,7 @@ def test_civix_elections_interactive_skips_table_before_prompt() -> None:
         mock_client.list_elections.return_value = [election]
 
         with patch(
-            "texas_turnout_scraper.cli._prompt_select",
+            "texas_turnout_scraper.cli._common._prompt_select",
             side_effect=["53813", "done"],
         ):
             result = runner.invoke(
@@ -98,11 +98,11 @@ def test_civix_elections_interactive_dispatches_turnout() -> None:
         mock_client.list_elections.return_value = [election]
 
         with patch(
-            "texas_turnout_scraper.cli._prompt_select",
+            "texas_turnout_scraper.cli._common._prompt_select",
             side_effect=["53813", "turnout", "2026-03-03"],
         ):
             with patch(
-                "texas_turnout_scraper.cli.civix_turnout_fetch",
+                "texas_turnout_scraper.cli.civix.civix_turnout_fetch",
             ) as mock_turnout:
                 result = runner.invoke(
                     app,

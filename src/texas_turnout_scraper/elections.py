@@ -19,14 +19,22 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from .models import LegacyElection, LegacyEVDate
 from .session import LegacySession
 
 logger = logging.getLogger(__name__)
+
+
+def _as_tag(node: object) -> Tag:
+    """Narrow a BeautifulSoup node to Tag for static type checking."""
+    if not isinstance(node, Tag):
+        raise TypeError("expected bs4.Tag")
+    return node
+
 
 _ELECTION_DETAILS_PATH = "/Elections/getElectionDetails.do"
 _EV_DATES_PATH = "/Elections/getElectionEVDates.do"
@@ -72,8 +80,10 @@ def list_elections(session: LegacySession) -> list[LegacyElection]:
         logger.warning("Could not find <select name='idElection'> in portal response.")
         return []
 
+    select_tag = _as_tag(select)
+
     results: list[LegacyElection] = []
-    for option in select.find_all("option"):  # type: ignore[union-attr]
+    for option in select_tag.find_all("option"):
         value = option.get("value", "").strip()
         if not value:
             # Skip the placeholder "-- Select Election --" option
@@ -140,8 +150,10 @@ def get_ev_dates(session: LegacySession, source_election_id: str) -> list[Legacy
         logger.warning("Could not find EV date <select> for election %s.", source_election_id)
         return []
 
+    select_tag = _as_tag(select)
+
     results: list[LegacyEVDate] = []
-    for option in select.find_all("option"):  # type: ignore[union-attr]
+    for option in select_tag.find_all("option"):
         raw_value = option.get("value", "").strip()
         if not raw_value or not _looks_like_date_value(raw_value):
             continue
@@ -173,7 +185,7 @@ def _looks_like_date_value(value: str) -> bool:
     return bool(value) and (value[:4].isdigit() and "-" in value)
 
 
-def _parse_ev_date_value(raw_value: str) -> datetime.date | None:  # type: ignore[name-defined]
+def _parse_ev_date_value(raw_value: str) -> date | None:
     """Parse the date portion from a SOS portal EV date option value.
 
     Accepts ``"YYYY-MM-DD HH:MM:SS.0"`` or ``"YYYY-MM-DD"``.

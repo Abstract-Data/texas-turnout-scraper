@@ -19,17 +19,18 @@ from __future__ import annotations
 import base64
 import csv
 import io
+import json as _json
 import time
 import zipfile
 from datetime import date
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from .http_transport import HttpBackend, PacedHttpClient
 from .models import (
-    CivixCountyRef,
     CivixCountyTurnout,
     CivixElection,
-    CivixElectionDate,
     CountyRoster,
     VoterRecord,
 )
@@ -41,6 +42,12 @@ from .models import (
 BASE_URL = "https://goelect.txelections.civixapps.com"
 API_PREFIX = "/api-ivis-system/api/v1"
 DEFAULT_PACE_SECONDS = 1.0
+
+# Election-day "Generate Statewide Report" ZIP members (see EVR_STATEWIDE_ELECTIONDAY).
+STATEWIDE_ED_VOTER_CSV = "STATEWIDE_VOTER_INFO.csv"
+STATEWIDE_ED_POLLING_CSV = "STATEWIDE_POLLING_PLACE_INFO.csv"
+
+_CIVIX_ELECTIONS_ADAPTER = TypeAdapter(list[CivixElection])
 
 
 # ---------------------------------------------------------------------------
@@ -178,40 +185,10 @@ class CivixClient:
         path = f"{API_PREFIX}/getFile"
         response = self._get(path, params={"type": "EVR_ELECTION"})
         payload = _decode_envelope(response)
-        data = payload  # raw bytes — parse as JSON text
-        import json as _json
-
-        elections_data = _json.loads(data.decode("utf-8"))
-
-        results: list[CivixElection] = []
-        for e in elections_data.get("elections", []):
-            ev_dates = [
-                CivixElectionDate(
-                    date=d["date"],
-                    date_turnout_id=d["date_turnout_id"],
-                )
-                for d in e.get("early_voting_dates", [])
-            ]
-            counties = [
-                CivixCountyRef(
-                    county_id=c["county_id"],
-                    name=c["name"],
-                )
-                for c in e.get("counties", [])
-            ]
-            election = CivixElection(
-                source_election_id=str(e["id"]),
-                id=e["id"],
-                type=e.get("type", "EV"),
-                election_date=e["election_date"],
-                election_name=e["election_name"],
-                certified=bool(e.get("certified", False)),
-                early_voting_dates=ev_dates,
-                counties=counties,
-            )
-            results.append(election)
-
-        return results
+        elections_data = _json.loads(payload.decode("utf-8"))
+        raw_elections = elections_data.get("elections", [])
+        normalized = [{**e, "source_election_id": str(e["id"])} for e in raw_elections]
+        return _CIVIX_ELECTIONS_ADAPTER.validate_python(normalized)
 
     def fetch_ev_turnout(
         self,
@@ -536,6 +513,95 @@ class CivixClient:
                         )
 
         return records
+
+    def fetch_ed_statewide_zip(
+        self,
+        election_id: int,
+        election_date: date,
+    ) -> bytes:
+        """Fetch the election-day statewide report ZIP.
+
+        Matches the Civix UI **Generate Statewide Report** button on the
+        official election-day voting page. Calls::
+
+            GET /api-ivis-system/api/v1/getFile
+                ?type=EVR_STATEWIDE_ELECTIONDAY
+                &electionId={election_id}
+                &electionDate={MM/DD/YYYY}
+
+        The decoded payload is a ZIP archive containing:
+
+        - ``STATEWIDE_VOTER_INFO.csv`` — statewide voter roster (parse with
+          :func:`parse_ed_statewide_voter_records`)
+        - ``STATEWIDE_POLLING_PLACE_INFO.csv`` — polling-place summary
+
+        Args:
+            election_id: Civix integer election ID.
+            election_date: The election date (not an EV date).
+
+        Returns:
+            Raw decoded ZIP bytes.
+        """
+        date_str = election_date.strftime("%m/%d/%Y")
+        response = self._get(
+            f"{API_PREFIX}/getFile",
+            params={
+                "type": "EVR_STATEWIDE_ELECTIONDAY",
+                "electionId": election_id,
+                "electionDate": date_str,
+            },
+        )
+        return _decode_envelope(response)
+
+    def fetch_ed_statewide_roster(
+        self,
+        election_id: int,
+        election_date: date,
+    ) -> list[VoterRecord]:
+        """Fetch and parse voter records from the election-day statewide ZIP."""
+        zip_bytes = self.fetch_ed_statewide_zip(election_id, election_date)
+        return parse_ed_statewide_voter_records(
+            zip_bytes,
+            election_id=str(election_id),
+            report_date=election_date,
+        )
+
+
+def parse_ed_statewide_voter_records(
+    zip_bytes: bytes,
+    *,
+    election_id: str,
+    report_date: date,
+) -> list[VoterRecord]:
+    """Parse ``STATEWIDE_VOTER_INFO.csv`` from an election-day statewide ZIP.
+
+    PII note: ``ID_VOTER`` and ``VOTER_NAME`` values are NEVER logged.
+    """
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        try:
+            csv_bytes = zf.read(STATEWIDE_ED_VOTER_CSV)
+        except KeyError as exc:
+            members = ", ".join(zf.namelist())
+            raise ValueError(
+                f"Election day statewide ZIP missing {STATEWIDE_ED_VOTER_CSV!r}; found: {members}"
+            ) from exc
+
+    records: list[VoterRecord] = []
+    csv_text = csv_bytes.decode("utf-8")
+    reader = csv.DictReader(io.StringIO(csv_text))
+    for row in reader:
+        county = (row.get("COUNTY_NAME") or row.get("COUNTY") or "").strip().upper()
+        if not county:
+            continue
+        records.append(
+            VoterRecord.from_csv_row(
+                row,
+                county=county,
+                election_id=election_id,
+                report_date=report_date,
+            )
+        )
+    return records
 
 
 # ---------------------------------------------------------------------------

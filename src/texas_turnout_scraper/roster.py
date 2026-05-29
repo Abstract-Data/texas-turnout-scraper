@@ -131,9 +131,7 @@ def fetch_roster_strategy_a(
 
             raw_text = resp.text.strip()
             if not raw_text:
-                logger.warning(
-                    "Empty response for county_id=%s on %s.", county_id, date_str
-                )
+                logger.warning("Empty response for county_id=%s on %s.", county_id, date_str)
                 failed_counties.append(county_id)
                 continue
 

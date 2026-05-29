@@ -58,9 +58,9 @@ texas-turnout-scraper/
 │   ├── roster.py         # Per-county voter roster scraping (Strategy A)
 │   ├── turnout.py        # County turnout table scraping
 │   ├── audit.py          # Data quality audit: duplicate VUIDs, anomaly detection
-│   ├── writer.py         # accumulate_roster, write_roster_csv, audit_from_records
+│   ├── writer.py         # accumulate_roster, write_roster_csv, audit helpers
 │   ├── voterfile.py      # DuckDB-based voterfile match engine + column detection
-│   ├── cli.py            # Typer CLI entry point (`tx-turnout`)
+│   ├── cli/              # Typer CLI package (`tx-turnout`; `cli/__init__.py` → `app`)
 │   └── mcp_server.py     # FastMCP server exposing core tools to AI agents
 ├── data/
 │   └── elections/
@@ -299,7 +299,7 @@ they're stack-specific patterns rather than absolute prohibitions.
 | Reaching into another module's `_private` attributes (worse: *mutating* them) | `roster.py:103` mutates `LegacySession._pace_seconds` mid-fetch | ruff `SLF` selector |
 | Naive `datetime.utcnow()` or `datetime.now()` without tz | `audit.py:211` — deprecated in 3.12, removed in 3.13 | ruff `DTZ` selector |
 | `# type: ignore` without rationale comment, or `tool.ty.rules.all = "warn"` masking real correctness errors | The MCP keyword-arg drift above was silenced by warn-only `ty` | ADR-0007 ratchet plan + per-file `[[tool.ty.overrides]]` strict on `mcp_server.py` first |
-| Two functions/modules emit different vocabularies for the same domain condition | `audit.py` vs `writer.audit_from_records` produce different `finding_type` strings for the same condition | `tests/unit/test_audit_contract.py` + make shared vocabulary a `Literal`/`Enum` |
+| Two functions/modules emit different vocabularies for the same domain condition | Historical split between `audit.py` and removed `writer.audit_from_records` (unified in WS-3) | `tests/unit/test_audit_contract.py` + shared `FindingType` enum |
 | Hardcoded base URLs without env-var override | `session.py:43`, `civix.py:42` | Architecture-guardian flag at review time; tracked as strategic item S4 in `prompts/10-review-remediation/current.md` |
 
 ### Agent process anti-patterns

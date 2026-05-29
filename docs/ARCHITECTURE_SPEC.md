@@ -255,7 +255,7 @@ class AuditReport(BaseModel):
 
 ---
 
-## CLI (`cli.py` — Typer)
+## CLI (`cli/` package — Typer)
 
 Binary name: `tx-turnout`
 
@@ -510,7 +510,14 @@ texas-turnout-scraper/
 │       ├── roster.py             # Legacy: voter roster fetch (Strategy A + B)
 │       ├── turnout.py            # Legacy: county turnout HTML table parsing
 │       ├── audit.py              # AuditReport post-processing (shared)
-│       ├── cli.py                # Typer CLI entry point (civix + legacy + audit groups)
+│       ├── cli/                  # Typer CLI package (civix, legacy, audit, voterfile)
+│       │   ├── __init__.py       # Exports `app`; side-effect imports register commands
+│       │   ├── _typer_apps.py    # Root Typer apps (civix, legacy, audit, voterfile)
+│       │   ├── _common.py        # Shared index/freshness helpers
+│       │   ├── civix.py          # Civix subcommands
+│       │   ├── legacy.py         # Legacy subcommands
+│       │   ├── audit.py          # Audit subcommands
+│       │   └── voterfile.py      # Voterfile match commands
 │       └── mcp_server.py         # MCP server (civix + legacy + audit tools)
 ├── tests/
 │   ├── __init__.py
