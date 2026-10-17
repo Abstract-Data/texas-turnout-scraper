@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import logging
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -376,8 +377,107 @@ def test_dry_run_cli_sample(capsys: pytest.CaptureFixture[str]) -> None:
     assert "election_id=53813" in captured.out
     assert "status=dry_run" in captured.out
     assert "decoded_bytes=" in captured.out
+    assert "d1_cap_bytes=10000000000" in captured.out
+    assert "within_cap=true" in captured.out
+    assert "rows election_id=53813 d1_chunk_rows=1 d1_file_rows=1 d1_rows=2" in captured.out
+    assert "d1_statement repeats=1 sql=CREATE TABLE IF NOT EXISTS early_vote_file" in captured.out
+    assert "d1_statement repeats=1 sql=INSERT INTO early_vote_chunk" in captured.out
+    assert "kv_version_key=ev:53813:version" in captured.out
     assert KV_NOT_FOR_ELECTION_NIGHT in captured.out
     assert "VOTER_NAME" not in captured.out
     assert "ID_VOTER" not in captured.out
     assert "VOTER_NAME" not in captured.err
     assert "ID_VOTER" not in captured.err
+
+
+def test_dry_run_plan_omits_bound_file_bytes(capsys: pytest.CaptureFixture[str]) -> None:
+    payload = b"VOTER_NAME=Ada ID_VOTER=0123456789"
+    encoded = base64.b64encode(payload).decode("ascii")
+    with tempfile.NamedTemporaryFile(suffix=".json") as handle:
+        handle.write(json.dumps({"upload": encoded}).encode("utf-8"))
+        handle.flush()
+        exit_code = main(["--election-id", "53813", "--envelope-file", handle.name, "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Ada" not in captured.out
+    assert "0123456789" not in captured.out
+    assert encoded not in captured.out
+    assert "payload_b64" in captured.out
+    assert "Ada" not in captured.err
+    assert encoded not in captured.err
+
+
+def test_second_dry_run_skips_the_same_file(capsys: pytest.CaptureFixture[str]) -> None:
+    first = main(["--election-id", "53813", "--envelope-file", str(FIXTURE), "--dry-run"])
+    first_out = capsys.readouterr().out
+    digest = next(
+        line.removeprefix("sha256=")
+        for line in first_out.splitlines()
+        if line.startswith("sha256=")
+    )
+
+    second = main(
+        [
+            "--election-id",
+            "53813",
+            "--envelope-file",
+            str(FIXTURE),
+            "--dry-run",
+            "--stored-hash",
+            digest,
+        ]
+    )
+    second_out = capsys.readouterr().out
+
+    assert first == 0
+    assert second == 0
+    assert "status=dry_run" in first_out
+    assert "d1_statement " in first_out
+    assert f"sha256={digest}" in second_out
+    assert "status=unchanged" in second_out
+    assert "unchanged_skip=true" in second_out
+    assert "kv_version_key=ev:53813:version" in second_out
+    assert "d1_statement " not in second_out
+    assert "VOTER_NAME" not in second_out
+    assert "ID_VOTER" not in second_out
+
+
+def test_dry_run_counts_turnout_rows_for_one_election(capsys: pytest.CaptureFixture[str]) -> None:
+    recorded = (
+        Path(__file__).parent.parent / "fixtures" / "early_voting" / "civix_earlyvoting_53813.json"
+    )
+    decoded = recorded.read_bytes()
+    with tempfile.NamedTemporaryFile(suffix=".json") as handle:
+        handle.write(json.dumps({"upload": base64.b64encode(decoded).decode("ascii")}).encode())
+        handle.flush()
+        exit_code = main(["--election-id", "53813", "--envelope-file", handle.name, "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "rows election_id=53813 source_rows=3 d1_chunk_rows=1 d1_file_rows=1 d1_rows=2" in (
+        captured.out
+    )
+    assert "within_cap=true" in captured.out
+    assert "d1_cap_bytes=10000000000" in captured.out
+    assert "ANDERSON" not in captured.out
+    assert "VOTER_NAME" not in captured.out
+    assert "ID_VOTER" not in captured.out
+
+
+def test_dry_run_does_not_call_cloudflare_when_env_is_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", ACCOUNT)
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "token-not-logged")
+    monkeypatch.setenv("CLOUDFLARE_KV_NAMESPACE_ID", NAMESPACE)
+    with respx.mock:
+        route = respx.route(host="api.cloudflare.com").mock(return_value=httpx.Response(500))
+        exit_code = main(["--election-id", "53813", "--envelope-file", str(FIXTURE), "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert route.call_count == 0
+    assert "status=dry_run" in captured.out
+    assert "token-not-logged" not in captured.out
+    assert "token-not-logged" not in captured.err

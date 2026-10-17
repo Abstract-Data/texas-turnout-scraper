@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import json
 import logging
 import os
 import sys
@@ -97,6 +98,19 @@ class EarlyVoteSyncError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class D1Plan:
+    """Statements a dry run would send. SQL text only — no bound file bytes."""
+
+    statements: tuple[tuple[str, int], ...]
+    chunk_rows: int
+    file_rows: int
+    source_rows: int | None
+    decoded_bytes: int
+    cap_bytes: int
+    within_cap: bool
+
+
+@dataclass(frozen=True)
 class SyncResult:
     """Outcome of one election sync. ``decoded_bytes`` is a count, not the file."""
 
@@ -106,6 +120,7 @@ class SyncResult:
     status: SyncStatus
     exit_code: int
     version: str | None = None
+    plan: D1Plan | None = None
 
 
 class EarlyVoteStore(Protocol):
@@ -122,14 +137,18 @@ class EarlyVoteStore(Protocol):
 
 
 class EmptyHashStore:
-    """No stored hash, and no Cloudflare writes.
+    """No Cloudflare calls.
 
-    Used for a dry run when credentials are absent. Write methods refuse so a
-    dry run cannot create a database.
+    ``stored`` is an optional hash from an earlier run of the same file, so a
+    second dry run can take the unchanged path without reading KV.
+    Write methods refuse so a dry run cannot create a database.
     """
 
+    def __init__(self, stored: str | None = None) -> None:
+        self._stored = stored
+
     def stored_hash(self, election_id: str) -> str | None:
-        return None
+        return self._stored
 
     def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
         raise EarlyVoteSyncError("refusing to write D1 without --apply")
@@ -179,6 +198,87 @@ def iter_chunk_b64(decoded: bytes) -> list[str]:
     return chunks
 
 
+_CHUNK_INSERT_SQL = (
+    "INSERT INTO early_vote_chunk (source_election_id, chunk_index, payload_b64) VALUES (?, ?, ?)"
+)
+_FILE_INSERT_SQL = (
+    "INSERT INTO early_vote_file "
+    "(source_election_id, sha256, byte_length, chunk_count) "
+    "VALUES (?, ?, ?, ?)"
+)
+
+
+def source_row_count(decoded: bytes) -> int | None:
+    """Count ``turnout_by_county`` rows. Other shapes stay uncounted.
+
+    A parse error is ignored. Its message can quote the file, so it is not logged.
+    """
+    try:
+        payload = json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    rows = payload.get("turnout_by_county")
+    if isinstance(rows, list):
+        return len(rows)
+    return None
+
+
+def build_d1_statements(
+    election_id: str, decoded: bytes, digest: str
+) -> list[tuple[str, list[str]]]:
+    """D1 statements for one election. Chunk parameters hold the file and stay off logs."""
+    election_id = require_election_id(election_id)
+    chunks = iter_chunk_b64(decoded)
+    statements: list[tuple[str, list[str]]] = [
+        (_FILE_TABLE_SQL, []),
+        (_CHUNK_TABLE_SQL, []),
+        ("DELETE FROM early_vote_chunk WHERE source_election_id = ?", [election_id]),
+        ("DELETE FROM early_vote_file WHERE source_election_id = ?", [election_id]),
+    ]
+    statements.extend(
+        (_CHUNK_INSERT_SQL, [election_id, str(index), payload])
+        for index, payload in enumerate(chunks)
+    )
+    statements.append(
+        (
+            _FILE_INSERT_SQL,
+            [election_id, digest, str(len(decoded)), str(len(chunks))],
+        )
+    )
+    return statements
+
+
+def summarize_d1_plan(election_id: str, decoded: bytes, digest: str) -> D1Plan:
+    """Statement text and row counts for a dry run. Bound parameters are dropped."""
+    election_id = require_election_id(election_id)
+    statements = build_d1_statements(election_id, decoded, digest)
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    chunk_rows = 0
+    file_rows = 0
+    for sql, _params in statements:
+        collapsed = " ".join(sql.split())
+        if collapsed not in counts:
+            order.append(collapsed)
+            counts[collapsed] = 0
+        counts[collapsed] += 1
+        if sql == _CHUNK_INSERT_SQL:
+            chunk_rows += 1
+        elif sql == _FILE_INSERT_SQL:
+            file_rows += 1
+    return D1Plan(
+        statements=tuple((sql, counts[sql]) for sql in order),
+        chunk_rows=chunk_rows,
+        file_rows=file_rows,
+        source_rows=source_row_count(decoded),
+        decoded_bytes=len(decoded),
+        cap_bytes=D1_DATABASE_CAP_BYTES,
+        within_cap=len(decoded) <= D1_DATABASE_CAP_BYTES,
+    )
+
+
 def sync_early_vote(
     election_id: str,
     response: Any,
@@ -211,11 +311,14 @@ def sync_early_vote(
 
     assert_within_cap(len(decoded), election_id)
     if dry_run:
+        plan = summarize_d1_plan(election_id, decoded, digest)
         logger.info(
-            "early-vote dry-run election_id=%s sha256=%s decoded_bytes=%s",
+            "early-vote dry-run election_id=%s sha256=%s decoded_bytes=%s d1_rows=%s within_cap=%s",
             election_id,
             digest,
             len(decoded),
+            plan.chunk_rows + plan.file_rows,
+            plan.within_cap,
         )
         return SyncResult(
             election_id=election_id,
@@ -223,6 +326,7 @@ def sync_early_vote(
             decoded_bytes=len(decoded),
             status="dry_run",
             exit_code=0,
+            plan=plan,
         )
 
     store.write_database(election_id, decoded, digest)
@@ -258,6 +362,21 @@ def format_sync_report(result: SyncResult) -> str:
     ]
     if result.version is not None:
         lines.append(f"kv_version={result.version}")
+    if result.status == "unchanged":
+        lines.append("unchanged_skip=true")
+    if result.plan is not None:
+        plan = result.plan
+        lines.append(f"d1_cap_bytes={plan.cap_bytes}")
+        lines.append(f"within_cap={'true' if plan.within_cap else 'false'}")
+        row_fields = [f"election_id={result.election_id}"]
+        if plan.source_rows is not None:
+            row_fields.append(f"source_rows={plan.source_rows}")
+        row_fields.append(f"d1_chunk_rows={plan.chunk_rows}")
+        row_fields.append(f"d1_file_rows={plan.file_rows}")
+        row_fields.append(f"d1_rows={plan.chunk_rows + plan.file_rows}")
+        lines.append("rows " + " ".join(row_fields))
+        for sql, repeats in plan.statements:
+            lines.append(f"d1_statement repeats={repeats} sql={sql}")
     lines.append(f"note={KV_NOT_FOR_ELECTION_NIGHT}")
     return "\n".join(lines)
 
@@ -357,39 +476,13 @@ class CloudflareEarlyVoteStore:
         election_id = require_election_id(election_id)
         assert_within_cap(len(decoded), election_id)
         database_id = self._ensure_one_database(election_id)
-        chunks = iter_chunk_b64(decoded)
-        self._statements(
-            database_id,
-            [(_FILE_TABLE_SQL, []), (_CHUNK_TABLE_SQL, [])],
-        )
-        self._statements(
-            database_id,
-            [
-                ("DELETE FROM early_vote_chunk WHERE source_election_id = ?", [election_id]),
-                ("DELETE FROM early_vote_file WHERE source_election_id = ?", [election_id]),
-            ],
-        )
-        inserts = [
-            (
-                "INSERT INTO early_vote_chunk "
-                "(source_election_id, chunk_index, payload_b64) VALUES (?, ?, ?)",
-                [election_id, str(index), payload],
-            )
-            for index, payload in enumerate(chunks)
-        ]
-        for start in range(0, len(inserts), _INSERT_BATCH):
-            self._statements(database_id, inserts[start : start + _INSERT_BATCH])
-        self._statements(
-            database_id,
-            [
-                (
-                    "INSERT INTO early_vote_file "
-                    "(source_election_id, sha256, byte_length, chunk_count) "
-                    "VALUES (?, ?, ?, ?)",
-                    [election_id, digest, str(len(decoded)), str(len(chunks))],
-                )
-            ],
-        )
+        statements = build_d1_statements(election_id, decoded, digest)
+        chunks = statements[4:-1]
+        self._statements(database_id, statements[:2])
+        self._statements(database_id, statements[2:4])
+        for start in range(0, len(chunks), _INSERT_BATCH):
+            self._statements(database_id, chunks[start : start + _INSERT_BATCH])
+        self._statements(database_id, statements[-1:])
         logger.info(
             "early-vote D1 replace election_id=%s database=%s chunks=%s decoded_bytes=%s",
             election_id,
@@ -548,15 +641,17 @@ def _response_from_envelope_file(path: str) -> httpx.Response:
     return httpx.Response(200, content=body)
 
 
-def _build_store(*, apply: bool) -> EarlyVoteStore:
+def _build_store(*, apply: bool, stored_hash: str = "") -> EarlyVoteStore:
+    """Dry runs never open Cloudflare. ``stored_hash`` is only for a second dry run."""
+    if not apply:
+        text = stored_hash.strip()
+        return EmptyHashStore(stored=text or None)
     config = _cloudflare_config_from_env()
-    if apply and config is None:
+    if config is None:
         raise EarlyVoteSyncError(
             "apply requires CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, "
             "and CLOUDFLARE_KV_NAMESPACE_ID"
         )
-    if config is None:
-        return EmptyHashStore()
     account_id, api_token, namespace_id = config
     return CloudflareEarlyVoteStore(
         account_id=account_id,
@@ -586,15 +681,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--envelope-file", default="", help="Local Civix envelope JSON")
     parser.add_argument("--dry-run", action="store_true", help="Hash and print the plan")
     parser.add_argument("--apply", action="store_true", help="Write D1, then bump KV")
+    parser.add_argument(
+        "--stored-hash",
+        default="",
+        help="Hash from an earlier run of this file, so a second dry run can skip",
+    )
     parser.add_argument("--http-backend", default="httpx", choices=["httpx", "cloudscraper"])
     args = parser.parse_args(argv)
     if args.dry_run == args.apply:
         parser.error("pass exactly one of --dry-run or --apply")
+    if args.apply and args.stored_hash:
+        parser.error("--stored-hash is only used with --dry-run")
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     store: EarlyVoteStore | None = None
     try:
-        store = _build_store(apply=args.apply)
+        store = _build_store(apply=args.apply, stored_hash=args.stored_hash)
         response = _load_response(
             args.election_id,
             args.envelope_file,
