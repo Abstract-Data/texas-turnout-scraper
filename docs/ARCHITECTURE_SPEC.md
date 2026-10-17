@@ -171,15 +171,17 @@ class ElectionType(str, Enum):
     LOCAL = "local"
     UNKNOWN = "unknown"
 
+
 class VoteMethod(str, Enum):
     IN_PERSON = "IN-PERSON"
     MAIL_IN = "MAIL-IN"
-    ELECTION_DAY = "GE"           # observed in bulk file only
+    ELECTION_DAY = "GE"  # observed in bulk file only
+
 
 class PoliticalParty(str, Enum):
     REPUBLICAN = "republican"
     DEMOCRATIC = "democratic"
-    NONPARTISAN = "nonpartisan"   # general elections
+    NONPARTISAN = "nonpartisan"  # general elections
 ```
 
 Election type is inferred from the SOS option label text:
@@ -195,42 +197,43 @@ Election type is inferred from the SOS option label text:
 
 ```python
 class Election(BaseModel):
-    source_election_id: str          # SOS numeric ID — canonical unique key (e.g. "49664")
-    label: str                       # generated slug for display/filenames (e.g. "TX-2024-GE")
-    name: str                        # raw SOS option text (e.g. "2024 NOVEMBER 5TH GENERAL ELECTION")
+    source_election_id: str  # SOS numeric ID — canonical unique key (e.g. "49664")
+    label: str  # generated slug for display/filenames (e.g. "TX-2024-GE")
+    name: str  # raw SOS option text (e.g. "2024 NOVEMBER 5TH GENERAL ELECTION")
     election_type: ElectionType
     party: Optional[PoliticalParty]  # None for GENERAL; set for PRIMARY elections
     state: str = "TX"
-    election_date: date              # parsed from name
+    election_date: date  # parsed from name
 
 
 class CountyTurnout(BaseModel):
-    election_id: str                 # references Election.source_election_id
-    report_date: date                # the selectedDate this row was fetched for
-    county: str                      # "STATEWIDE" or county name
+    election_id: str  # references Election.source_election_id
+    report_date: date  # the selectedDate this row was fetched for
+    county: str  # "STATEWIDE" or county name
     registered_voters: int
-    inperson_on_date: int            # in-person voters on report_date only
-    cumulative_inperson: int         # running total through report_date
+    inperson_on_date: int  # in-person voters on report_date only
+    cumulative_inperson: int  # running total through report_date
     cumulative_inperson_pct: float
-    cumulative_mail: int             # running total through report_date
-    cumulative_total: int            # inperson + mail
+    cumulative_mail: int  # running total through report_date
+    cumulative_total: int  # inperson + mail
     cumulative_total_pct: float
 
 
 class VoterRecord(BaseModel):
-    election_id: str                 # references Election.source_election_id
-    report_date: date                # the selectedDate this record was fetched for
-    voter_id: str                    # Texas VUID — always a string, never coerced to int (PII)
-    voter_name: str                  # full name as published by SOS (PII — consumer's responsibility)
+    election_id: str  # references Election.source_election_id
+    report_date: date  # the selectedDate this record was fetched for
+    voter_id: str  # Texas VUID — always a string, never coerced to int (PII)
+    voter_name: str  # full name as published by SOS (PII — consumer's responsibility)
     vote_method: VoteMethod
-    county: Optional[str]            # None when fetched from statewide bulk file
+    county: Optional[str]  # None when fetched from statewide bulk file
     precinct: str
-    poll_place_id: Optional[str]     # present in statewide file only
-    poll_place_name: Optional[str]   # present in statewide file only
+    poll_place_id: Optional[str]  # present in statewide file only
+    poll_place_name: Optional[str]  # present in statewide file only
 
 
 class ElectionRoster(BaseModel):
     """Full result of a roster fetch for one election + date."""
+
     election: Election
     report_date: date
     strategy: Literal["A", "B"]
@@ -241,16 +244,17 @@ class ElectionRoster(BaseModel):
 
 class AuditReport(BaseModel):
     """Post-processing data quality report. Run separately on fetched data."""
+
     election_id: str
     report_date: date
     total_records: int
-    duplicate_vuids: int             # same voter_id appears more than once
-    duplicate_vuid_ids: List[str]    # the actual duplicate VUIDs
-    cross_method_duplicates: int     # VUID appears with both IN-PERSON and MAIL-IN
+    duplicate_vuids: int  # same voter_id appears more than once
+    duplicate_vuid_ids: List[str]  # the actual duplicate VUIDs
+    cross_method_duplicates: int  # VUID appears with both IN-PERSON and MAIL-IN
     cross_method_vuid_ids: List[str]
     turnout_exceeds_registered: List[str]  # county names where total > registered voters
-    missing_counties: List[str]      # counties expected but absent from fetch
-    notes: List[str]                 # human-readable summary of findings
+    missing_counties: List[str]  # counties expected but absent from fetch
+    notes: List[str]  # human-readable summary of findings
 ```
 
 ---

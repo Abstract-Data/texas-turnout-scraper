@@ -43,6 +43,7 @@ uv run ty check
 ```python
 # Was: progress_callback: callable | None = None,
 from collections.abc import Callable
+
 ...
-progress_callback: Callable[[], None] | None = None,
+progress_callback: Callable[[], None] | None = (None,)
 ```

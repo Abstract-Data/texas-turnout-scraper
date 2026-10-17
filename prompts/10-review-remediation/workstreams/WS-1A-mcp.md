@@ -53,6 +53,7 @@ rows = client.fetch_ev_turnout(election_id=election_id, election_date=ev_date)
 # mcp_server.py:148  (was: client.fetch_county_roster(...))
 # fetch_county_roster is a MODULE-LEVEL function, not a method
 from .civix import fetch_county_roster
+
 roster = fetch_county_roster(
     client,
     election_id=election_id,

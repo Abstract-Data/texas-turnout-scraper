@@ -45,7 +45,7 @@ Hoist the retry loop into a shared `_request_with_retry(method, path, **kwargs)`
 both `.get()` and `.post()`. Add jitter:
 
 ```python
-time.sleep((2 ** attempt) + random.uniform(0, 0.5))
+time.sleep((2**attempt) + random.uniform(0, 0.5))
 ```
 
 Add a test that asserts the 2-retry-then-fail behavior for both methods.

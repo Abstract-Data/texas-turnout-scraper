@@ -38,14 +38,16 @@ Add to `tests/conftest.py`:
 ```python
 import pytest
 
+
 def pytest_addoption(parser):
-    parser.addoption("--live", action="store_true", default=False,
-                     help="Run integration tests against live APIs")
+    parser.addoption(
+        "--live", action="store_true", default=False, help="Run integration tests against live APIs"
+    )
+
 
 def pytest_configure(config):
-    config.addinivalue_line(
-        "markers", "live: mark test as requiring live network access"
-    )
+    config.addinivalue_line("markers", "live: mark test as requiring live network access")
+
 
 def pytest_collection_modifyitems(config, items):
     if not config.getoption("--live"):

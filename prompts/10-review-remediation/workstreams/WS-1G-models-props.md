@@ -49,6 +49,7 @@ on its own. Add:
 ```python
 class CountyRoster(BaseModel):
     ...
+
     @property
     def in_person_count(self) -> int:
         return sum(1 for r in self.records if r.voting_method is VoteMethod.IN_PERSON)
