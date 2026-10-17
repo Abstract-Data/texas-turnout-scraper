@@ -20,6 +20,9 @@ src/texas_turnout_scraper/tmp/
 HANDOFF.md
 TASK.md
 
+# Local Playwright recordings (live page HTML and traces; not for GitHub)
+.recordings/
+
 # =============================================================================
 # Python
 # =============================================================================
