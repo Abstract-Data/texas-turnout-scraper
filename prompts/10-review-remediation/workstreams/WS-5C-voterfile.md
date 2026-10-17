@@ -64,7 +64,10 @@ Replace the 3-level nested for/break with a predicate list:
 ```python
 _STRATEGIES = [
     ("✓ Exact", lambda candidates, name: name if name in candidates else None),
-    ("~ Prefix", lambda candidates, name: next((c for c in candidates if c.startswith(name)), None)),
+    (
+        "~ Prefix",
+        lambda candidates, name: next((c for c in candidates if c.startswith(name)), None),
+    ),
     ("~ Substring", lambda candidates, name: next((c for c in candidates if name in c), None)),
 ]
 

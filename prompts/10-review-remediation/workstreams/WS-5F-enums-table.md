@@ -41,8 +41,9 @@ uv run ty check
 _PATTERNS: tuple[tuple[str, ElectionType], ...] = (
     ("primary runoff", ElectionType.PRIMARY_RUNOFF),
     ("primary", ElectionType.PRIMARY),
-    ...
+    ...,
 )
+
 
 def infer_election_type(name: str) -> ElectionType:
     lower = name.lower()

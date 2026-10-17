@@ -46,6 +46,7 @@ uv run ty check
 ```python
 from typing import Protocol
 
+
 class RosterSource(Protocol):
     source_prefix: str  # "civix" | "legacy"
 

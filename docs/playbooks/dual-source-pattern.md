@@ -38,6 +38,7 @@ The line is roughly: **wire protocol = split; domain logic = share**.
 from typing import Protocol, Sequence
 from datetime import date
 
+
 class RosterSource(Protocol):
     source_prefix: str  # "civix" | "legacy"
 

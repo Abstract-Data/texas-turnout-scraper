@@ -46,7 +46,7 @@ uv run ty check
 
 ```python
 # Was: generated_at=datetime.utcnow()
-generated_at=datetime.now(timezone.utc)
+generated_at = datetime.now(timezone.utc)
 ```
 
 `writer.py` already defines `_utc_now()` at module level — prefer reusing that for
