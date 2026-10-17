@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
+
+# The preview read API lives in workers/ev-api and is not an installable
+# extra of the root package. Unit tests import it from this path.
+_EV_API_SRC = Path(__file__).resolve().parents[1] / "workers" / "ev-api" / "src"
+if _EV_API_SRC.is_dir():
+    _ev_api_src = str(_EV_API_SRC)
+    if _ev_api_src not in sys.path:
+        sys.path.insert(0, _ev_api_src)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
