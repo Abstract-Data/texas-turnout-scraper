@@ -2,26 +2,29 @@
 
 Preview/staging stack on the Abstract Data personal Cloudflare account. It creates one D1 shell database, one KV namespace, the Python Worker `tx-turnout-ev-api-preview`, and a Cloudflare Access service token. There is no production workspace.
 
-Apply only from the `Terraform preview` GitHub Actions workflow. Do not run `terraform apply` on a laptop.
+The Worker has no `workers.dev` route and no preview or version URL. `subdomain.enabled` and `subdomain.previews_enabled` are both false. Nothing answers on a public hostname.
 
 KV writes can take about 60 seconds to show up. That is not fit for election-night results. This module does not turn on KV instant mode.
 
 The Worker module is a placeholder. It does not query D1 or KV and it does not log roster fields. The read API replaces `worker/entry.py` later. Consumers bind to this Worker as `EV_API`.
 
-## Bootstrap the state bucket
+Pull requests run `terraform fmt`, `terraform validate`, and `tflint` only. They do not read secrets and they do not plan or apply.
 
-Do this once, on the Abstract Data personal account, before the first CI apply. Terraform cannot create the bucket it stores state in.
+Plan and apply run on a push to `main` or on `workflow_dispatch`, in the GitHub Environment `preview`. Do not run `terraform plan` or `terraform apply` on a laptop.
+
+## Bootstrap
+
+Do the GitHub settings before adding secrets. Do not try to apply from this pull request.
 
 1. In the Cloudflare dashboard, confirm the account is the Abstract Data personal account, not the Quorum Report account.
-2. Create a private R2 bucket. Suggested name: `tx-turnout-tfstate-preview`. Leave public access off. Dashboard: R2 → Create bucket. Equivalent command, already authenticated to that account: `npx wrangler r2 bucket create tx-turnout-tfstate-preview`.
-3. Create an R2 API token with Object Read & Write on that bucket only. Store the Access Key ID and Secret Access Key. These are S3 credentials, separate from `CLOUDFLARE_API_TOKEN`. See [R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/).
-4. The S3 endpoint is `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. The region is `auto`. See [R2 S3 API](https://developers.cloudflare.com/r2/api/s3/api/).
+2. Create a private R2 bucket before the first apply. Terraform cannot create the bucket it stores state in. Suggested name: `tx-turnout-tfstate-preview`. Leave public access off. Dashboard: R2 → Create bucket. Equivalent command, already authenticated to that account: `npx wrangler r2 bucket create tx-turnout-tfstate-preview`.
+3. Create an R2 API token with Object Read & Write on that bucket only. Store the Access Key ID and Secret Access Key. These are S3 credentials, separate from `CLOUDFLARE_API_TOKEN`. See [R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/). The S3 endpoint is `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. The region is `auto`. See [R2 S3 API](https://developers.cloudflare.com/r2/api/s3/api/).
+4. In GitHub, open Settings → Environments → `preview` for `Abstract-Data/texas-turnout-scraper`. This is a settings step, not something this repository configures.
+   - Deployment branches: selected branch `main` only.
+   - Required reviewers: at least one.
+5. Add the six values below as Environment secrets on `preview`. Do not add them as repository secrets.
 
-## GitHub repo secrets
-
-Add these on `Abstract-Data/texas-turnout-scraper` under Settings → Secrets and variables → Actions. Do not commit the values.
-
-| Secret | Value |
+| Environment secret | Value |
 | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | API token on the Abstract Data personal account. Scopes below. |
 | `CLOUDFLARE_ACCOUNT_ID` | That account's 32-character id. |
@@ -40,7 +43,7 @@ Add these on `Abstract-Data/texas-turnout-scraper` under Settings → Secrets an
 
 Permission names: [Cloudflare API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/).
 
-The workflow uses the GitHub Environment `preview`. Add required reviewers there if you want a human gate. Do not point this workflow at a production environment.
+After those settings and secrets exist, plan and apply run from a push to `main` or from `workflow_dispatch` on `main`. Do not point this workflow at a production environment.
 
 After the first successful apply, the Access client id and secret are in the R2 state file. The dashboard does not show the secret again. On a trusted machine, with the same backend secrets in the environment:
 
@@ -57,7 +60,7 @@ terraform output -raw access_client_secret
 `backend.hcl` is gitignored and contains only:
 
 ```hcl
-bucket   = "<TF_STATE_BUCKET>"
+bucket    = "<TF_STATE_BUCKET>"
 endpoints = { s3 = "<TF_STATE_ENDPOINT>" }
 ```
 

@@ -24,7 +24,7 @@ output "service_binding_name" {
 }
 
 output "workers_dev_url" {
-  description = "Stable workers.dev hostname for the preview Worker. Requests without the Access service token receive 401."
+  description = "workers.dev hostname this Worker would use if subdomain.enabled were true. The route is disabled, so this URL does not serve traffic."
   value       = cloudflare_worker.ev_api.subdomain.url
 }
 

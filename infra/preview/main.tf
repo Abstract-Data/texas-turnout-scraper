@@ -40,10 +40,15 @@ resource "cloudflare_worker" "ev_api" {
     enabled = false
   }
 
-  # Stable preview hostname plus version preview URLs. Both are behind Access.
+  # workers.dev is off. Wrangler names this workers_dev; provider v5.28.0
+  # sets it with subdomain.enabled. Disabling that route does not disable
+  # preview or version URLs, so subdomain.previews_enabled is false too.
+  # No workers.dev, preview, or version hostname is routed. The Access
+  # application below is attached for a later route change; this resource
+  # does not enable one.
   subdomain = {
-    enabled          = true
-    previews_enabled = true
+    enabled          = false
+    previews_enabled = false
   }
 }
 
