@@ -1,0 +1,305 @@
+name: Terraform preview
+
+on:
+  pull_request:
+    paths:
+      - "infra/preview/**"
+      - ".github/workflows/terraform-preview.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/preview/**"
+      - ".github/workflows/terraform-preview.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-preview
+  cancel-in-progress: false
+
+jobs:
+  fmt-validate:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/preview
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.13.4"
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Init without the state backend
+        run: terraform init -input=false -backend=false
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Lint
+        run: |
+          tflint --init
+          tflint
+
+  plan:
+    name: Plan preview
+    needs: fmt-validate
+    if: "(github.event_name == 'workflow_dispatch' || github.event_name == 'push') && needs.fmt-validate.result == 'success'"
+    runs-on: ubuntu-latest
+    environment: preview
+    defaults:
+      run:
+        working-directory: infra/preview
+    outputs:
+      plan_sha256: ${{ steps.store.outputs.plan_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.13.4"
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+
+      # version input: https://github.com/1Password/install-cli-action/blob/1a3160d5e9de1ae0803eaa08a88746f5ae3daa50/README.md
+      # op run --environment needs CLI >= 2.41.0.
+      - name: Install 1Password CLI
+        uses: 1password/install-cli-action@1a3160d5e9de1ae0803eaa08a88746f5ae3daa50 # v4.1.0
+        with:
+          version: 2.41.0
+
+      - name: Require OP_SERVICE_ACCOUNT_TOKEN
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        run: |
+          if [ -z "${OP_SERVICE_ACCOUNT_TOKEN}" ]; then
+            echo "OP_SERVICE_ACCOUNT_TOKEN is empty. Add it as a preview environment secret before plan or apply."
+            exit 1
+          fi
+
+      - name: Write backend config
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_STATE_ENDPOINT: ${{ secrets.TF_STATE_ENDPOINT }}
+        run: |
+          missing=0
+          for name in CLOUDFLARE_ACCOUNT_ID TF_STATE_BUCKET TF_STATE_ENDPOINT; do
+            if [ -z "${!name}" ]; then
+              echo "Missing preview environment secret: ${name}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Plan and apply stay blocked until those preview environment secrets exist."
+            exit 1
+          fi
+          echo "::add-mask::${CLOUDFLARE_ACCOUNT_ID}"
+          echo "::add-mask::${TF_STATE_BUCKET}"
+          echo "::add-mask::${TF_STATE_ENDPOINT}"
+          umask 077
+          cat > backend.hcl <<EOF
+          bucket    = "${TF_STATE_BUCKET}"
+          endpoints = { s3 = "${TF_STATE_ENDPOINT}" }
+          EOF
+          printf 'account_id = "%s"\n' "${CLOUDFLARE_ACCOUNT_ID}" > preview.auto.tfvars
+
+      # op run loads the 1Password Environment. Do not pass --no-masking.
+      # https://www.1password.dev/environments/read-environment-variables
+      # R2 upload: https://developers.cloudflare.com/r2/examples/aws/aws-cli/
+      # Saved plan is not a GitHub artifact. This repository is public.
+      - name: Plan and store tfplan
+        id: store
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        run: |
+          op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- bash -c 'AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" bash -s' <<'SCRIPT'
+          set -euo pipefail
+          umask 077
+          missing=0
+          for name in CLOUDFLARE_API_TOKEN R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "Missing 1Password environment variable: ${name}"
+              missing=1
+            fi
+          done
+          test "${missing}" -eq 0
+          command -v aws >/dev/null
+          terraform init -input=false -backend-config=backend.hcl
+          terraform plan -input=false -out=tfplan
+          digest=$(sha256sum tfplan | awk '{print $1}')
+          printf '%s\n' "${digest}" > tfplan.sha256
+          printf 'plan_sha256=%s\n' "${digest}" >> "${GITHUB_OUTPUT}"
+          echo "Stored plan SHA-256 ${digest}"
+          bucket=$(awk -F'"' '/bucket/ {print $2; exit}' backend.hcl)
+          endpoint=$(awk -F'"' '/s3/ {print $2; exit}' backend.hcl)
+          prefix="plans/${{ github.run_id }}-${{ github.run_attempt }}"
+          r2() {
+            AWS_DEFAULT_REGION=auto \
+            AWS_REQUEST_CHECKSUM_CALCULATION=when_required \
+            AWS_RESPONSE_CHECKSUM_VALIDATION=when_required \
+            aws "$@"
+          }
+          r2 s3api put-object --endpoint-url "${endpoint}" --bucket "${bucket}" --key "${prefix}/tfplan" --body tfplan >/dev/null
+          if ! r2 s3api put-object --endpoint-url "${endpoint}" --bucket "${bucket}" --key "${prefix}/tfplan.sha256" --body tfplan.sha256 >/dev/null; then
+            r2 s3api delete-object --endpoint-url "${endpoint}" --bucket "${bucket}" --key "${prefix}/tfplan" >/dev/null
+            echo "Failed to store the plan SHA-256"
+            exit 1
+          fi
+          terraform show -no-color tfplan > plan.txt
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          text = Path("plan.txt").read_text()
+          for name in (
+              "CLOUDFLARE_API_TOKEN",
+              "R2_ACCESS_KEY_ID",
+              "R2_SECRET_ACCESS_KEY",
+              "AWS_ACCESS_KEY_ID",
+              "AWS_SECRET_ACCESS_KEY",
+              "OP_SERVICE_ACCOUNT_TOKEN",
+          ):
+              value = os.environ.get(name) or ""
+              if len(value) >= 8:
+                  text = text.replace(value, "***")
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a", encoding="utf-8") as handle:
+              handle.write("## Terraform plan\n\n")
+              handle.write("Saved plan: `plans/${{ github.run_id }}-${{ github.run_attempt }}/tfplan` in the private state bucket.\n\n")
+              handle.write("```\n")
+              handle.write(text)
+              if not text.endswith("\n"):
+                  handle.write("\n")
+              handle.write("```\n")
+          PY
+          rm -f plan.txt
+          SCRIPT
+
+  apply:
+    name: Apply preview
+    needs: plan
+    if: "(github.event_name == 'workflow_dispatch' || github.event_name == 'push') && needs.plan.result == 'success'"
+    runs-on: ubuntu-latest
+    environment: preview
+    defaults:
+      run:
+        working-directory: infra/preview
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.13.4"
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+
+      # version input: https://github.com/1Password/install-cli-action/blob/1a3160d5e9de1ae0803eaa08a88746f5ae3daa50/README.md
+      # op run --environment needs CLI >= 2.41.0.
+      - name: Install 1Password CLI
+        uses: 1password/install-cli-action@1a3160d5e9de1ae0803eaa08a88746f5ae3daa50 # v4.1.0
+        with:
+          version: 2.41.0
+
+      - name: Require OP_SERVICE_ACCOUNT_TOKEN
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        run: |
+          if [ -z "${OP_SERVICE_ACCOUNT_TOKEN}" ]; then
+            echo "OP_SERVICE_ACCOUNT_TOKEN is empty. Add it as a preview environment secret before plan or apply."
+            exit 1
+          fi
+
+      - name: Write backend config
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_STATE_ENDPOINT: ${{ secrets.TF_STATE_ENDPOINT }}
+        run: |
+          missing=0
+          for name in CLOUDFLARE_ACCOUNT_ID TF_STATE_BUCKET TF_STATE_ENDPOINT; do
+            if [ -z "${!name}" ]; then
+              echo "Missing preview environment secret: ${name}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Plan and apply stay blocked until those preview environment secrets exist."
+            exit 1
+          fi
+          echo "::add-mask::${CLOUDFLARE_ACCOUNT_ID}"
+          echo "::add-mask::${TF_STATE_BUCKET}"
+          echo "::add-mask::${TF_STATE_ENDPOINT}"
+          umask 077
+          cat > backend.hcl <<EOF
+          bucket    = "${TF_STATE_BUCKET}"
+          endpoints = { s3 = "${TF_STATE_ENDPOINT}" }
+          EOF
+          printf 'account_id = "%s"\n' "${CLOUDFLARE_ACCOUNT_ID}" > preview.auto.tfvars
+
+      # Applies the saved plan only. https://developer.hashicorp.com/terraform/cli/commands/apply
+      # op run loads the 1Password Environment. Do not pass --no-masking.
+      # https://www.1password.dev/environments/read-environment-variables
+      - name: Apply stored tfplan
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        run: |
+          op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- bash -c 'AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" bash -s' <<'SCRIPT'
+          set -euo pipefail
+          umask 077
+          missing=0
+          for name in CLOUDFLARE_API_TOKEN R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "Missing 1Password environment variable: ${name}"
+              missing=1
+            fi
+          done
+          test "${missing}" -eq 0
+          command -v aws >/dev/null
+          expected="${{ needs.plan.outputs.plan_sha256 }}"
+          if ! printf '%s' "${expected}" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "Plan job did not publish a SHA-256"
+            exit 1
+          fi
+          bucket=$(awk -F'"' '/bucket/ {print $2; exit}' backend.hcl)
+          endpoint=$(awk -F'"' '/s3/ {print $2; exit}' backend.hcl)
+          prefix="plans/${{ github.run_id }}-${{ github.run_attempt }}"
+          r2() {
+            AWS_DEFAULT_REGION=auto \
+            AWS_REQUEST_CHECKSUM_CALCULATION=when_required \
+            AWS_RESPONSE_CHECKSUM_VALIDATION=when_required \
+            aws "$@"
+          }
+          r2 s3api get-object --endpoint-url "${endpoint}" --bucket "${bucket}" --key "${prefix}/tfplan" tfplan >/dev/null
+          r2 s3api get-object --endpoint-url "${endpoint}" --bucket "${bucket}" --key "${prefix}/tfplan.sha256" tfplan.sha256 >/dev/null
+          actual=$(sha256sum tfplan | awk '{print $1}')
+          stored=$(tr -d '[:space:]' < tfplan.sha256)
+          if [ "${actual}" != "${expected}" ] || [ "${stored}" != "${expected}" ]; then
+            echo "tfplan SHA-256 does not match the plan job output"
+            exit 1
+          fi
+          echo "tfplan SHA-256 matches the plan job output"
+          terraform init -input=false -backend-config=backend.hcl
+          terraform apply -input=false tfplan
+          r2 s3api delete-object --endpoint-url "${endpoint}" --bucket "${bucket}" --key "${prefix}/tfplan" >/dev/null
+          r2 s3api delete-object --endpoint-url "${endpoint}" --bucket "${bucket}" --key "${prefix}/tfplan.sha256" >/dev/null
+          echo "Deleted plans/${{ github.run_id }}-${{ github.run_attempt }}/tfplan and its SHA-256"
+          SCRIPT

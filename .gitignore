@@ -169,6 +169,18 @@ Desktop.ini
 # Cursor — local hook/session state (rules and skills are committed)
 .cursor/hooks/state/
 
+# Terraform preview. State lives in R2. Never commit local state or backend config.
+infra/preview/.terraform/
+infra/preview/*.tfstate
+infra/preview/*.tfstate.*
+infra/preview/backend.hcl
+infra/preview/preview.auto.tfvars
+infra/preview/tfplan
+infra/preview/crash.log
+infra/preview/crash.*.log
+infra/preview/override.tf
+infra/preview/override.tf.json
+
 # =============================================================================
 # Misc local tooling
 # =============================================================================
