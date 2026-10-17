@@ -1,0 +1,128 @@
+name: Early vote sync
+
+# Pulls one Civix early-vote file, hashes the unwrapped bytes, and on a new
+# file writes that election's D1 database before bumping KV.
+#
+# data-refresh.yml is unchanged and still publishes the GitHub Pages CSV.
+#
+# KV writes can take about 60 seconds to show up at every edge. That is not
+# fit for election-night results. This workflow does not build a faster path.
+#
+# workflow_dispatch only. dry_run defaults to true. The dry-run job does not
+# reference secrets, does not install 1Password, and does not use a GitHub
+# Environment. Apply is a separate job on the GitHub Environment `preview`.
+# This file does not set deployment branches or required reviewers. Those are
+# GitHub settings on `preview`: deployment branches = main only, and a
+# required reviewer. Do not run this workflow from a pull request.
+#
+# preview environment secrets used here: CLOUDFLARE_ACCOUNT_ID and
+# OP_SERVICE_ACCOUNT_TOKEN. CLOUDFLARE_API_TOKEN and CLOUDFLARE_KV_NAMESPACE_ID
+# are not GitHub secrets. `op run` loads them from 1Password Environment
+# s6tljdcafkgqxfuxhcnj3m5x5a into the writer process. Copy
+# CLOUDFLARE_KV_NAMESPACE_ID into that 1Password Environment after the first
+# Terraform apply (`terraform output -raw kv_namespace_id`). Do not hardcode
+# the namespace id.
+
+on:
+  workflow_dispatch:
+    inputs:
+      election_id:
+        description: "source_election_id (string, not an integer)"
+        required: true
+        type: string
+      election_date:
+        description: "Early-vote file date MM/DD/YYYY"
+        required: true
+        type: string
+      dry_run:
+        description: "true hashes and prints the plan. false writes D1 then bumps KV."
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    name: Dry run
+    if: inputs.dry_run != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: uv sync --extra waf
+
+      - name: Hash the early-vote file
+        run: |
+          set -euo pipefail
+          uv run python -m texas_turnout_scraper.early_vote_sync \
+            --election-id "${{ inputs.election_id }}" \
+            --date "${{ inputs.election_date }}" \
+            --http-backend cloudscraper \
+            --dry-run
+
+  apply:
+    name: Apply preview
+    if: inputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    environment: preview
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: uv sync --extra waf
+
+      - name: Install 1Password CLI
+        uses: 1password/install-cli-action@1a3160d5e9de1ae0803eaa08a88746f5ae3daa50
+        with:
+          version: "2.41.0"
+
+      - name: Require the 1Password service account token
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
+            echo "::error::OP_SERVICE_ACCOUNT_TOKEN is empty. Set it on the preview environment before apply."
+            exit 1
+          fi
+
+      - name: Write D1 and bump KV
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
+            uv run python -m texas_turnout_scraper.early_vote_sync \
+            --election-id "${{ inputs.election_id }}" \
+            --date "${{ inputs.election_date }}" \
+            --http-backend cloudscraper \
+            --apply
