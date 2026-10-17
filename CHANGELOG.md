@@ -6,6 +6,23 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.4](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.3...texas-turnout-scraper-v0.2.4) (2026-10-17)
+
+
+### Features
+
+* **civix:** installable ENR and archive package ([#17](https://github.com/Abstract-Data/texas-turnout-scraper/issues/17)) ([d6e038e](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d6e038eddb51ecbaa2435d51dfbc496fae0e6a58))
+
+
+### Bug Fixes
+
+* **ci:** satisfy ruff 0.17 format and ty 0.0.87 warn-only exit ([cdac19f](https://github.com/Abstract-Data/texas-turnout-scraper/commit/cdac19f6d6b5fbbfe9a888927a96b5edc139f323))
+
+
+### Documentation
+
+* add security policy and grouped Dependabot updates ([#12](https://github.com/Abstract-Data/texas-turnout-scraper/issues/12)) ([e0a0e90](https://github.com/Abstract-Data/texas-turnout-scraper/commit/e0a0e9020c5ea31a3690c676d9e93f8bce239aaa))
+
 ## [0.2.3](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.2...texas-turnout-scraper-v0.2.3) (2026-05-29)
 
 
