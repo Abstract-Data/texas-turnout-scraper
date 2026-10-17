@@ -8,9 +8,17 @@ name: Early vote sync
 # KV writes can take about 60 seconds to show up at every edge. That is not
 # fit for election-night results. This workflow does not build a faster path.
 #
-# dry_run is the default and does not create Cloudflare resources. Apply is
-# manual (workflow_dispatch only). It does not run Terraform and it does not
-# run on pull_request or a schedule.
+# workflow_dispatch only. dry_run defaults to true. The dry-run job does not
+# reference secrets and does not use a GitHub Environment. Apply is a separate
+# job on the GitHub Environment `preview` and reads environment secrets.
+# This file does not set deployment branches or required reviewers. Those are
+# GitHub settings on `preview`: deployment branches = main only, and a
+# required reviewer. Do not run this workflow from a pull request.
+#
+# CLOUDFLARE_KV_NAMESPACE_ID is not one of the six Terraform preview
+# environment secrets. After preview apply, copy `terraform output -raw
+# kv_namespace_id` from infra/preview into that additional environment secret.
+# Do not hardcode the namespace id.
 
 on:
   workflow_dispatch:
@@ -36,8 +44,9 @@ permissions:
   contents: read
 
 jobs:
-  sync:
-    name: Sync early vote
+  dry-run:
+    name: Dry run
+    if: inputs.dry_run != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -54,10 +63,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install package
-        run: uv sync --dev
+        run: uv sync --extra waf
 
-      - name: Dry run
-        if: inputs.dry_run != 'false'
+      - name: Hash the early-vote file
         run: |
           set -euo pipefail
           uv run python -m texas_turnout_scraper.early_vote_sync \
@@ -66,8 +74,29 @@ jobs:
             --http-backend cloudscraper \
             --dry-run
 
-      - name: Apply
-        if: inputs.dry_run == 'false'
+  apply:
+    name: Apply preview
+    if: inputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    environment: preview
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: uv sync --extra waf
+
+      - name: Write D1 and bump KV
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
