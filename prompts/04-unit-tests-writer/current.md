@@ -71,22 +71,41 @@ from pathlib import Path
 from texas_turnout_scraper.enums import VoteMethod
 from texas_turnout_scraper.models import CountyRoster, VoterRecord
 from texas_turnout_scraper.writer import (
-    accumulate_roster, write_roster_csv, read_roster_csv,
-    roster_csv_to_text, audit_from_records,
+    accumulate_roster,
+    write_roster_csv,
+    read_roster_csv,
+    roster_csv_to_text,
+    audit_from_records,
 )
 
-def _rec(vuid, method=VoteMethod.IN_PERSON, county="HARRIS",
-         report_date=date(2026,2,17), precinct="100", voter_name=""):
+
+def _rec(
+    vuid,
+    method=VoteMethod.IN_PERSON,
+    county="HARRIS",
+    report_date=date(2026, 2, 17),
+    precinct="100",
+    voter_name="",
+):
     return VoterRecord(
-        id_voter=vuid, voting_method=method, precinct=precinct,
-        county=county, election_id="53813", report_date=report_date,
+        id_voter=vuid,
+        voting_method=method,
+        precinct=precinct,
+        county=county,
+        election_id="53813",
+        report_date=report_date,
         voter_name=voter_name,
     )
 
-def _roster(county, records, report_date=date(2026,2,17)):
+
+def _roster(county, records, report_date=date(2026, 2, 17)):
     return CountyRoster(
-        county=county, county_id=101, election_id="53813",
-        report_date=report_date, source="civix", records=records,
+        county=county,
+        county_id=101,
+        election_id="53813",
+        report_date=report_date,
+        source="civix",
+        records=records,
     )
 ```
 

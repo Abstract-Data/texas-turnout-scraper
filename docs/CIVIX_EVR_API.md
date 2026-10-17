@@ -44,6 +44,7 @@ csv_text = decoded_bytes.decode("utf-8")
 
 # For ZIP endpoints:
 import io, zipfile
+
 zf = zipfile.ZipFile(io.BytesIO(decoded_bytes))
 ```
 
@@ -441,34 +442,37 @@ GET /getFile?type=EVR_STATEWIDE&electionId={id}&electionDate={date}
 
 ```python
 class CivixElectionDate(BaseModel):
-    date: date                    # parsed from MM/DD/YYYY
+    date: date  # parsed from MM/DD/YYYY
     date_turnout_id: int
+
 
 class CivixCountyRef(BaseModel):
     county_id: int
     name: str
 
+
 class CivixElection(BaseModel):
-    source_election_id: str       # str(id) — always string
-    id: int                       # raw int from API
-    type: str                     # "EV"
-    election_date: date           # parsed from MM/DD/YYYY
+    source_election_id: str  # str(id) — always string
+    id: int  # raw int from API
+    type: str  # "EV"
+    election_date: date  # parsed from MM/DD/YYYY
     election_name: str
-    election_type: ElectionType   # inferred
+    election_type: ElectionType  # inferred
     certified: bool
     early_voting_dates: List[CivixElectionDate]
     counties: List[CivixCountyRef]
 
+
 class CivixCountyTurnout(BaseModel):
-    election_id: str              # str(election_id)
-    report_date: date             # early_voting_date
+    election_id: str  # str(election_id)
+    report_date: date  # early_voting_date
     county: str
     county_id: int
     registered_voters: int
     in_person_votes_on_date: int
-    total_in_person_votes: int    # cumulative
-    total_mail_votes: int         # cumulative
-    roster_available: bool        # derived from voter_details_report field
+    total_in_person_votes: int  # cumulative
+    total_mail_votes: int  # cumulative
+    roster_available: bool  # derived from voter_details_report field
 ```
 
 ---

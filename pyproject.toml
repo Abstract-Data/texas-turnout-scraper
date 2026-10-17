@@ -102,5 +102,10 @@ python-version = "3.10"
 # Warn-only until CLI/MCP wiring catches up with module APIs (see ty check output).
 all = "warn"
 
+[tool.ty.terminal]
+# ty 0.0.87 exits 1 on warning diagnostics by default. ADR-007 keeps the
+# project in warn-only mode until the per-file ratchet flips rules to error.
+error-on-warning = false
+
 [tool.ty.src]
 include = ["src", "tests"]

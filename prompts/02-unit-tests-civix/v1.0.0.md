@@ -34,15 +34,18 @@ When mocking, you must return a properly wrapped response:
 ```python
 import base64, json, respx, httpx
 
+
 def _civix_json_response(data: dict) -> httpx.Response:
     """Wrap a dict in the Civix base64 envelope."""
     encoded = base64.b64encode(json.dumps(data).encode()).decode()
     return httpx.Response(200, json={"upload": encoded})
 
+
 def _civix_csv_response(csv_text: str) -> httpx.Response:
     """Wrap CSV text in the Civix base64 envelope."""
     encoded = base64.b64encode(csv_text.encode()).decode()
     return httpx.Response(200, json={"upload": encoded})
+
 
 def _civix_zip_response(zip_bytes: bytes) -> httpx.Response:
     """Wrap ZIP bytes in the Civix base64 envelope."""

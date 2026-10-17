@@ -29,6 +29,7 @@ Introduce a `RosterSource` Protocol that captures the minimum shared API both so
 from typing import Protocol, Sequence
 from datetime import date
 
+
 class RosterSource(Protocol):
     source_prefix: str  # "civix" | "legacy"
 
