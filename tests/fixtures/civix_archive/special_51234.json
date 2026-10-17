@@ -1,0 +1,37 @@
+{
+  "election_id": 51234,
+  "election_record": {
+    "N": "2022 SPECIAL ELECTION FOR STATE SENATE DISTRICT 10",
+    "Y": "2022",
+    "ET": "SE",
+    "EC": "SW"
+  },
+  "version": {
+    "___versionNo": 88,
+    "elecDate": "01312022"
+  },
+  "office_summary": {
+    "OS": [
+      {
+        "OID": 501,
+        "ON": "STATE SENATOR, DISTRICT 10",
+        "C": [
+          {
+            "N": "JOHN DOE",
+            "P": "REP",
+            "C": "#FF0000",
+            "T": 12500,
+            "O": 1
+          },
+          {
+            "N": "JANE SMITH",
+            "P": "DEM",
+            "C": "#0000FF",
+            "T": 9800,
+            "O": 2
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -565,7 +565,7 @@ def test_fetch_ev_roster_csv_empty_body_returns_no_records() -> None:
     _assert_http_mocked(1)
 
 
-@patch("texas_turnout_scraper.civix.time.sleep")
+@patch("texas_turnout_scraper.civix.evr.time.sleep")
 @respx.mock
 def test_pacing_enforced(mock_sleep) -> None:
     election_data = _load_json("civix_election_index.json")
@@ -576,7 +576,7 @@ def test_pacing_enforced(mock_sleep) -> None:
 
     with CivixClient(http_backend="httpx", pace_seconds=1.0) as client:
         client._last_request = 1.0
-        with patch("texas_turnout_scraper.civix.time.monotonic", return_value=1.05):
+        with patch("texas_turnout_scraper.civix.evr.time.monotonic", return_value=1.05):
             client.list_elections()
 
     mock_sleep.assert_called_once()

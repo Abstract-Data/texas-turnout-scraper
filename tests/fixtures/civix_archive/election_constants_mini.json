@@ -1,0 +1,39 @@
+{
+  "electionInfo": {
+    "2024": {
+      "G": {
+        "49664": {
+          "ID": null,
+          "N": "2024 NOVEMBER 5TH GENERAL ELECTION",
+          "O": "Y",
+          "T": "null",
+          "Y": "2024",
+          "ET": "G",
+          "EC": "SW"
+        }
+      },
+      "P": {
+        "49665": {
+          "ID": null,
+          "N": "2024 MARCH 5TH DEMOCRATIC PRIMARY",
+          "O": "Y",
+          "T": "null",
+          "Y": "2024",
+          "ET": "P",
+          "EC": "SW"
+        }
+      },
+      "SE": {
+        "50676": {
+          "ID": null,
+          "N": "2024 SPECIAL ELECTION HOUSE DISTRICT 56",
+          "O": "Y",
+          "T": "null",
+          "Y": "2024",
+          "ET": "SE",
+          "EC": "PS"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "OS": [
+    {
+      "OID": 1001,
+      "ON": "PRESIDENT/VICE-PRESIDENT",
+      "C": [
+        {
+          "N": "DONALD J. TRUMP/JD VANCE",
+          "P": "R",
+          "C": "#E30202",
+          "T": 6393597,
+          "O": 1
+        },
+        {
+          "N": "KAMALA D. HARRIS/TIM WALZ",
+          "P": "D",
+          "C": "#007BBD",
+          "T": 4835250,
+          "O": 1
+        }
+      ]
+    },
+    {
+      "OID": 7958,
+      "ON": "U. S. SENATOR ",
+      "C": [
+        {
+          "N": "TED CRUZ",
+          "P": "R",
+          "C": "#E30202",
+          "T": 5990741,
+          "O": 1
+        },
+        {
+          "N": "COLIN ALLRED",
+          "P": "D",
+          "C": "#007BBD",
+          "T": 5031249,
+          "O": 1
+        }
+      ]
+    }
+  ]
+}

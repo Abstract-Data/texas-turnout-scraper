@@ -1,0 +1,44 @@
+{
+  "OS": [
+    {
+      "OID": 1001,
+      "ON": "PRESIDENT/VICE-PRESIDENT",
+      "C": [
+        {
+          "N": "JOSEPH R. BIDEN JR.",
+          "P": "D",
+          "C": "#007BBD",
+          "T": 831247,
+          "O": 1
+        },
+        {
+          "N": "MARIANNE WILLIAMSON",
+          "P": "D",
+          "C": "#007BBD",
+          "T": 43667,
+          "O": 1
+        }
+      ]
+    },
+    {
+      "OID": 7958,
+      "ON": "U. S. SENATOR ",
+      "C": [
+        {
+          "N": "COLIN ALLRED",
+          "P": "D",
+          "C": "#007BBD",
+          "T": 569585,
+          "O": 1
+        },
+        {
+          "N": "ROLAND GUTIERREZ",
+          "P": "D",
+          "C": "#007BBD",
+          "T": 160978,
+          "O": 1
+        }
+      ]
+    }
+  ]
+}
