@@ -22,16 +22,23 @@ Do the GitHub settings before adding secrets. Do not try to apply from this pull
 4. In GitHub, open Settings → Environments → `preview` for `Abstract-Data/texas-turnout-scraper`. This is a settings step, not something this repository configures.
    - Deployment branches: selected branch `main` only.
    - Required reviewers: at least one.
-5. Add the six values below as Environment secrets on `preview`. Do not add them as repository secrets.
+5. Add these four values as Environment secrets on `preview`. Do not add them as repository secrets. `CLOUDFLARE_API_TOKEN`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` are not GitHub secrets.
 
-| Environment secret | Value |
+| `preview` environment secret | Value |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | API token on the Abstract Data personal account. Scopes below. |
-| `CLOUDFLARE_ACCOUNT_ID` | That account's 32-character id. |
-| `R2_ACCESS_KEY_ID` | R2 S3 access key id for the state bucket. |
-| `R2_SECRET_ACCESS_KEY` | R2 S3 secret access key for the state bucket. |
+| `CLOUDFLARE_ACCOUNT_ID` | Abstract Data personal account id, 32 characters. |
 | `TF_STATE_BUCKET` | State bucket name, such as `tx-turnout-tfstate-preview`. |
 | `TF_STATE_ENDPOINT` | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `OP_SERVICE_ACCOUNT_TOKEN` | 1Password service account token that can read Environment `s6tljdcafkgqxfuxhcnj3m5x5a`. |
+
+6. In that 1Password Environment, name these variables exactly:
+
+| 1Password variable | Value |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | API token. Scopes below. |
+| `R2_ACCESS_KEY_ID` | R2 S3 access key id for the state bucket. |
+| `R2_SECRET_ACCESS_KEY` | R2 S3 secret access key for the state bucket. |
+| `CLOUDFLARE_KV_NAMESPACE_ID` | Add after the first apply. Copy the `kv_namespace_id` output. |
 
 `CLOUDFLARE_API_TOKEN` account scopes, limited to the Abstract Data personal account. No zone scopes. No Quorum Report account. No Workers R2 Storage permission (state uses the R2 S3 keys):
 
@@ -43,18 +50,16 @@ Do the GitHub settings before adding secrets. Do not try to apply from this pull
 
 Permission names: [Cloudflare API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/).
 
+Plan and apply load the 1Password variables with `op run --environment`. See [Read environment variables with op run](https://www.1password.dev/environments/read-environment-variables). `load-secrets-action` cannot load an Environment by id with a service account token. That whole-environment load is Workload Identity only (`OP_ENVIRONMENT_ID`), and the action README marks it as public preview. See [load-secrets-action](https://github.com/1Password/load-secrets-action/blob/main/README.md).
+
 After those settings and secrets exist, plan and apply run from a push to `main` or from `workflow_dispatch` on `main`. Do not point this workflow at a production environment.
 
-After the first successful apply, the Access client id and secret are in the R2 state file. The dashboard does not show the secret again. On a trusted machine, with the same backend secrets in the environment:
+After the first successful apply, the Access client id and secret are in the R2 state file. The dashboard does not show the secret again. On a trusted machine, with `OP_SERVICE_ACCOUNT_TOKEN` set and `preview.auto.tfvars` holding `account_id`, read them through the same `op run` wrapper. Do not print the token or the R2 keys.
 
 ```bash
 cd infra/preview
-export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
-export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-export TF_VAR_account_id="$CLOUDFLARE_ACCOUNT_ID"
-terraform init -input=false -backend-config=backend.hcl
-terraform output -raw access_client_id
-terraform output -raw access_client_secret
+op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- bash -c 'AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" terraform output -raw access_client_id'
+op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- bash -c 'AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" terraform output -raw access_client_secret'
 ```
 
 `backend.hcl` is gitignored and contains only:
