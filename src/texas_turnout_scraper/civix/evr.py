@@ -16,7 +16,6 @@ logged anywhere in this module.
 
 from __future__ import annotations
 
-import base64
 import csv
 import io
 import json as _json
@@ -27,13 +26,14 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from .http_transport import HttpBackend, PacedHttpClient
-from .models import (
+from ..http_transport import HttpBackend, PacedHttpClient
+from ..models import (
     CivixCountyTurnout,
     CivixElection,
     CountyRoster,
     VoterRecord,
 )
+from .envelope import _decode_envelope
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -48,50 +48,6 @@ STATEWIDE_ED_VOTER_CSV = "STATEWIDE_VOTER_INFO.csv"
 STATEWIDE_ED_POLLING_CSV = "STATEWIDE_POLLING_PLACE_INFO.csv"
 
 _CIVIX_ELECTIONS_ADAPTER = TypeAdapter(list[CivixElection])
-
-
-# ---------------------------------------------------------------------------
-# Envelope helper
-# ---------------------------------------------------------------------------
-
-
-def _decode_envelope(response: Any) -> bytes:
-    """Decode the universal Civix base64 envelope.
-
-    Every Civix EVR endpoint returns a JSON body of the form::
-
-        {"upload": "<base64-encoded payload>"}
-
-    This helper extracts and decodes that payload to raw bytes, which may
-    be UTF-8 text (JSON or CSV) or binary (ZIP) depending on the endpoint.
-
-    Civix sometimes returns HTTP 200 with an **empty body** for per-county
-    rosters that have no voters on that date (``roster_available`` may still
-    be true in the turnout table). Treat that as an empty payload.
-
-    Args:
-        response: HTTP response from Civix (httpx or requests, via ``.json()``).
-
-    Returns:
-        The decoded payload as raw :class:`bytes`.
-
-    Raises:
-        KeyError: If the response JSON lacks the ``"upload"`` key.
-        ValueError: If the response body is non-empty but not valid JSON.
-        httpx.HTTPStatusError: Propagated from the caller if status != 2xx.
-    """
-    body = (response.text or "").strip()
-    if not body:
-        return b""
-    try:
-        envelope = response.json()
-    except ValueError as exc:
-        msg = "Civix response was not valid JSON"
-        raise ValueError(msg) from exc
-    upload = envelope.get("upload")
-    if upload is None:
-        raise KeyError("upload")
-    return base64.b64decode(upload)
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +168,6 @@ class CivixClient:
             List of :class:`~texas_turnout_scraper.models.CivixCountyTurnout`,
             one per county.
         """
-        import json as _json
-
         date_str = election_date.strftime("%m/%d/%Y")
         path = f"{API_PREFIX}/getFile"
         response = self._get(
@@ -409,8 +363,6 @@ class CivixClient:
             List of :class:`~texas_turnout_scraper.models.CivixCountyTurnout`,
             one per county.
         """
-        import json as _json
-
         date_str = election_date.strftime("%m/%d/%Y")
         path = f"{API_PREFIX}/getFile"
         response = self._get(

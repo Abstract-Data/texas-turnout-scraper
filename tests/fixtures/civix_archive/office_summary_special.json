@@ -1,0 +1,24 @@
+{
+  "OS": [
+    {
+      "OID": 2202,
+      "ON": "STATE REPRESENTATIVE DISTRICT 56",
+      "C": [
+        {
+          "N": "PAT CURRY",
+          "P": "R",
+          "C": "#E30202",
+          "T": 56001,
+          "O": 3
+        },
+        {
+          "N": "ERIN SHANK",
+          "P": "D",
+          "C": "#007BBD",
+          "T": 25762,
+          "O": 3
+        }
+      ]
+    }
+  ]
+}

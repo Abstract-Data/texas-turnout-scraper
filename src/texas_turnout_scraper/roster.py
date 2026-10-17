@@ -28,10 +28,7 @@ from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
 
-import httpx
-from requests.exceptions import HTTPError as RequestsHTTPError
-from requests.exceptions import RequestException
-
+from .http_transport import HTTP_FETCH_EXCEPTIONS
 from .legacy_forms import legacy_ev_form_fields
 from .models import CountyRoster, VoterRecord
 from .session import LegacySession
@@ -120,7 +117,7 @@ def fetch_roster_strategy_a(
                         id_town=county_id,
                     ),
                 )
-            except (httpx.HTTPStatusError, RequestsHTTPError, RequestException):
+            except HTTP_FETCH_EXCEPTIONS:
                 logger.error(
                     "Request failed for county_id=%s on %s.",
                     county_id,

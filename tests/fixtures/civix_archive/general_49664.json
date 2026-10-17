@@ -1,0 +1,57 @@
+{
+  "election_id": 49664,
+  "election_record": {
+    "N": "2024 GENERAL ELECTION",
+    "Y": "2024",
+    "ET": "G",
+    "EC": "SW"
+  },
+  "version": {
+    "___versionNo": 1012,
+    "elecDate": "11052024"
+  },
+  "office_summary": {
+    "OS": [
+      {
+        "OID": 1,
+        "ON": "PRESIDENT AND VICE PRESIDENT",
+        "C": [
+          {
+            "N": "HARRIS, KAMALA D.",
+            "P": "DEM",
+            "C": "#0000FF",
+            "T": 4750275,
+            "O": 1
+          },
+          {
+            "N": "TRUMP, DONALD J.",
+            "P": "REP",
+            "C": "#FF0000",
+            "T": 6400000,
+            "O": 2
+          }
+        ]
+      },
+      {
+        "OID": 10,
+        "ON": "GOVERNOR",
+        "C": [
+          {
+            "N": "ABBOTT, GREG (I)",
+            "P": "REP",
+            "C": "#FF0000",
+            "T": 5500000,
+            "O": 1
+          },
+          {
+            "N": "BETO O'ROURKE",
+            "P": "DEM",
+            "C": "#0000FF",
+            "T": 4200000,
+            "O": 2
+          }
+        ]
+      }
+    ]
+  }
+}

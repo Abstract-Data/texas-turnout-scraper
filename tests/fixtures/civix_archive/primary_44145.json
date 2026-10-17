@@ -1,0 +1,50 @@
+{
+  "election_id": 44145,
+  "election_record": {
+    "N": "2020 DEMOCRATIC PRIMARY ELECTION",
+    "Y": "2020",
+    "ET": "P",
+    "EC": "SW"
+  },
+  "version": {
+    "___versionNo": 273,
+    "elecDate": "03032020"
+  },
+  "office_summary": {
+    "OS": [
+      {
+        "OID": 20,
+        "ON": "U. S. SENATOR",
+        "C": [
+          {
+            "N": "MJ HEGAR",
+            "P": "DEM",
+            "C": "#0000FF",
+            "T": 934000,
+            "O": 1
+          },
+          {
+            "N": "ROYCE WEST",
+            "P": "DEM",
+            "C": "#0000FF",
+            "T": 585000,
+            "O": 2
+          }
+        ]
+      },
+      {
+        "OID": 30,
+        "ON": "STATE SENATOR, DISTRICT 14",
+        "C": [
+          {
+            "N": "SARAH ECKHARDT",
+            "P": "DEM",
+            "C": "#0000FF",
+            "T": 45000,
+            "O": 1
+          }
+        ]
+      }
+    ]
+  }
+}
