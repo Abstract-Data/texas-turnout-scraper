@@ -1,0 +1,70 @@
+# Grouped Dependabot updates for this uv + GitHub Actions + pre-commit repo.
+# package-ecosystem values match the current Dependabot options reference:
+# uv (pyproject.toml + uv.lock), github-actions, and pre-commit.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Chicago
+    # Version-update cap. Security updates use a separate fixed cap of 10.
+    open-pull-requests-limit: 5
+    commit-message:
+      # include: scope yields chore(deps) and chore(deps-dev). Both are hidden
+      # in release-please-config.json so dependency bumps do not cut a release.
+      prefix: chore
+      include: scope
+    groups:
+      uv-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      uv-version:
+        applies-to: version-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Chicago
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      actions-version:
+        applies-to: version-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Chicago
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      precommit-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      precommit-version:
+        applies-to: version-updates
+        patterns:
+          - "*"
