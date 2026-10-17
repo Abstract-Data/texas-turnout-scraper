@@ -10,7 +10,7 @@ The Worker module is a placeholder. It does not query D1 or KV and it does not l
 
 Pull requests run `terraform fmt`, `terraform validate`, and `tflint` only. They do not read secrets and they do not plan or apply.
 
-Plan and apply run on a push to `main` or on `workflow_dispatch`, in the GitHub Environment `preview`. Do not run `terraform plan` or `terraform apply` on a laptop.
+A push to `main` or `workflow_dispatch` on `main` runs two jobs in the GitHub Environment `preview`. Plan is John's first approval. Apply is the second. John sees the plan before anything applies. Do not run `terraform plan` or `terraform apply` on a laptop.
 
 ## Bootstrap
 
@@ -52,7 +52,7 @@ Permission names: [Cloudflare API token permissions](https://developers.cloudfla
 
 Plan and apply load the 1Password variables with `op run --environment`. See [Read environment variables with op run](https://www.1password.dev/environments/read-environment-variables). `load-secrets-action` cannot load an Environment by id with a service account token. That whole-environment load is Workload Identity only (`OP_ENVIRONMENT_ID`), and the action README marks it as public preview. See [load-secrets-action](https://github.com/1Password/load-secrets-action/blob/main/README.md).
 
-After those settings and secrets exist, plan and apply run from a push to `main` or from `workflow_dispatch` on `main`. Do not point this workflow at a production environment.
+After those settings and secrets exist, a push to `main` waits for two `preview` approvals. The plan job is the first. It runs `terraform init` and `terraform plan -out=tfplan`, writes `terraform show -no-color tfplan` to the job summary, and stores the saved plan in the private state bucket at `plans/<run_id>-<attempt>/tfplan` plus `plans/<run_id>-<attempt>/tfplan.sha256`. The repository is public, so the plan file is not a GitHub artifact. The apply job is the second approval. It downloads that object, checks the SHA-256 against the plan job output, and runs `terraform apply -input=false tfplan`. It does not create a new plan. After a successful apply it deletes both objects. Do not point this workflow at a production environment.
 
 After the first successful apply, the Access client id and secret are in the R2 state file. The dashboard does not show the secret again. On a trusted machine, with `OP_SERVICE_ACCOUNT_TOKEN` set and `preview.auto.tfvars` holding `account_id`, read them through the same `op run` wrapper. Do not print the token or the R2 keys.
 
