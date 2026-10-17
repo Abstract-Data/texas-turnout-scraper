@@ -17,7 +17,6 @@ Python library, CLI (`tx-turnout`), and MCP server for Texas Secretary of State 
 [![cloudscraper](https://img.shields.io/pypi/v/cloudscraper?label=cloudscraper)](https://pypi.org/project/cloudscraper/)
 [![Beautiful Soup](https://img.shields.io/pypi/v/beautifulsoup4?label=beautifulsoup4)](https://pypi.org/project/beautifulsoup4/)
 [![lxml](https://img.shields.io/pypi/v/lxml?label=lxml)](https://pypi.org/project/lxml/)
-[![tqdm](https://img.shields.io/pypi/v/tqdm?label=tqdm)](https://pypi.org/project/tqdm/)
 [![anyio](https://img.shields.io/pypi/v/anyio?label=anyio)](https://pypi.org/project/anyio/)
 [![questionary](https://img.shields.io/pypi/v/questionary?label=questionary)](https://pypi.org/project/questionary/)
 [![Rich](https://img.shields.io/pypi/v/rich?label=rich)](https://pypi.org/project/rich/)

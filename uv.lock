@@ -1091,7 +1091,6 @@ dependencies = [
 cli = [
     { name = "questionary" },
     { name = "rich" },
-    { name = "tqdm" },
     { name = "typer" },
 ]
 mcp = [
@@ -1117,7 +1116,6 @@ dev = [
     { name = "respx" },
     { name = "rich" },
     { name = "ruff" },
-    { name = "tqdm" },
     { name = "ty" },
     { name = "typer" },
 ]
@@ -1135,7 +1133,6 @@ requires-dist = [
     { name = "questionary", marker = "extra == 'cli'", specifier = ">=2.1.1" },
     { name = "rich", marker = "extra == 'cli'", specifier = ">=13.9.0" },
     { name = "tenacity", specifier = ">=9.0.0" },
-    { name = "tqdm", marker = "extra == 'cli'", specifier = ">=4.66.6" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.12.0" },
 ]
 provides-extras = ["cli", "mcp", "voterfile", "waf"]
@@ -1153,7 +1150,6 @@ dev = [
     { name = "respx", specifier = ">=0.21.0" },
     { name = "rich", specifier = ">=13.9.0" },
     { name = "ruff", specifier = ">=0.4.0" },
-    { name = "tqdm", specifier = ">=4.66.6" },
     { name = "ty", specifier = ">=0.0.39" },
     { name = "typer", specifier = ">=0.12.0" },
 ]
@@ -1183,18 +1179,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/24/22/4daacd05391b92c55759d55eaee21e1dfaea86ce5c571f10083360adf534/tomli-2.4.1-cp312-cp312-win_amd64.whl", hash = "sha256:52c8ef851d9a240f11a88c003eacb03c31fc1c9c4ec64a99a0f922b93874fda9", size = 108847, upload-time = "2026-03-25T20:21:29.386Z" },
     { url = "https://files.pythonhosted.org/packages/68/fd/70e768887666ddd9e9f5d85129e84910f2db2796f9096aa02b721a53098d/tomli-2.4.1-cp312-cp312-win_arm64.whl", hash = "sha256:f758f1b9299d059cc3f6546ae2af89670cb1c4d48ea29c3cacc4fe7de3058257", size = 95088, upload-time = "2026-03-25T20:21:30.677Z" },
     { url = "https://files.pythonhosted.org/packages/7b/61/cceae43728b7de99d9b847560c262873a1f6c98202171fd5ed62640b494b/tomli-2.4.1-py3-none-any.whl", hash = "sha256:0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe", size = 14583, upload-time = "2026-03-25T20:22:03.012Z" },
-]
-
-[[package]]
-name = "tqdm"
-version = "4.67.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd8dac228323f2777d886cb206987444e4bce66338dd4/tqdm-4.67.3.tar.gz", hash = "sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb", size = 169598, upload-time = "2026-02-03T17:35:53.048Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl", hash = "sha256:ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf", size = 78374, upload-time = "2026-02-03T17:35:50.982Z" },
 ]
 
 [[package]]

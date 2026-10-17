@@ -28,7 +28,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --dev
+        # Unit tests import the CLI, cloudscraper, DuckDB, and the MCP server.
+        # Extras are explicit so those imports do not rely on the dev-group mirror.
+        # uv does not sync extras unless --extra is passed
+        # (https://docs.astral.sh/uv/concepts/projects/sync/).
+        run: uv sync --dev --extra cli --extra waf --extra voterfile --extra mcp
 
       - name: Ruff lint
         run: uv run ruff check . --select E,W,F,I --quiet

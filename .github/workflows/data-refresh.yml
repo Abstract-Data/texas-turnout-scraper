@@ -42,7 +42,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install package
-        run: uv sync
+        # cli + waf are explicit so this job does not rely on the dev-group
+        # mirror. fetch-all / refresh-all do not use DuckDB.
+        # uv sync includes the dev group by default and does not sync extras
+        # unless --extra is passed (https://docs.astral.sh/uv/concepts/projects/sync/).
+        run: uv sync --extra cli --extra waf
 
       - name: Refresh Civix elections
         id: civix_refresh

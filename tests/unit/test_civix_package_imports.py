@@ -14,7 +14,7 @@ from texas_turnout_scraper.civix import CivixClient, CivixElectionRef
 # httpx imports rich when that package is installed. The others must stay lazy.
 heavy = [
     name
-    for name in ("duckdb", "typer", "mcp", "cloudscraper", "questionary", "tqdm")
+    for name in ("duckdb", "typer", "mcp", "cloudscraper", "questionary")
     if name in sys.modules
 ]
 assert not heavy, heavy
