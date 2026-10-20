@@ -1318,17 +1318,24 @@ def main(argv: list[str] | None = None) -> int:
         from texas_turnout_scraper.early_vote_backfill import (
             find_election_ev_dates,
             format_backfill_report,
+            latest_loadable_ev_date,
             latest_published_ev_date,
+            plan_backfill_load_dates,
             run_backfill,
         )
 
         store = _build_store(apply=args.apply, stored_hash=args.stored_hash)
         if sync_mode == "backfill":
             _name, _election_day, ev_dates = find_election_ev_dates(args.election_id)
+            plan = plan_backfill_load_dates(
+                args.election_id,
+                ev_dates,
+                http_backend=args.http_backend,
+            )
             backfill = run_backfill(
                 args.election_id,
                 store,
-                ev_dates,
+                plan,
                 dry_run=args.dry_run,
                 payload_kind=payload_kind,
                 http_backend=args.http_backend,
@@ -1338,7 +1345,14 @@ def main(argv: list[str] | None = None) -> int:
         election_date = args.date
         if sync_mode == "latest":
             _name, _election_day, ev_dates = find_election_ev_dates(args.election_id)
-            latest = latest_published_ev_date(ev_dates)
+            if payload_kind == "statewide_roster":
+                latest = latest_loadable_ev_date(
+                    args.election_id,
+                    ev_dates,
+                    http_backend=args.http_backend,
+                )
+            else:
+                latest = latest_published_ev_date(ev_dates)
             election_date = latest.strftime("%m/%d/%Y")
         response = _load_response(
             args.election_id,

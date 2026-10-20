@@ -13,9 +13,11 @@ import pytest
 
 from texas_turnout_scraper.early_vote_backfill import (
     DEFAULT_NOV_2026_GENERAL_ID,
+    BackfillDatePlan,
     find_election_ev_dates,
     format_backfill_report,
     latest_published_ev_date,
+    plan_backfill_load_dates,
     run_backfill,
 )
 from texas_turnout_scraper.early_vote_sync import (
@@ -67,6 +69,17 @@ def _load_fixture_elections() -> list[object]:
     return [CivixElection.model_validate(item) for item in normalized]
 
 
+def _fixture_plan(ev_dates: tuple[date, ...]) -> BackfillDatePlan:
+    return BackfillDatePlan(
+        calendar_ev_days_total=len(ev_dates),
+        calendar_first_iso=ev_dates[0].isoformat(),
+        calendar_last_iso=ev_dates[-1].isoformat(),
+        skipped_future_dates=(),
+        skipped_empty_dates=(),
+        load_dates=ev_dates,
+    )
+
+
 def test_find_election_ev_dates_from_fixture() -> None:
     elections = _load_fixture_elections()
     name, election_day, ev_dates = find_election_ev_dates(
@@ -96,9 +109,37 @@ def _envelope_response() -> httpx.Response:
     return httpx.Response(200, content=body)
 
 
+def test_plan_backfill_skips_future_and_empty() -> None:
+    calendar = (
+        date(2026, 10, 14),
+        date(2026, 10, 15),
+        date(2026, 10, 21),
+    )
+
+    def fake_probe(_eid: str, ev_day: date, **_: object) -> tuple[bool, int, int]:
+        if ev_day == date(2026, 10, 15):
+            return False, 0, 0
+        return True, 100, 5
+
+    with patch(
+        "texas_turnout_scraper.early_vote_backfill.probe_statewide_roster_day",
+        side_effect=fake_probe,
+    ):
+        plan = plan_backfill_load_dates(
+            DEFAULT_NOV_2026_GENERAL_ID,
+            calendar,
+            today=date(2026, 10, 20),
+        )
+    assert plan.calendar_ev_days_total == 3
+    assert plan.load_dates == (date(2026, 10, 14),)
+    assert plan.skipped_future_dates == ("2026-10-21",)
+    assert plan.skipped_empty_dates == ("2026-10-15",)
+
+
 def test_backfill_dry_run_lists_days_without_pii(capsys: pytest.CaptureFixture[str]) -> None:
     elections = _load_fixture_elections()
     _, _, ev_dates = find_election_ev_dates(DEFAULT_NOV_2026_GENERAL_ID, elections=elections)
+    plan = _fixture_plan(ev_dates)
     store = _BackfillStore()
     with patch(
         "texas_turnout_scraper.early_vote_backfill.pull_statewide_roster_file",
@@ -107,12 +148,13 @@ def test_backfill_dry_run_lists_days_without_pii(capsys: pytest.CaptureFixture[s
         result = run_backfill(
             DEFAULT_NOV_2026_GENERAL_ID,
             store,
-            ev_dates,
+            plan,
             dry_run=True,
             payload_kind="statewide_roster",
         )
     report = format_backfill_report(result)
     assert result.days_dry_run == 2
+    assert "load_plan_dates=2026-10-14,2026-10-15" in report
     assert "ev_days_total=2" in report
     assert "kv_bump=deferred_or_dry_run" in report
     assert "SMITH" not in report
@@ -120,11 +162,15 @@ def test_backfill_dry_run_lists_days_without_pii(capsys: pytest.CaptureFixture[s
 
 
 def test_per_day_idempotency_and_single_kv_bump() -> None:
-    payload = b"COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\n"
+    payload = (
+        b"COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\n"
+        b"TEST,REDACTED,0000000001,IN-PERSON,1\n"
+    )
     encoded = base64.b64encode(payload).decode("ascii")
     response = httpx.Response(200, json={"upload": encoded})
     store = _BackfillStore()
     ev_dates = (date(2026, 10, 14), date(2026, 10, 15))
+    plan = _fixture_plan(ev_dates)
 
     with patch(
         "texas_turnout_scraper.early_vote_backfill.pull_statewide_roster_file",
@@ -133,14 +179,14 @@ def test_per_day_idempotency_and_single_kv_bump() -> None:
         first = run_backfill(
             DEFAULT_NOV_2026_GENERAL_ID,
             store,
-            ev_dates,
+            plan,
             dry_run=False,
             payload_kind="statewide_roster",
         )
         second = run_backfill(
             DEFAULT_NOV_2026_GENERAL_ID,
             store,
-            ev_dates,
+            plan,
             dry_run=False,
             payload_kind="statewide_roster",
         )
