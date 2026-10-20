@@ -17,8 +17,10 @@ BEARER_PREFIX = "bearer "
 
 KV_PREFIX = "consumer_token:"
 
-# Application pepper for stored digests (high-entropy tokens, not user passwords).
-_CONSUMER_TOKEN_PEPPER = b"Abstract-Data/texas-turnout-scraper/preview-consumer-token/v1"
+# Keyed digest pepper (32 bytes max for BLAKE2s); not a user password.
+_CONSUMER_TOKEN_PEPPER = hashlib.sha256(
+    b"Abstract-Data/texas-turnout-scraper/preview-consumer-token/v1"
+).digest()
 
 _SCHEMA_CREATES: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS consumer_api_token (
