@@ -6,10 +6,10 @@ D1 and KV. Validation accepts ``Authorization: Bearer`` or ``X-API-Key``.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import secrets
 from collections.abc import Mapping
-import datetime as dt
 
 AUTHORIZATION_HEADER = "Authorization"
 X_API_KEY_HEADER = "X-API-Key"
@@ -29,20 +29,17 @@ _SCHEMA_CREATES: tuple[str, ...] = (
 )
 
 INSERT_SQL = (
-    "INSERT INTO consumer_api_token (token_id, token_hash, label, created_at) "
-    "VALUES (?, ?, ?, ?)"
+    "INSERT INTO consumer_api_token (token_id, token_hash, label, created_at) VALUES (?, ?, ?, ?)"
 )
 LIST_SQL = (
     "SELECT token_id, label, created_at, revoked_at "
     "FROM consumer_api_token ORDER BY created_at DESC"
 )
 REVOKE_SQL = (
-    "UPDATE consumer_api_token SET revoked_at = ? "
-    "WHERE token_id = ? AND revoked_at IS NULL"
+    "UPDATE consumer_api_token SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL"
 )
 ACTIVE_BY_HASH_SQL = (
-    "SELECT token_id FROM consumer_api_token "
-    "WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1"
+    "SELECT token_id FROM consumer_api_token WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1"
 )
 
 
