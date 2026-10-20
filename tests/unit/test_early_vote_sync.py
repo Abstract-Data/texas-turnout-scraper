@@ -9,6 +9,7 @@ import logging
 import tempfile
 from datetime import date
 from pathlib import Path
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -16,20 +17,36 @@ import respx
 
 from texas_turnout_scraper.civix.evr import API_PREFIX, BASE_URL
 from texas_turnout_scraper.early_vote_sync import (
+    _CHUNK_INSERT_SQL,
+    _DELETE_CHUNK_SQL,
+    _DELETE_FILE_SQL,
+    _FILE_ID_FOR_HASH_SQL,
+    _FILE_IDS_SQL,
+    _FILE_INSERT_SQL,
+    _POINTER_SELECT_SQL,
+    _POINTER_UPSERT_SQL,
     CHUNK_RAW_BYTES,
     CLOUDFLARE_API_BASE,
     D1_DATABASE_CAP_BYTES,
     KV_NOT_FOR_ELECTION_NIGHT,
+    PEAK_STORED_COPIES,
     CloudflareEarlyVoteStore,
     EarlyVoteCapError,
+    EarlyVoteFileView,
     EarlyVoteSyncError,
+    PublishPlan,
+    _plan_statements,
     assert_within_cap,
+    build_publish_plan,
+    choose_published_file,
     database_name,
+    estimated_stored_bytes,
     format_sync_report,
     hash_key,
     main,
     pull_early_vote_file,
     sha256_decoded,
+    stale_file_ids,
     sync_early_vote,
     version_key,
 )
@@ -151,9 +168,14 @@ def test_over_cap_refuses_before_create_or_kv(monkeypatch: pytest.MonkeyPatch) -
 
 def test_over_cap_uses_the_real_limit_constant(monkeypatch: pytest.MonkeyPatch) -> None:
     assert D1_DATABASE_CAP_BYTES == 10_000_000_000
-    assert_within_cap(D1_DATABASE_CAP_BYTES, "53813")
-    with pytest.raises(EarlyVoteCapError, match="10000000001 bytes"):
-        assert_within_cap(D1_DATABASE_CAP_BYTES + 1, "53813")
+    assert PEAK_STORED_COPIES == 3
+    fitting = (D1_DATABASE_CAP_BYTES // (4 * PEAK_STORED_COPIES)) * 3
+    assert estimated_stored_bytes(fitting) <= D1_DATABASE_CAP_BYTES
+    assert_within_cap(fitting, "53813")
+    with pytest.raises(EarlyVoteCapError, match=f"{fitting + 1} bytes"):
+        assert_within_cap(fitting + 1, "53813")
+    with pytest.raises(EarlyVoteCapError, match="retained copies"):
+        assert_within_cap(D1_DATABASE_CAP_BYTES, "53813")
 
     monkeypatch.setattr(
         "texas_turnout_scraper.early_vote_sync.D1_DATABASE_CAP_BYTES",
@@ -382,6 +404,13 @@ def test_dry_run_cli_sample(capsys: pytest.CaptureFixture[str]) -> None:
     assert "rows election_id=53813 d1_chunk_rows=1 d1_file_rows=1 d1_rows=2" in captured.out
     assert "d1_statement repeats=1 sql=CREATE TABLE IF NOT EXISTS early_vote_file" in captured.out
     assert "d1_statement repeats=1 sql=INSERT INTO early_vote_chunk" in captured.out
+    assert "INSERT INTO early_vote_pointer" in captured.out
+    assert (
+        "ON CONFLICT(source_election_id) DO UPDATE SET file_id = excluded.file_id" in captured.out
+    )
+    for line in captured.out.splitlines():
+        if "DELETE FROM early_vote_chunk" in line or "DELETE FROM early_vote_file" in line:
+            assert "file_id = ?" in line
     assert "kv_version_key=ev:53813:version" in captured.out
     assert KV_NOT_FOR_ELECTION_NIGHT in captured.out
     assert "VOTER_NAME" not in captured.out
@@ -481,3 +510,613 @@ def test_dry_run_does_not_call_cloudflare_when_env_is_set(
     assert "status=dry_run" in captured.out
     assert "token-not-logged" not in captured.out
     assert "token-not-logged" not in captured.err
+
+
+class _MemoryPublish:
+    """Applies publish-plan statements so a stopped load can be read back."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, tuple[str, int]] = {}
+        self.chunks: dict[str, int] = {}
+        self.pointer: str | None = None
+
+    def apply(self, sql: str, params: tuple[str, ...]) -> None:
+        if sql.startswith("CREATE"):
+            return
+        if sql == _CHUNK_INSERT_SQL:
+            file_id = params[1]
+            self.chunks[file_id] = self.chunks.get(file_id, 0) + 1
+            return
+        if sql == _FILE_INSERT_SQL:
+            file_id = params[1]
+            self.files[file_id] = (params[2], int(params[4]))
+            return
+        if sql == _POINTER_UPSERT_SQL:
+            self.pointer = params[1]
+            return
+        if sql == _DELETE_CHUNK_SQL:
+            self.chunks.pop(params[1], None)
+            return
+        if sql == _DELETE_FILE_SQL:
+            self.files.pop(params[1], None)
+            return
+        raise AssertionError(sql)
+
+    def views(self) -> list[EarlyVoteFileView]:
+        views: list[EarlyVoteFileView] = []
+        for file_id in sorted(set(self.files) | set(self.chunks)):
+            digest, count = self.files.get(file_id, ("", 0))
+            views.append(
+                EarlyVoteFileView(
+                    file_id=file_id,
+                    sha256=digest,
+                    chunk_count=count,
+                    chunks_present=self.chunks.get(file_id, 0),
+                )
+            )
+        return views
+
+
+def _apply_until(
+    memory: _MemoryPublish,
+    plan: PublishPlan,
+    *,
+    include_file: bool,
+    include_pointer: bool,
+) -> None:
+    """Apply a plan and stop before the pointer when the load is interrupted."""
+    for sql, params in (*plan.creates, *plan.chunk_inserts):
+        memory.apply(sql, params)
+    if not include_file:
+        return
+    memory.apply(*plan.file_insert)
+    if include_pointer:
+        memory.apply(*plan.pointer_update)
+
+
+def test_interrupted_stage_leaves_readers_on_the_previous_file() -> None:
+    old_hash = "a" * 64
+    new_hash = "b" * 64
+    memory = _MemoryPublish()
+    old = build_publish_plan("0123", b"previous-complete", old_hash, "file-old")
+    _apply_until(memory, old, include_file=True, include_pointer=True)
+    new = build_publish_plan("0123", b"partial-next", new_hash, "file-new")
+    _apply_until(memory, new, include_file=False, include_pointer=False)
+
+    chosen = choose_published_file(
+        pointer_file_id=memory.pointer,
+        files=memory.views(),
+        kv_sha256=old_hash,
+    )
+
+    assert memory.pointer == "file-old"
+    assert chosen is not None
+    assert chosen.file_id == "file-old"
+    assert chosen.sha256 == old_hash
+    assert all(item.file_id != "file-new" or not item.complete for item in memory.views())
+
+
+def test_pointer_flip_before_kv_bump_keeps_the_previous_file() -> None:
+    old_hash = "c" * 64
+    new_hash = "d" * 64
+    memory = _MemoryPublish()
+    old = build_publish_plan("0123", b"previous-complete", old_hash, "file-old")
+    new = build_publish_plan("0123", b"next-complete", new_hash, "file-new")
+    _apply_until(memory, old, include_file=True, include_pointer=True)
+    _apply_until(memory, new, include_file=True, include_pointer=True)
+
+    during_bump = choose_published_file(
+        pointer_file_id=memory.pointer,
+        files=memory.views(),
+        kv_sha256=old_hash,
+    )
+    after_bump = choose_published_file(
+        pointer_file_id=memory.pointer,
+        files=memory.views(),
+        kv_sha256=new_hash,
+    )
+
+    memory.apply(_DELETE_CHUNK_SQL, ("0123", "file-old"))
+    memory.apply(_DELETE_FILE_SQL, ("0123", "file-old"))
+    after_delete = choose_published_file(
+        pointer_file_id=memory.pointer,
+        files=memory.views(),
+        kv_sha256=new_hash,
+    )
+
+    assert memory.pointer == "file-new"
+    assert during_bump is not None and during_bump.file_id == "file-old"
+    assert after_bump is not None and after_bump.file_id == "file-new"
+    assert after_delete is not None and after_delete.file_id == "file-new"
+    assert old.pointer_update[1] == ("0123", "file-old")
+    assert isinstance(old.pointer_update[1][0], str)
+
+
+def test_incomplete_chunk_count_is_not_served() -> None:
+    new_hash = "e" * 64
+    view = EarlyVoteFileView(
+        file_id="file-new",
+        sha256=new_hash,
+        chunk_count=4,
+        chunks_present=2,
+    )
+
+    chosen = choose_published_file(
+        pointer_file_id="file-new",
+        files=(view,),
+        kv_sha256=new_hash,
+    )
+
+    assert chosen is None
+    assert not view.complete
+
+
+def test_publish_plan_swaps_one_pointer_and_deletes_by_file_id() -> None:
+    plan = build_publish_plan("0123", b"abc", "f" * 64, "file-new")
+    flat = [sql for sql, _params in _plan_statements(plan)]
+
+    delete_chunk = flat.index(_DELETE_CHUNK_SQL)
+    delete_file = flat.index(_DELETE_FILE_SQL)
+    first_chunk = flat.index(_CHUNK_INSERT_SQL)
+    pointer = flat.index(_POINTER_UPSERT_SQL)
+    assert delete_chunk < delete_file < first_chunk < pointer
+    assert flat[pointer + 1 :] == []
+    assert "file_id = ?" in _DELETE_CHUNK_SQL
+    assert plan.pointer_update[0] == _POINTER_UPSERT_SQL
+    assert plan.pointer_update[1] == ("0123", "file-new")
+    assert all(params[0] == "0123" for _sql, params in plan.chunk_inserts)
+    assert all(isinstance(params[0], str) for _sql, params in plan.chunk_inserts)
+    assert not any(
+        sql == "DELETE FROM early_vote_chunk WHERE source_election_id = ?" for sql in flat
+    )
+
+
+def _schema_results(names: list[str]) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "success": True,
+            "result": [{"success": True, "results": [{"name": name} for name in names]}],
+        },
+    )
+
+
+def _current_schema(sql: str) -> httpx.Response:
+    if "early_vote_chunk" in sql:
+        names = ["source_election_id", "file_id", "chunk_index", "payload_b64"]
+    else:
+        names = ["source_election_id", "file_id", "sha256", "byte_length", "chunk_count"]
+    return _schema_results(names)
+
+
+class _MemoryD1:
+    """In-test D1 and KV. Cleanup reads these rows, not the writer's memory."""
+
+    def __init__(self) -> None:
+        self.chunks: dict[tuple[str, str, str], str] = {}
+        self.files: dict[tuple[str, str], str] = {}
+        self.pointer: dict[str, str] = {}
+        self.kv: dict[str, str] = {}
+        self.order: list[str] = []
+        self.batches: list[list[str]] = []
+        self.deleted: list[str] = []
+        self.delete_attempts: list[list[str]] = []
+        self.selections: list[list[str]] = []
+        self.pointer_params: list[list[str]] = []
+        self.fail_chunk_on: int | None = None
+        self.chunk_inserts = 0
+        self.fail_file_insert = False
+        self.fail_deletes = False
+        self.fail_puts = 0
+        self._seen: list[str] = []
+
+    def seed(self, election: str, file_id: str, digest: str, *, pointer: bool) -> None:
+        self.chunks[(election, file_id, "0")] = "YQ=="
+        self.files[(election, file_id)] = digest
+        self._remember(file_id)
+        if pointer:
+            self.pointer[election] = file_id
+
+    def _remember(self, file_id: str) -> None:
+        if file_id not in self._seen:
+            self._seen.append(file_id)
+
+    def file_ids(self, election: str) -> list[str]:
+        present: list[str] = []
+        seen: set[str] = set()
+        candidates = list(self._seen)
+        for election_id, file_id, _index in self.chunks:
+            if election_id == election and file_id not in candidates:
+                candidates.append(file_id)
+        for election_id, file_id in self.files:
+            if election_id == election and file_id not in candidates:
+                candidates.append(file_id)
+        for file_id in candidates:
+            in_chunk = any(key[0] == election and key[1] == file_id for key in self.chunks)
+            in_file = (election, file_id) in self.files
+            if (in_chunk or in_file) and file_id not in seen:
+                seen.add(file_id)
+                present.append(file_id)
+        return present
+
+    def query(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        batch = body["batch"]
+        sqls = [item["sql"] for item in batch]
+        self.batches.append(sqls)
+        if any(sql.startswith("DELETE") for sql in sqls) and self.fail_deletes:
+            attempted = [
+                str(item["params"][1]) for item in batch if item["sql"] == _DELETE_CHUNK_SQL
+            ]
+            self.delete_attempts.append(attempted)
+            self.order.append("delete-failed")
+            return httpx.Response(200, json={"success": True, "result": [{"success": False}]})
+        results = []
+        for item in batch:
+            params = [str(value) for value in item["params"]]
+            outcome = self._apply_sql(item["sql"], params)
+            if outcome is None:
+                return httpx.Response(200, json={"success": True, "result": [{"success": False}]})
+            results.append(outcome)
+        return httpx.Response(200, json={"success": True, "result": results})
+
+    def _apply_sql(self, sql: str, params: list[str]) -> dict[str, object] | None:
+        if "pragma_table_info" in sql:
+            self.order.append("schema")
+            if "early_vote_chunk" in sql:
+                names = ["source_election_id", "file_id", "chunk_index", "payload_b64"]
+            else:
+                names = ["source_election_id", "file_id", "sha256", "byte_length", "chunk_count"]
+            return {"success": True, "results": [{"name": name} for name in names]}
+        if sql.startswith("CREATE"):
+            return {"success": True, "results": []}
+        if sql == _FILE_IDS_SQL:
+            found = self.file_ids(params[0])
+            self.selections.append(found)
+            self.order.append("file-ids")
+            return {"success": True, "results": [{"file_id": file_id} for file_id in found]}
+        if sql == _POINTER_SELECT_SQL:
+            self.order.append("select-pointer")
+            file_id = self.pointer.get(params[0])
+            rows = [{"file_id": file_id}] if file_id is not None and file_id != "" else []
+            return {"success": True, "results": rows}
+        if sql == _FILE_ID_FOR_HASH_SQL:
+            election, digest = params
+            found = [
+                file_id
+                for (election_id, file_id), sha in self.files.items()
+                if election_id == election and sha == digest
+            ]
+            self.order.append("hash-select")
+            return {"success": True, "results": [{"file_id": file_id} for file_id in found]}
+        if sql == _DELETE_CHUNK_SQL:
+            election, file_id = params
+            self.deleted.append(file_id)
+            self.order.append("delete")
+            self.chunks = {
+                key: value
+                for key, value in self.chunks.items()
+                if not (key[0] == election and key[1] == file_id)
+            }
+            return {"success": True, "results": []}
+        if sql == _DELETE_FILE_SQL:
+            self.files.pop((params[0], params[1]), None)
+            return {"success": True, "results": []}
+        if sql == _CHUNK_INSERT_SQL:
+            self.chunk_inserts += 1
+            if self.fail_chunk_on is not None and self.chunk_inserts == self.fail_chunk_on:
+                self.order.append("chunk-failed")
+                return None
+            election, file_id, index, payload = params
+            self._remember(file_id)
+            self.chunks[(election, file_id, index)] = payload
+            self.order.append("chunk")
+            return {"success": True, "results": []}
+        if sql == _FILE_INSERT_SQL:
+            if self.fail_file_insert:
+                self.order.append("file-failed")
+                return None
+            self._remember(params[1])
+            self.files[(params[0], params[1])] = params[2]
+            self.order.append("file")
+            return {"success": True, "results": []}
+        if sql == _POINTER_UPSERT_SQL:
+            self.pointer[params[0]] = params[1]
+            self.pointer_params.append(params)
+            self.order.append("pointer")
+            return {"success": True, "results": []}
+        raise AssertionError("unexpected sql")
+
+    def kv_get(self, request: httpx.Request) -> httpx.Response:
+        key = unquote(request.url.path.rsplit("/", 1)[-1])
+        if key not in self.kv:
+            return httpx.Response(404)
+        return httpx.Response(200, text=self.kv[key])
+
+    def kv_put(self, request: httpx.Request) -> httpx.Response:
+        if self.fail_puts > 0:
+            self.fail_puts -= 1
+            return httpx.Response(500, json={"success": False, "errors": []})
+        key = unquote(request.url.path.rsplit("/", 1)[-1])
+        self.kv[key] = request.content.decode()
+        self.order.append("kv")
+        return httpx.Response(200, json={"success": True})
+
+
+def _apply_memory(state: _MemoryD1, payload: bytes) -> None:
+    list_url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/d1/database"
+    with respx.mock:
+        respx.get(list_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "result": [{"name": "ev-53813", "uuid": "db-1"}],
+                    "result_info": {"total_count": 1},
+                },
+            )
+        )
+        respx.post(f"{list_url}/db-1/query").mock(side_effect=state.query)
+        respx.get(url__regex=r".*/storage/kv/.*").mock(side_effect=state.kv_get)
+        respx.put(url__regex=r".*/storage/kv/.*").mock(side_effect=state.kv_put)
+        with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
+            store = _cf_store(client)
+            assert "_replaced_file_id" not in vars(store)
+            sync_early_vote("53813", _envelope(payload), store)
+
+
+def _seed_published(state: _MemoryD1, file_id: str, digest: str) -> None:
+    state.seed("53813", file_id, digest, pointer=True)
+    state.kv[hash_key("53813")] = digest
+    state.kv[version_key("53813")] = "2"
+
+
+def test_cloudflare_pointer_swap_is_one_statement_and_delete_follows_kv() -> None:
+    state = _MemoryD1()
+    _seed_published(state, "file-old", sha256_decoded(b"previous-complete"))
+
+    _apply_memory(state, b"file-one")
+    published = state.pointer["53813"]
+
+    assert published != "file-old"
+    assert "file-old" in state.file_ids("53813")
+    assert state.deleted == []
+    assert "delete" not in state.order
+    assert state.order.index("pointer") < state.order.index("kv")
+    assert not any(sql.startswith("DELETE") for batch in state.batches for sql in batch)
+    pointer_batches = [sqls for sqls in state.batches if _POINTER_UPSERT_SQL in sqls]
+    assert pointer_batches == [[_POINTER_UPSERT_SQL]]
+    assert state.pointer_params[0][0] == "53813"
+    assert isinstance(state.pointer_params[0][0], str)
+    assert isinstance(state.pointer_params[0][1], str)
+
+    state.order.clear()
+    state.batches.clear()
+    _apply_memory(state, b"file-two")
+
+    assert state.deleted == ["file-old"]
+    assert state.order.index("delete") < state.order.index("pointer")
+    assert state.order.index("pointer") < state.order.index("kv")
+    assert published in state.file_ids("53813")
+    assert "file-old" not in state.file_ids("53813")
+    pointer_batches = [sqls for sqls in state.batches if _POINTER_UPSERT_SQL in sqls]
+    assert pointer_batches == [[_POINTER_UPSERT_SQL]]
+
+
+def test_failed_chunk_batch_does_not_flip_the_pointer_or_bump_kv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("texas_turnout_scraper.early_vote_sync.CHUNK_RAW_BYTES", 1)
+    monkeypatch.setattr("texas_turnout_scraper.early_vote_sync._INSERT_BATCH", 1)
+    list_url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/d1/database"
+    chunk_batches = 0
+    saw_pointer = False
+
+    def query(request: httpx.Request) -> httpx.Response:
+        nonlocal chunk_batches, saw_pointer
+        body = json.loads(request.content)
+        sqls = [item["sql"] for item in body["batch"]]
+        if any("pragma_table_info" in sql for sql in sqls):
+            return _current_schema(sqls[0])
+        if _POINTER_UPSERT_SQL in sqls:
+            saw_pointer = True
+        if sqls and sqls[0] == _CHUNK_INSERT_SQL:
+            chunk_batches += 1
+            if chunk_batches == 2:
+                return httpx.Response(
+                    200,
+                    json={"success": True, "result": [{"success": False}]},
+                )
+        if sqls == [_POINTER_SELECT_SQL]:
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "result": [{"success": True, "results": [{"file_id": "file-old"}]}],
+                },
+            )
+        return _ok_query()
+
+    with respx.mock:
+        respx.get(list_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "result": [{"name": "ev-53813", "uuid": "db-1"}],
+                    "result_info": {"total_count": 1},
+                },
+            )
+        )
+        respx.post(f"{list_url}/db-1/query").mock(side_effect=query)
+        respx.get(url__regex=r".*/storage/kv/.*").mock(return_value=httpx.Response(404))
+        puts = respx.put(url__regex=r".*/storage/kv/.*").mock(
+            return_value=httpx.Response(200, json={"success": True})
+        )
+        with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
+            with pytest.raises(EarlyVoteSyncError, match="D1 query failed"):
+                sync_early_vote("53813", _envelope(b"abc"), _cf_store(client))
+
+    assert chunk_batches == 2
+    assert saw_pointer is False
+    assert puts.call_count == 0
+
+
+def test_legacy_schema_refuses_in_place_replace() -> None:
+    list_url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/d1/database"
+    saw_delete = False
+
+    def query(request: httpx.Request) -> httpx.Response:
+        nonlocal saw_delete
+        body = json.loads(request.content)
+        sqls = [item["sql"] for item in body["batch"]]
+        if any(sql.startswith("DELETE") for sql in sqls):
+            saw_delete = True
+        if any("pragma_table_info('early_vote_chunk')" in sql for sql in sqls):
+            return _schema_results(["source_election_id", "chunk_index", "payload_b64"])
+        return _ok_query()
+
+    with respx.mock:
+        respx.get(list_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "result": [{"name": "ev-53813", "uuid": "db-1"}],
+                    "result_info": {"total_count": 1},
+                },
+            )
+        )
+        respx.post(f"{list_url}/db-1/query").mock(side_effect=query)
+        respx.get(url__regex=r".*/storage/kv/.*").mock(return_value=httpx.Response(404))
+        puts = respx.put(url__regex=r".*/storage/kv/.*").mock(return_value=httpx.Response(200))
+        with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
+            with pytest.raises(EarlyVoteSyncError, match="no file_id column"):
+                sync_early_vote("53813", _envelope(b"file"), _cf_store(client))
+
+    assert saw_delete is False
+    assert puts.call_count == 0
+
+
+def test_stale_file_ids_keep_pointer_and_kv_hash() -> None:
+    stale = stale_file_ids(
+        ["file-old", "", "file-old", "orphan", None, "hash-file"],
+        pointer_file_id="file-old",
+        kv_hash_file_ids=("hash-file",),
+    )
+
+    assert stale == ("orphan",)
+
+
+def test_cap_budgets_retained_base64_copies(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("texas_turnout_scraper.early_vote_sync.D1_DATABASE_CAP_BYTES", 12)
+    assert estimated_stored_bytes(3) == 12
+    assert_within_cap(3, "53813")
+    with pytest.raises(EarlyVoteCapError, match="retained copies"):
+        assert_within_cap(4, "53813")
+
+
+def test_failed_chunk_insert_is_deleted_from_d1_on_the_next_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("texas_turnout_scraper.early_vote_sync.CHUNK_RAW_BYTES", 1)
+    monkeypatch.setattr("texas_turnout_scraper.early_vote_sync._INSERT_BATCH", 1)
+    state = _MemoryD1()
+    _seed_published(state, "file-old", sha256_decoded(b"previous-complete"))
+    state.fail_chunk_on = 2
+
+    with pytest.raises(EarlyVoteSyncError, match="D1 query failed"):
+        _apply_memory(state, b"abc")
+
+    partials = [file_id for file_id in state.file_ids("53813") if file_id != "file-old"]
+    assert partials
+    assert state.pointer["53813"] == "file-old"
+    assert state.pointer_params == []
+    assert state.kv[hash_key("53813")] == sha256_decoded(b"previous-complete")
+    orphan = partials[0]
+    assert ("53813", orphan) not in state.files
+
+    state.fail_chunk_on = None
+    _apply_memory(state, b"abc")
+
+    assert orphan in state.deleted
+    assert orphan not in state.file_ids("53813")
+    assert "file-old" in state.file_ids("53813")
+    assert state.pointer["53813"] != "file-old"
+
+
+def test_failed_file_insert_is_deleted_from_d1_on_the_next_run() -> None:
+    state = _MemoryD1()
+    _seed_published(state, "file-old", sha256_decoded(b"previous-complete"))
+    state.fail_file_insert = True
+
+    with pytest.raises(EarlyVoteSyncError, match="D1 query failed"):
+        _apply_memory(state, b"file")
+
+    partials = [file_id for file_id in state.file_ids("53813") if file_id != "file-old"]
+    assert len(partials) == 1
+    orphan = partials[0]
+    assert ("53813", orphan) not in state.files
+    assert state.pointer["53813"] == "file-old"
+    assert state.pointer_params == []
+
+    state.fail_file_insert = False
+    _apply_memory(state, b"file")
+
+    assert orphan in state.deleted
+    assert orphan not in state.file_ids("53813")
+    assert "file-old" in state.file_ids("53813")
+
+
+def test_bump_failure_keeps_pointer_and_kv_file_and_drops_later_orphan() -> None:
+    state = _MemoryD1()
+    old = sha256_decoded(b"previous-complete")
+    _seed_published(state, "file-old", old)
+    state.fail_puts = 1
+
+    with pytest.raises(EarlyVoteSyncError, match="KV write failed"):
+        _apply_memory(state, b"staged-new")
+
+    flipped = state.pointer["53813"]
+    assert flipped != "file-old"
+    assert state.kv[hash_key("53813")] == old
+    assert ("53813", flipped) in state.files
+    assert state.deleted == []
+    state.seed("53813", "file-orphan", "d" * 64, pointer=False)
+    state.fail_puts = 0
+
+    _apply_memory(state, b"staged-newer")
+
+    assert state.deleted == ["file-orphan"]
+    assert "file-old" in state.file_ids("53813")
+    assert flipped in state.file_ids("53813")
+    assert "file-orphan" not in state.file_ids("53813")
+
+
+def test_failed_stale_delete_retries_from_d1_rows() -> None:
+    state = _MemoryD1()
+    _seed_published(state, "file-old", sha256_decoded(b"previous-complete"))
+    state.seed("53813", "file-orphan", "e" * 64, pointer=False)
+    state.fail_deletes = True
+
+    with pytest.raises(EarlyVoteSyncError, match="D1 query failed"):
+        _apply_memory(state, b"after-failure")
+
+    assert state.pointer["53813"] == "file-old"
+    assert state.pointer_params == []
+    assert state.kv[version_key("53813")] == "2"
+    assert state.delete_attempts == [["file-orphan"]]
+    assert state.deleted == []
+    assert state.kv[hash_key("53813")] == sha256_decoded(b"previous-complete")
+
+    state.seed("53813", "file-orphan-2", "f" * 64, pointer=False)
+    state.fail_deletes = False
+    marked = len(state.selections)
+    _apply_memory(state, b"after-failure")
+
+    cleanup_ids = state.selections[marked]
+    assert state.deleted == [file_id for file_id in cleanup_ids if file_id != "file-old"]
+    assert state.deleted == ["file-orphan", "file-orphan-2"]
+    assert "file-old" in state.file_ids("53813")
+    assert "file-orphan" not in state.file_ids("53813")
+    assert "file-orphan-2" not in state.file_ids("53813")
