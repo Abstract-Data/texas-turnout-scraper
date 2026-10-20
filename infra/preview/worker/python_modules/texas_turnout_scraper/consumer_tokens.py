@@ -64,11 +64,14 @@ def new_token_id() -> str:
 
 def hash_token(api_token: str) -> str:
     """Stable digest stored in D1/KV; never log the minted token."""
-    return hashlib.blake2s(
+    return hashlib.scrypt(
         api_token.encode("utf-8"),
-        key=_CONSUMER_TOKEN_PEPPER,
-        digest_size=32,
-    ).hexdigest()
+        salt=_CONSUMER_TOKEN_PEPPER,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32,
+    ).hex()
 
 
 def kv_key_for_hash(token_hash: str) -> str:
