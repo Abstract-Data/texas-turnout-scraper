@@ -18,9 +18,7 @@ def test_hash_token_is_stable_hex() -> None:
 
 def test_extract_bearer_and_api_key() -> None:
     assert extract_consumer_credential({"X-API-Key": "key-abc"}) == "key-abc"
-    assert (
-        extract_consumer_credential({"Authorization": "Bearer tok-xyz"}) == "tok-xyz"
-    )
+    assert extract_consumer_credential({"Authorization": "Bearer tok-xyz"}) == "tok-xyz"
     assert extract_consumer_credential({"Authorization": "Basic x"}) is None
     assert extract_consumer_credential({}) is None
 

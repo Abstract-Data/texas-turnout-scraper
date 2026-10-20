@@ -74,9 +74,7 @@ def test_revoke_deletes_kv_key() -> None:
     )
     delete_route = respx.delete(
         url__regex=rf".*/accounts/{account}/storage/kv/namespaces/{kv_id}/values/.*"
-    ).mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
 
     admin = ConsumerTokenAdmin(
         account_id=account,

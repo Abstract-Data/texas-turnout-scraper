@@ -14,9 +14,7 @@ audit_app = typer.Typer(help="Data quality audit commands")
 voterfile_app = typer.Typer(
     help="Voterfile matching — join a statewide voterfile against an EV roster"
 )
-tokens_app = typer.Typer(
-    help="Mint and manage preview read API consumer tokens (hashed in D1/KV)"
-)
+tokens_app = typer.Typer(help="Mint and manage preview read API consumer tokens (hashed in D1/KV)")
 
 app.add_typer(civix_app, name="civix")
 app.add_typer(legacy_app, name="legacy")
