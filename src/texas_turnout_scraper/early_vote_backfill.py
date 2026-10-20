@@ -318,7 +318,8 @@ def run_backfill(
     if not dry_run and manifest_inputs and (wrote > 0 or unchanged > 0):
         kv_version = store.bump_version(election_id, manifest)
         logger.info(
-            "early-vote backfill complete election_id=%s load_days=%s wrote=%s unchanged=%s version=%s",
+            "early-vote backfill complete election_id=%s load_days=%s "
+            "wrote=%s unchanged=%s version=%s",
             election_id,
             len(plan.load_dates),
             wrote,
