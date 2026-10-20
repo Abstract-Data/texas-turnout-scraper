@@ -1,18 +1,19 @@
-"""Preview shell for the early-vote read API.
+"""Cloudflare Python Worker entry for the early-vote aggregate read API."""
 
-The FastAPI handler lands in a later change. This module only marks the
-preview Worker as up. It does not read roster rows.
-"""
+from __future__ import annotations
 
-from workers import Response, WorkerEntrypoint
+from ev_api.app import app
+
+try:
+    from workers import asgi
+except ImportError:
+    asgi = None  # type: ignore[assignment]
 
 
-class Default(WorkerEntrypoint):
-    async def fetch(self, request):
-        return Response.json(
-            {
-                "service": "tx-turnout-ev-api",
-                "environment": "preview",
-                "status": "placeholder",
-            }
-        )
+def install_entrypoint() -> type | None:
+    if asgi is None:
+        return None
+    return asgi.entrypoint(app)
+
+
+Default = install_entrypoint()

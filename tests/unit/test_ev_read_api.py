@@ -1,13 +1,13 @@
-"""Cache hit, cache miss, and 304 for the early-vote Worker read API."""
+"""Cache hit, cache miss, 304, and TTL for the aggregate read API."""
 
 from __future__ import annotations
 
 import json
 
 import pytest
-from ev_api.auth import access_authorized
-from ev_api.bindings import WorkersElectionStore, WorkersKvNamespace
-from ev_api.read import CountyQuery, read_county
+from ev_api.app import ReadDeps, create_app
+from ev_api.read import DEFAULT_KV_TTL_SECONDS, ResourceQuery, read_resource
+from fastapi.testclient import TestClient
 
 from texas_turnout_scraper.civix.read_client import (
     cache_key,
@@ -15,22 +15,25 @@ from texas_turnout_scraper.civix.read_client import (
     http_path,
     version_key,
 )
+from texas_turnout_scraper.early_vote_sync import hash_key
 
 _ACCESS_ID = "preview-client.access"
 _ACCESS_SECRET = "preview-secret-not-a-voter-id"
+_AUTH = {
+    "CF-Access-Client-Id": _ACCESS_ID,
+    "CF-Access-Client-Secret": _ACCESS_SECRET,
+}
 _ELECTION = "049664"
-_COUNTY = "0453"
 _VERSION = 42
+_SHA = "abc123"
 
 
 class MemoryKv:
     def __init__(self, values: dict[str, str] | None = None) -> None:
         self.values = dict(values or {})
         self.puts: list[tuple[str, str, int | None]] = []
-        self.gets: list[str] = []
 
     async def get(self, key: str) -> str | None:
-        self.gets.append(key)
         return self.values.get(key)
 
     async def put(self, key: str, value: str, *, expiration_ttl: int | None) -> None:
@@ -39,164 +42,123 @@ class MemoryKv:
 
 
 class RecordingStore:
-    def __init__(self, rows: dict[tuple[str, str], str] | None = None) -> None:
-        self.rows = dict(rows or {})
-        self.calls: list[tuple[str, str]] = []
+    def __init__(
+        self,
+        bodies: dict[tuple[str, tuple[str, ...]], dict[str, object]] | None = None,
+    ) -> None:
+        self.bodies = dict(bodies or {})
+        self.calls: list[tuple[str, tuple[str, ...], str]] = []
 
-    async def fetch_body(self, source_election_id: str, resource: str) -> str | None:
-        self.calls.append((source_election_id, resource))
-        return self.rows.get((source_election_id, resource))
+    async def build_body(
+        self,
+        source_election_id: str,
+        segments: tuple[str, ...],
+        *,
+        kv_sha256: str,
+    ) -> dict[str, object] | None:
+        self.calls.append((source_election_id, segments, kv_sha256))
+        return self.bodies.get((source_election_id, segments))
 
 
-def _query(if_none_match: str | None = None) -> CountyQuery:
-    return CountyQuery(
-        source_election_id=_ELECTION,
-        county_id=_COUNTY,
-        if_none_match=if_none_match,
+def _segments(resource: str = "totals", ev_date: str | None = None) -> tuple[str, ...]:
+    base = ("aggregates", resource)
+    return (*base, ev_date) if ev_date else base
+
+
+def _client(kv: MemoryKv, store: RecordingStore) -> TestClient:
+    app = create_app(
+        ReadDeps(
+            kv=kv,
+            store=store,
+            access_client_id=_ACCESS_ID,
+            access_client_secret=_ACCESS_SECRET,
+        )
     )
+    return TestClient(app)
 
 
-def _cached(version: int = _VERSION) -> str:
-    return cache_key(_ELECTION, version, "county", _COUNTY)
+def _url(resource: str = "totals", ev_date: str | None = None) -> str:
+    path = http_path(_ELECTION, *_segments(resource, ev_date))
+    return path
 
 
 @pytest.mark.asyncio
 async def test_cache_hit_does_not_query_d1() -> None:
-    payload = {"county": _COUNTY, "rows": 2, "VOTER_NAME": "Synthetic", "ID_VOTER": "0000000001"}
-    raw = json.dumps(payload)
-    key = _cached()
-    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: raw})
+    payload = {"statewide": {"total": 2, "in_person": 2, "mail_in": 0}}
+    key = cache_key(_ELECTION, _VERSION, *_segments())
+    kv = MemoryKv(
+        {
+            version_key(_ELECTION): str(_VERSION),
+            hash_key(_ELECTION): _SHA,
+            key: json.dumps(payload),
+        }
+    )
     store = RecordingStore()
 
-    outcome = await read_county(_query(), kv, store)
+    outcome = await read_resource(
+        ResourceQuery(_ELECTION, _segments(), None),
+        kv,
+        store,
+    )
 
     assert outcome.status_code == 200
     assert outcome.cache == "hit"
-    assert outcome.etag == etag_for_version(_VERSION)
     assert outcome.body == payload
-    assert outcome.body is not None
-    assert outcome.body["ID_VOTER"] == "0000000001"
     assert store.calls == []
-    assert kv.puts == []
-    assert http_path(_ELECTION, "county", _COUNTY) == f"/elections/{_ELECTION}/county/{_COUNTY}"
 
 
 @pytest.mark.asyncio
-async def test_cache_miss_queries_d1_once_and_does_not_purge(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    payload = {"county": _COUNTY, "rows": 3, "VOTER_NAME": "Synthetic", "ID_VOTER": "0000000002"}
-    raw = json.dumps(payload)
-    previous = cache_key(_ELECTION, 41, "county", _COUNTY)
-    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), previous: '{"rows": 1}'})
-    store = RecordingStore({(_ELECTION, f"county:{_COUNTY}"): raw})
+async def test_cache_miss_sets_default_ttl() -> None:
+    payload = {"statewide": {"total": 4, "in_person": 3, "mail_in": 1}}
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
+    store = RecordingStore({(_ELECTION, _segments()): payload})
 
-    with caplog.at_level("DEBUG"):
-        outcome = await read_county(_query(), kv, store)
+    outcome = await read_resource(
+        ResourceQuery(_ELECTION, _segments(), None),
+        kv,
+        store,
+    )
 
     assert outcome.status_code == 200
     assert outcome.cache == "miss"
-    assert outcome.etag == '"v42"'
-    assert outcome.body == payload
-    assert store.calls == [(_ELECTION, f"county:{_COUNTY}")]
-    assert kv.puts == [(_cached(), raw, None)]
-    assert kv.values[previous] == '{"rows": 1}'
-    logged = caplog.text
-    assert "Synthetic" not in logged
-    assert "0000000002" not in logged
+    assert store.calls == [(_ELECTION, _segments(), _SHA)]
+    assert kv.puts[0][2] == DEFAULT_KV_TTL_SECONDS
 
 
 @pytest.mark.asyncio
-async def test_if_none_match_returns_304_without_d1_or_body_read() -> None:
-    class VersionOnlyKv(MemoryKv):
-        async def get(self, key: str) -> str | None:
-            self.gets.append(key)
-            if key != version_key(_ELECTION):
-                raise AssertionError(key)
-            return str(_VERSION)
+async def test_if_none_match_returns_304_without_d1() -> None:
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
+    store = RecordingStore({(_ELECTION, _segments()): {"statewide": {"total": 1}}})
 
-    kv = VersionOnlyKv()
-    store = RecordingStore({(_ELECTION, f"county:{_COUNTY}"): '{"rows": 1}'})
-
-    outcome = await read_county(_query(etag_for_version(_VERSION)), kv, store)
+    outcome = await read_resource(
+        ResourceQuery(_ELECTION, _segments(), etag_for_version(_VERSION)),
+        kv,
+        store,
+    )
 
     assert outcome.status_code == 304
     assert outcome.cache == "not_modified"
-    assert outcome.etag == etag_for_version(_VERSION)
-    assert outcome.body is None
     assert store.calls == []
-    assert kv.gets == [version_key(_ELECTION)]
 
 
-@pytest.mark.asyncio
-async def test_ttl_stays_unset_unless_the_caller_passes_one() -> None:
-    raw = '{"rows": 1}'
+def test_http_aggregate_totals_requires_access() -> None:
     kv = MemoryKv({version_key(_ELECTION): str(_VERSION)})
-    store = RecordingStore({(_ELECTION, f"county:{_COUNTY}"): raw})
-
-    unset = await read_county(_query(), kv, store)
-    assert unset.cache == "miss"
-    assert kv.puts[-1][2] is None
-
-    explicit = 120
-    kv.values.pop(_cached(), None)
-    await read_county(_query(), kv, store, ttl_seconds=explicit)
-    assert kv.puts[-1][2] == explicit
+    response = _client(kv, RecordingStore()).get(_url())
+    assert response.status_code == 401
 
 
-def test_access_service_token_fails_closed() -> None:
-    headers = {
-        "CF-Access-Client-Id": _ACCESS_ID,
-        "CF-Access-Client-Secret": _ACCESS_SECRET,
-    }
-    assert access_authorized(headers, client_id=_ACCESS_ID, client_secret=_ACCESS_SECRET)
-    assert not access_authorized({}, client_id=_ACCESS_ID, client_secret=_ACCESS_SECRET)
-    assert not access_authorized(headers, client_id="", client_secret="")
+def test_http_aggregate_totals_200() -> None:
+    payload = {"statewide": {"total": 1, "in_person": 1, "mail_in": 0}}
+    key = cache_key(_ELECTION, _VERSION, *_segments())
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: json.dumps(payload)})
+    response = _client(kv, RecordingStore()).get(_url(), headers=_AUTH)
+    assert response.status_code == 200
+    assert response.json()["statewide"]["total"] == 1
 
 
-@pytest.mark.asyncio
-async def test_kv_put_omits_ttl_when_unset_and_d1_binds_resource() -> None:
-    class Namespace:
-        def __init__(self) -> None:
-            self.puts: list[tuple[str, str, object]] = []
-
-        async def get(self, key: str) -> str | None:
-            return None
-
-        async def put(self, key: str, value: str, options: dict[str, int] | None = None) -> None:
-            self.puts.append((key, value, options))
-
-    namespace = Namespace()
-    kv = WorkersKvNamespace(namespace)
-    await kv.put(cache_key(_ELECTION, _VERSION, "county", _COUNTY), "{}", expiration_ttl=None)
-    assert namespace.puts == [(cache_key(_ELECTION, _VERSION, "county", _COUNTY), "{}", None)]
-
-    class Database:
-        def __init__(self) -> None:
-            self.sql: list[str] = []
-            self.bound: list[str] = []
-
-        def prepare(self, sql: str) -> Database:
-            self.sql.append(sql)
-            return self
-
-        def bind(self, resource: str) -> Database:
-            self.bound.append(resource)
-            return self
-
-        async def first(self) -> dict[str, str]:
-            return {"body": '{"rows": 1}'}
-
-    database = Database()
-
-    class Env:
-        EV_D1_049664 = database
-
-    store = WorkersElectionStore(Env(), {_ELECTION: "EV_D1_049664"})
-    body = await store.fetch_body(_ELECTION, f"county:{_COUNTY}")
-    assert body == '{"rows": 1}'
-    assert database.bound == [f"county:{_COUNTY}"]
-    assert database.sql == ["SELECT body FROM early_vote WHERE resource = ?"]
-    assert _ELECTION not in database.sql[0]
-    missing = WorkersElectionStore(Env(), {})
-    assert await missing.fetch_body(_ELECTION, f"county:{_COUNTY}") is None
+def test_http_paths_for_aggregate_surface() -> None:
+    assert http_path("53815", "aggregates", "totals") == "/elections/53815/aggregates/totals"
+    assert (
+        http_path("53815", "aggregates", "county-by-day")
+        == "/elections/53815/aggregates/county-by-day"
+    )

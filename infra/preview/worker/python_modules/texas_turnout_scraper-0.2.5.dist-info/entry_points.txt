@@ -1,0 +1,2 @@
+[console_scripts]
+tx-turnout = texas_turnout_scraper.cli:app

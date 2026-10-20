@@ -1,0 +1,1040 @@
+"""Daily Civix early-vote sync into one D1 database per election.
+
+The GitHub Action pulls one ``EVR_EARLYVOTING`` file, unwraps the
+``{"upload": "<base64>"}`` envelope, and SHA-256-hashes those decoded bytes.
+A matching stored hash exits without a write. A new file is staged under a
+new ``file_id``: every chunk is inserted before the pointer moves. One
+``INSERT ... ON CONFLICT`` then flips ``early_vote_pointer``. KV
+``ev:<election>:version`` bumps only after that flip. The previous complete
+file stays through KV propagation. Deleting it in this run would leave an
+edge reader that still holds the old hash with no complete file, and a
+reader mid-chunk could see a partial set. Stale ``file_id`` values — any id
+that is neither the current pointer target nor the file whose SHA-256 matches
+the stored KV hash — are deleted at the start of the next ``write_database``,
+from D1 rows, not from process memory.
+
+Readers — the Worker and the package read client — call
+:func:`choose_published_file` before touching chunk rows. Trust a file only
+when ``early_vote_file.chunk_count`` equals the number of chunk rows for that
+``file_id`` and the file's SHA-256 equals the KV hash stored for the bumped
+version. Until both are true, keep the previous complete file. A partial
+stage is not served. KV writes can take about 60 seconds to show up at every
+edge. That is not fit for election-night results. This module does not add a
+faster path.
+
+Cloudflare documents a 10 GB maximum D1 database size and says the cap cannot
+be raised (https://developers.cloudflare.com/d1/platform/limits/). A larger
+load raises :class:`EarlyVoteCapError` before any database is created.
+
+KV is eventually consistent. Writes can take about 60 seconds to show up away
+from the datacenter that accepted them
+(https://developers.cloudflare.com/kv/concepts/how-kv-works/). That delay is
+not fit for election-night results. This module does not add a faster path.
+
+HTTP shapes used here, with ``Authorization: Bearer`` API tokens:
+
+- D1 list: ``GET /accounts/{account_id}/d1/database``
+- D1 create: ``POST /accounts/{account_id}/d1/database``
+- D1 query: ``POST /accounts/{account_id}/d1/database/{database_id}/query``
+  body ``{"sql", "params"}`` or ``{"batch": [{"sql", "params"}, ...]}``
+  (https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/)
+- KV write: ``PUT /accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/{key_name}``
+  with an ``application/octet-stream`` body. Colons in the key are percent-encoded
+  (https://developers.cloudflare.com/api/resources/kv/subresources/namespaces/subresources/values/methods/update/).
+
+``source_election_id`` stays a string. This module never logs voter names or VUIDs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import logging
+import os
+import sys
+import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import date
+from typing import Any, Literal, Protocol
+from urllib.parse import quote
+
+import httpx
+
+from texas_turnout_scraper.civix.envelope import _decode_envelope
+from texas_turnout_scraper.civix.evr import API_PREFIX, BASE_URL
+from texas_turnout_scraper.civix.ids import require_election_id
+from texas_turnout_scraper.http_transport import HttpBackend, PacedHttpClient
+
+logger = logging.getLogger(__name__)
+
+# Cloudflare's published paid-plan cap is 10 GB (decimal), not 10 GiB.
+# https://developers.cloudflare.com/d1/platform/limits/
+D1_DATABASE_CAP_BYTES = 10_000_000_000
+
+# Peak complete files in one database while a publish is in flight:
+# the pointer target, the file that still matches the stored KV hash when
+# that is a different file_id (a bump that failed after the pointer flip),
+# and the new staged copy. Two copies would miss that window. Every payload
+# is base64: 4 stored bytes per 3 raw bytes.
+PEAK_STORED_COPIES = 3
+
+# Bound parameters are strings. Stay under the 100 KB SQL statement limit and
+# the 2 MB row limit by a wide margin.
+# https://developers.cloudflare.com/d1/platform/limits/
+CHUNK_RAW_BYTES = 32_768
+_INSERT_BATCH = 20
+
+CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4"
+
+KV_NOT_FOR_ELECTION_NIGHT = (
+    "KV propagation is about 60 seconds and is not fit for election-night results. "
+    "A faster path is not built."
+)
+
+_FILE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS early_vote_file (
+    source_election_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    byte_length INTEGER NOT NULL,
+    chunk_count INTEGER NOT NULL,
+    PRIMARY KEY (source_election_id, file_id)
+)
+""".strip()
+
+_CHUNK_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS early_vote_chunk (
+    source_election_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    payload_b64 TEXT NOT NULL,
+    PRIMARY KEY (source_election_id, file_id, chunk_index)
+)
+""".strip()
+
+_POINTER_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS early_vote_pointer (
+    source_election_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL
+)
+""".strip()
+
+SyncStatus = Literal["unchanged", "dry_run", "wrote"]
+
+
+class EarlyVoteCapError(RuntimeError):
+    """The load would pass the 10 GB D1 per-database cap."""
+
+
+class EarlyVoteSyncError(RuntimeError):
+    """The sync could not finish. KV was not bumped after a failed D1 write."""
+
+
+@dataclass(frozen=True)
+class D1Plan:
+    """SQL text a dry run prints. Bound file bytes are omitted."""
+
+    statements: tuple[tuple[str, int], ...]
+    chunk_rows: int
+    file_rows: int
+    source_rows: int | None
+    decoded_bytes: int
+    cap_bytes: int
+    within_cap: bool
+
+
+@dataclass(frozen=True)
+class SyncResult:
+    """Outcome of one election sync. ``decoded_bytes`` is a count, not the file."""
+
+    election_id: str
+    sha256: str
+    decoded_bytes: int
+    status: SyncStatus
+    exit_code: int
+    version: str | None = None
+    plan: D1Plan | None = None
+
+
+class EarlyVoteStore(Protocol):
+    """Hash read, D1 load, and the KV version bump."""
+
+    def stored_hash(self, election_id: str) -> str | None:
+        """Return the last hash stored after a successful version bump."""
+
+    def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
+        """Stage a new file_id and flip the pointer once every chunk is written."""
+
+    def bump_version(self, election_id: str, digest: str) -> str:
+        """Bump ``ev:<election>:version`` and then store ``digest``."""
+
+
+class EmptyHashStore:
+    """No Cloudflare calls.
+
+    ``stored`` is an optional hash from an earlier run of the same file, so a
+    second dry run can take the unchanged path without reading KV.
+    Write methods refuse so a dry run cannot create a database.
+    """
+
+    def __init__(self, stored: str | None = None) -> None:
+        self._stored = stored
+
+    def stored_hash(self, election_id: str) -> str | None:
+        return self._stored
+
+    def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
+        raise EarlyVoteSyncError("refusing to write D1 without --apply")
+
+    def bump_version(self, election_id: str, digest: str) -> str:
+        raise EarlyVoteSyncError("refusing to bump KV without --apply")
+
+
+def database_name(election_id: str) -> str:
+    """One D1 name for this election. The id text, including leading zeros, is kept."""
+    return f"ev-{require_election_id(election_id)}"
+
+
+def version_key(election_id: str) -> str:
+    """KV key bumped only after a successful D1 write."""
+    return f"ev:{require_election_id(election_id)}:version"
+
+
+def hash_key(election_id: str) -> str:
+    """KV key holding the hash of the last file whose version bump succeeded."""
+    return f"ev:{require_election_id(election_id)}:sha256"
+
+
+def sha256_decoded(decoded: bytes) -> str:
+    """SHA-256 hex digest of decoded EVR bytes (after the base64 unwrap)."""
+    return hashlib.sha256(decoded).hexdigest()
+
+
+def base64_payload_bytes(raw_bytes: int) -> int:
+    """Stored size of one payload. Base64 uses 4 bytes for every 3 raw bytes."""
+    if raw_bytes < 0:
+        raise EarlyVoteCapError("decoded length is negative")
+    if raw_bytes == 0:
+        return 0
+    return 4 * ((raw_bytes + 2) // 3)
+
+
+def estimated_stored_bytes(raw_bytes: int) -> int:
+    """Bytes one publish can hold: retained copies, each stored as base64."""
+    return base64_payload_bytes(raw_bytes) * PEAK_STORED_COPIES
+
+
+def assert_within_cap(byte_length: int, election_id: str) -> None:
+    """Refuse a load whose retained base64 copies would pass 10 GB.
+
+    A publish keeps the pointer file and, when it differs, the file that
+    still matches the stored KV hash, then stages the new copy. Each copy is
+    base64. Equal to the cap is still allowed. Does not create a database
+    and does not open a second one.
+    """
+    stored = estimated_stored_bytes(byte_length)
+    cap = D1_DATABASE_CAP_BYTES
+    if stored > cap:
+        raise EarlyVoteCapError(
+            f"early-vote file for election {election_id} is {byte_length} bytes, "
+            f"about {stored} stored bytes with {PEAK_STORED_COPIES} retained copies, "
+            f"over the {cap} byte D1 cap"
+        )
+
+
+def iter_chunk_b64(decoded: bytes) -> list[str]:
+    """Split decoded bytes into base64 chunks that fit a D1 bound parameter."""
+    chunks: list[str] = []
+    for start in range(0, len(decoded), CHUNK_RAW_BYTES):
+        piece = decoded[start : start + CHUNK_RAW_BYTES]
+        chunks.append(base64.b64encode(piece).decode("ascii"))
+    return chunks
+
+
+_CHUNK_INSERT_SQL = (
+    "INSERT INTO early_vote_chunk "
+    "(source_election_id, file_id, chunk_index, payload_b64) VALUES (?, ?, ?, ?)"
+)
+_FILE_INSERT_SQL = (
+    "INSERT INTO early_vote_file "
+    "(source_election_id, file_id, sha256, byte_length, chunk_count) "
+    "VALUES (?, ?, ?, ?, ?)"
+)
+_POINTER_UPSERT_SQL = (
+    "INSERT INTO early_vote_pointer (source_election_id, file_id) VALUES (?, ?) "
+    "ON CONFLICT(source_election_id) DO UPDATE SET file_id = excluded.file_id"
+)
+_DELETE_CHUNK_SQL = "DELETE FROM early_vote_chunk WHERE source_election_id = ? AND file_id = ?"
+_DELETE_FILE_SQL = "DELETE FROM early_vote_file WHERE source_election_id = ? AND file_id = ?"
+_POINTER_SELECT_SQL = "SELECT file_id FROM early_vote_pointer WHERE source_election_id = ?"
+_FILE_IDS_SQL = (
+    "SELECT file_id FROM early_vote_chunk WHERE source_election_id = ? "
+    "UNION SELECT file_id FROM early_vote_file WHERE source_election_id = ?"
+)
+_FILE_ID_FOR_HASH_SQL = (
+    "SELECT file_id FROM early_vote_file WHERE source_election_id = ? AND sha256 = ?"
+)
+_CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
+_FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"
+
+Statement = tuple[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class PublishPlan:
+    """Staged statements for one new file.
+
+    ``pointer_update`` is a single statement and comes after every chunk insert.
+    Stale deletes are not bound here. Apply reads them from D1 before this
+    file is inserted, and this ``file_id`` is not one of them.
+    """
+
+    file_id: str
+    creates: tuple[Statement, ...]
+    chunk_inserts: tuple[Statement, ...]
+    file_insert: Statement
+    pointer_update: Statement
+
+
+@dataclass(frozen=True)
+class EarlyVoteFileView:
+    """Reader metadata for one file_id. Counts only — never chunk payloads."""
+
+    file_id: str
+    sha256: str
+    chunk_count: int
+    chunks_present: int
+
+    @property
+    def complete(self) -> bool:
+        """True when ``chunk_count`` equals the chunk rows stored for this file."""
+        return self.chunk_count >= 0 and self.chunk_count == self.chunks_present
+
+
+def new_file_id(digest: str) -> str:
+    """String id for one load attempt. The election id is not reused as this id."""
+    return f"{digest}-{uuid.uuid4().hex}"
+
+
+def build_publish_plan(election_id: str, decoded: bytes, digest: str, file_id: str) -> PublishPlan:
+    """Chunk inserts, then the file row, then one pointer statement."""
+    election_id = require_election_id(election_id)
+    if not isinstance(file_id, str) or not file_id:
+        raise EarlyVoteSyncError("file_id must be a non-empty string")
+    chunks = iter_chunk_b64(decoded)
+    chunk_inserts = tuple(
+        (_CHUNK_INSERT_SQL, (election_id, file_id, str(index), payload))
+        for index, payload in enumerate(chunks)
+    )
+    return PublishPlan(
+        file_id=file_id,
+        creates=(
+            (_CHUNK_TABLE_SQL, ()),
+            (_FILE_TABLE_SQL, ()),
+            (_POINTER_TABLE_SQL, ()),
+        ),
+        chunk_inserts=chunk_inserts,
+        file_insert=(
+            _FILE_INSERT_SQL,
+            (election_id, file_id, digest, str(len(decoded)), str(len(chunks))),
+        ),
+        pointer_update=(_POINTER_UPSERT_SQL, (election_id, file_id)),
+    )
+
+
+def choose_published_file(
+    *,
+    pointer_file_id: str | None,
+    files: Sequence[EarlyVoteFileView],
+    kv_sha256: str | None,
+) -> EarlyVoteFileView | None:
+    # Worker and read client: call this before any ``early_vote_chunk`` read.
+    # Trust a file only when early_vote_file.chunk_count equals the number of
+    # chunk rows for that file_id and sha256 equals the KV hash written for
+    # the bumped ev:<election>:version. Load chunks only for the file_id on
+    # the returned view. None means the load is incomplete — do not serve a
+    # partial chunk set. A stage that has not flipped early_vote_pointer stays
+    # invisible, so an interrupted load leaves readers on the previous complete
+    # file. If the pointer already names the new file and KV still has the
+    # previous hash, this still returns that previous complete file.
+    if kv_sha256 is None or kv_sha256 == "":
+        return None
+    pointer = _file_by_id(files, pointer_file_id)
+    if pointer is not None and pointer.complete and pointer.sha256 == kv_sha256:
+        return pointer
+    return _complete_with_hash(files, kv_sha256)
+
+
+def _file_by_id(
+    files: Sequence[EarlyVoteFileView], file_id: str | None
+) -> EarlyVoteFileView | None:
+    if file_id is None:
+        return None
+    for item in files:
+        if item.file_id == file_id:
+            return item
+    return None
+
+
+def _complete_with_hash(
+    files: Sequence[EarlyVoteFileView], sha256: str
+) -> EarlyVoteFileView | None:
+    for item in files:
+        if item.complete and item.sha256 == sha256:
+            return item
+    return None
+
+
+def source_row_count(decoded: bytes) -> int | None:
+    """Count ``turnout_by_county`` rows. Other shapes stay uncounted.
+
+    A parse error is ignored. Its message can quote the file, so it is not logged.
+    """
+    try:
+        payload = json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    rows = payload.get("turnout_by_county")
+    if isinstance(rows, list):
+        return len(rows)
+    return None
+
+
+def stale_file_ids(
+    present: Sequence[object],
+    *,
+    pointer_file_id: str | None,
+    kv_hash_file_ids: Sequence[str],
+) -> tuple[str, ...]:
+    """File ids to drop. Keep the pointer target and every KV-hash match."""
+    keep: set[str] = set()
+    if isinstance(pointer_file_id, str) and pointer_file_id:
+        keep.add(pointer_file_id)
+    for file_id in kv_hash_file_ids:
+        if file_id:
+            keep.add(file_id)
+    seen: set[str] = set()
+    stale: list[str] = []
+    for file_id in present:
+        if not isinstance(file_id, str) or not file_id or file_id in seen:
+            continue
+        seen.add(file_id)
+        if file_id not in keep:
+            stale.append(file_id)
+    return tuple(stale)
+
+
+def _plan_statements(plan: PublishPlan) -> tuple[Statement, ...]:
+    """Creates, then stale deletes from the previous run, then the new file.
+
+    Delete parameters are bound at apply time from D1. The file being
+    published is not in that set, so these statements do not name it.
+    """
+    return (
+        *plan.creates,
+        (_DELETE_CHUNK_SQL, ()),
+        (_DELETE_FILE_SQL, ()),
+        *plan.chunk_inserts,
+        plan.file_insert,
+        plan.pointer_update,
+    )
+
+
+def summarize_d1_plan(election_id: str, decoded: bytes, digest: str) -> D1Plan:
+    """Statement text and row counts for a dry run. Bound parameters are dropped.
+
+    Deletes are listed before the new inserts. Apply binds ``file_id`` from
+    D1 at the start of the write and skips the pointer target and the KV hash.
+    """
+    election_id = require_election_id(election_id)
+    plan = build_publish_plan(election_id, decoded, digest, new_file_id(digest))
+    statements = _plan_statements(plan)
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    chunk_rows = 0
+    file_rows = 0
+    for sql, _params in statements:
+        collapsed = " ".join(sql.split())
+        if collapsed not in counts:
+            order.append(collapsed)
+            counts[collapsed] = 0
+        counts[collapsed] += 1
+        if sql == _CHUNK_INSERT_SQL:
+            chunk_rows += 1
+        elif sql == _FILE_INSERT_SQL:
+            file_rows += 1
+    return D1Plan(
+        statements=tuple((sql, counts[sql]) for sql in order),
+        chunk_rows=chunk_rows,
+        file_rows=file_rows,
+        source_rows=source_row_count(decoded),
+        decoded_bytes=len(decoded),
+        cap_bytes=D1_DATABASE_CAP_BYTES,
+        within_cap=estimated_stored_bytes(len(decoded)) <= D1_DATABASE_CAP_BYTES,
+    )
+
+
+def sync_early_vote(
+    election_id: str,
+    response: Any,
+    store: EarlyVoteStore,
+    *,
+    dry_run: bool = False,
+) -> SyncResult:
+    """Hash the unwrapped file and write D1, then KV, only when the hash is new.
+
+    ``response`` is a Civix HTTP response (``.text`` and ``.json()``). The hash
+    covers ``_decode_envelope`` bytes, not the JSON envelope text.
+    """
+    election_id = require_election_id(election_id)
+    decoded = _decode_envelope(response)
+    digest = sha256_decoded(decoded)
+    if store.stored_hash(election_id) == digest:
+        logger.info(
+            "early-vote unchanged election_id=%s sha256=%s decoded_bytes=%s",
+            election_id,
+            digest,
+            len(decoded),
+        )
+        return SyncResult(
+            election_id=election_id,
+            sha256=digest,
+            decoded_bytes=len(decoded),
+            status="unchanged",
+            exit_code=0,
+        )
+
+    assert_within_cap(len(decoded), election_id)
+    if dry_run:
+        plan = summarize_d1_plan(election_id, decoded, digest)
+        logger.info(
+            "early-vote dry-run election_id=%s sha256=%s decoded_bytes=%s d1_rows=%s within_cap=%s",
+            election_id,
+            digest,
+            len(decoded),
+            plan.chunk_rows + plan.file_rows,
+            plan.within_cap,
+        )
+        return SyncResult(
+            election_id=election_id,
+            sha256=digest,
+            decoded_bytes=len(decoded),
+            status="dry_run",
+            exit_code=0,
+            plan=plan,
+        )
+
+    store.write_database(election_id, decoded, digest)
+    version = store.bump_version(election_id, digest)
+    logger.info(
+        "early-vote wrote election_id=%s sha256=%s decoded_bytes=%s version=%s",
+        election_id,
+        digest,
+        len(decoded),
+        version,
+    )
+    return SyncResult(
+        election_id=election_id,
+        sha256=digest,
+        decoded_bytes=len(decoded),
+        status="wrote",
+        exit_code=0,
+        version=version,
+    )
+
+
+def format_sync_report(result: SyncResult) -> str:
+    """Operator report. Counts and ids only — never the file body."""
+    lines = [
+        f"election_id={result.election_id}",
+        f"sha256={result.sha256}",
+        f"decoded_bytes={result.decoded_bytes}",
+        f"status={result.status}",
+        f"exit_code={result.exit_code}",
+        f"d1_database={database_name(result.election_id)}",
+        f"kv_version_key={version_key(result.election_id)}",
+        f"kv_hash_key={hash_key(result.election_id)}",
+    ]
+    if result.version is not None:
+        lines.append(f"kv_version={result.version}")
+    if result.status == "unchanged":
+        lines.append("unchanged_skip=true")
+    if result.plan is not None:
+        plan = result.plan
+        lines.append(f"d1_cap_bytes={plan.cap_bytes}")
+        lines.append(f"within_cap={'true' if plan.within_cap else 'false'}")
+        row_fields = [f"election_id={result.election_id}"]
+        if plan.source_rows is not None:
+            row_fields.append(f"source_rows={plan.source_rows}")
+        row_fields.append(f"d1_chunk_rows={plan.chunk_rows}")
+        row_fields.append(f"d1_file_rows={plan.file_rows}")
+        row_fields.append(f"d1_rows={plan.chunk_rows + plan.file_rows}")
+        lines.append("rows " + " ".join(row_fields))
+        for sql, repeats in plan.statements:
+            lines.append(f"d1_statement repeats={repeats} sql={sql}")
+    lines.append(f"note={KV_NOT_FOR_ELECTION_NIGHT}")
+    return "\n".join(lines)
+
+
+def parse_mdy(value: str) -> date:
+    """Parse ``MM/DD/YYYY`` without ``strptime`` (no timezone on a calendar date)."""
+    parts = value.split("/")
+    if len(parts) != 3:
+        raise ValueError("election date must be MM/DD/YYYY")
+    month_text, day_text, year_text = parts
+    if not (month_text.isdigit() and day_text.isdigit() and year_text.isdigit()):
+        raise ValueError("election date must be MM/DD/YYYY")
+    try:
+        return date(int(year_text), int(month_text), int(day_text))
+    except ValueError as exc:
+        raise ValueError("election date must be MM/DD/YYYY") from exc
+
+
+def pull_early_vote_file(
+    election_id: str,
+    election_date: date,
+    *,
+    client: httpx.Client | None = None,
+    http_backend: HttpBackend = "httpx",
+) -> Any:
+    """GET the Civix early-vote file. ``electionId`` is sent as a string.
+
+    Endpoint (docs/CIVIX_EVR_API.md)::
+
+        GET /api-ivis-system/api/v1/getFile
+            ?type=EVR_EARLYVOTING&electionId={id}&electionDate={MM/DD/YYYY}
+    """
+    election_id = require_election_id(election_id)
+    params = {
+        "type": "EVR_EARLYVOTING",
+        "electionId": election_id,
+        "electionDate": election_date.strftime("%m/%d/%Y"),
+    }
+    path = f"{API_PREFIX}/getFile"
+    if client is not None:
+        response = client.get(f"{BASE_URL}{path}", params=params)
+        response.raise_for_status()
+        return response
+
+    paced = PacedHttpClient(BASE_URL, backend=http_backend)
+    try:
+        return paced.get(path, params=params)
+    finally:
+        paced.close()
+
+
+def _cloudflare_config_from_env() -> tuple[str, str, str] | None:
+    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+    namespace_id = os.environ.get("CLOUDFLARE_KV_NAMESPACE_ID", "").strip()
+    if account_id and api_token and namespace_id:
+        return account_id, api_token, namespace_id
+    return None
+
+
+class CloudflareEarlyVoteStore:
+    """D1 and KV via the Cloudflare REST API. Account id comes from the caller."""
+
+    def __init__(
+        self,
+        *,
+        account_id: str,
+        api_token: str,
+        kv_namespace_id: str,
+        client: httpx.Client | None = None,
+    ) -> None:
+        if not account_id or not api_token or not kv_namespace_id:
+            raise EarlyVoteSyncError(
+                "Cloudflare account id, API token, and KV namespace id are required"
+            )
+        self._account_id = account_id
+        self._namespace_id = kv_namespace_id
+        self._owns_client = client is None
+        self._client = client or httpx.Client(
+            base_url=CLOUDFLARE_API_BASE,
+            headers={"Authorization": f"Bearer {api_token}"},
+            timeout=60.0,
+        )
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    def stored_hash(self, election_id: str) -> str | None:
+        value = self._kv_get(hash_key(election_id))
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
+
+    def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
+        election_id = require_election_id(election_id)
+        assert_within_cap(len(decoded), election_id)
+        database_id = self._ensure_one_database(election_id)
+        self._reject_legacy_schema(database_id)
+        plan = build_publish_plan(election_id, decoded, digest, new_file_id(digest))
+        self._statements(database_id, [_statement_lists(item) for item in plan.creates])
+        # Previous complete files stay until a later run. This pass only drops
+        # ids that are already neither the pointer nor the stored KV hash.
+        self._delete_stale_files(database_id, election_id)
+        self._insert_chunks(database_id, plan.chunk_inserts)
+        self._statements(database_id, [_statement_lists(plan.file_insert)])
+        # One statement, after every chunk. A failed batch before this leaves
+        # the previous pointer in place.
+        self._statements(database_id, [_statement_lists(plan.pointer_update)])
+        logger.info(
+            "early-vote D1 pointer swap election_id=%s database=%s chunks=%s decoded_bytes=%s",
+            election_id,
+            database_name(election_id),
+            len(plan.chunk_inserts),
+            len(decoded),
+        )
+
+    def _delete_stale_files(self, database_id: str, election_id: str) -> None:
+        present = self._distinct_file_ids(database_id, election_id)
+        pointer = self._pointer_file_id(database_id, election_id)
+        digest = self.stored_hash(election_id)
+        hash_ids: tuple[str, ...] = ()
+        if digest is not None:
+            hash_ids = self._file_ids_for_hash(database_id, election_id, digest)
+        stale = stale_file_ids(present, pointer_file_id=pointer, kv_hash_file_ids=hash_ids)
+        if not stale:
+            return
+        rows: list[tuple[str, list[str]]] = []
+        for file_id in stale:
+            rows.append((_DELETE_CHUNK_SQL, [election_id, file_id]))
+            rows.append((_DELETE_FILE_SQL, [election_id, file_id]))
+        for start in range(0, len(rows), _INSERT_BATCH):
+            self._statements(database_id, rows[start : start + _INSERT_BATCH])
+        logger.info(
+            "early-vote D1 dropped stale files election_id=%s dropped=%s",
+            election_id,
+            len(stale),
+        )
+
+    def _distinct_file_ids(self, database_id: str, election_id: str) -> list[str]:
+        rows = self._query_rows(database_id, _FILE_IDS_SQL, [election_id, election_id])
+        return _string_column(rows, "file_id")
+
+    def _file_ids_for_hash(
+        self, database_id: str, election_id: str, digest: str
+    ) -> tuple[str, ...]:
+        rows = self._query_rows(database_id, _FILE_ID_FOR_HASH_SQL, [election_id, digest])
+        return tuple(_string_column(rows, "file_id"))
+
+    def bump_version(self, election_id: str, digest: str) -> str:
+        """Write the version key, then the hash key. A failed D1 write never calls this."""
+        key = version_key(election_id)
+        current = self._kv_get(key)
+        nxt = _next_version(current)
+        self._kv_put(key, nxt)
+        self._kv_put(hash_key(election_id), digest)
+        return nxt
+
+    def _ensure_one_database(self, election_id: str) -> str:
+        name = database_name(election_id)
+        matches = self._list_exact_names(name)
+        if len(matches) > 1:
+            raise EarlyVoteSyncError(
+                f"election {election_id} matched {len(matches)} D1 databases "
+                "named for that election; refusing to create another"
+            )
+        if len(matches) == 1:
+            uuid = matches[0].get("uuid")
+            if not isinstance(uuid, str) or not uuid:
+                raise EarlyVoteSyncError("D1 database is missing a uuid")
+            return uuid
+        created = self._api(
+            "POST", f"/accounts/{self._account_id}/d1/database", json={"name": name}
+        )
+        return _created_uuid(created)
+
+    def _list_exact_names(self, name: str) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        page = 1
+        while page <= 100:
+            payload = self._api(
+                "GET",
+                f"/accounts/{self._account_id}/d1/database",
+                params={"name": name, "page": page, "per_page": 100},
+            )
+            rows, total = _database_page(payload)
+            found.extend(row for row in rows if row.get("name") == name)
+            if total is not None and page * 100 >= total:
+                break
+            if len(rows) < 100:
+                break
+            page += 1
+        return found
+
+    def _reject_legacy_schema(self, database_id: str) -> None:
+        """Fail closed when a database still has the pre-swap primary key.
+
+        ``CREATE TABLE IF NOT EXISTS`` will not add ``file_id``. Replacing
+        rows in that table would delete the published file before the new
+        chunks exist.
+        """
+        for table, sql in (
+            ("early_vote_chunk", _CHUNK_SCHEMA_SQL),
+            ("early_vote_file", _FILE_SCHEMA_SQL),
+        ):
+            names = self._column_names(database_id, sql)
+            if names and "file_id" not in names:
+                raise EarlyVoteSyncError(
+                    f"{table} has no file_id column; refusing to replace rows in place"
+                )
+
+    def _column_names(self, database_id: str, sql: str) -> list[str]:
+        names: list[str] = []
+        for row in self._query_rows(database_id, sql, []):
+            name = row.get("name")
+            if isinstance(name, str):
+                names.append(name)
+        return names
+
+    def _pointer_file_id(self, database_id: str, election_id: str) -> str | None:
+        rows = self._query_rows(database_id, _POINTER_SELECT_SQL, [election_id])
+        if not rows:
+            return None
+        file_id = rows[0].get("file_id")
+        if file_id is None:
+            return None
+        if not isinstance(file_id, str) or not file_id:
+            raise EarlyVoteSyncError("early_vote_pointer file_id is not a string")
+        return file_id
+
+    def _insert_chunks(self, database_id: str, inserts: tuple[Statement, ...]) -> None:
+        rows = [_statement_lists(item) for item in inserts]
+        for start in range(0, len(rows), _INSERT_BATCH):
+            self._statements(database_id, rows[start : start + _INSERT_BATCH])
+
+    def _query_rows(self, database_id: str, sql: str, params: list[str]) -> list[dict[str, Any]]:
+        payload = self._api(
+            "POST",
+            f"/accounts/{self._account_id}/d1/database/{database_id}/query",
+            json={"batch": [{"sql": sql, "params": params}]},
+        )
+        _require_query_success(payload)
+        return _first_result_rows(payload)
+
+    def _statements(self, database_id: str, statements: list[tuple[str, list[str]]]) -> None:
+        if not statements:
+            return
+        body = {
+            "batch": [{"sql": sql, "params": params} for sql, params in statements],
+        }
+        payload = self._api(
+            "POST",
+            f"/accounts/{self._account_id}/d1/database/{database_id}/query",
+            json=body,
+        )
+        _require_query_success(payload)
+
+    def _kv_get(self, key: str) -> str | None:
+        path = _kv_value_path(self._account_id, self._namespace_id, key)
+        response = self._client.get(path)
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise EarlyVoteSyncError(f"Cloudflare KV read failed with HTTP {response.status_code}")
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type:
+            payload = response.json()
+            if isinstance(payload, dict) and payload.get("success") is False:
+                raise EarlyVoteSyncError("Cloudflare KV read failed")
+        return response.text
+
+    def _kv_put(self, key: str, value: str) -> None:
+        path = _kv_value_path(self._account_id, self._namespace_id, key)
+        response = self._client.put(
+            path,
+            content=value.encode("utf-8"),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        if response.status_code >= 400:
+            raise EarlyVoteSyncError(f"Cloudflare KV write failed with HTTP {response.status_code}")
+        if response.content:
+            payload = response.json()
+            if isinstance(payload, dict) and payload.get("success") is False:
+                raise EarlyVoteSyncError("Cloudflare KV write failed")
+
+    def _api(self, method: str, path: str, **kwargs: Any) -> Any:
+        response = self._client.request(method, path, **kwargs)
+        if response.status_code >= 400:
+            raise EarlyVoteSyncError(f"Cloudflare HTTP {response.status_code} for {method} {path}")
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("success") is False:
+            raise EarlyVoteSyncError(f"Cloudflare API error for {method}")
+        return payload
+
+
+def _kv_value_path(account_id: str, namespace_id: str, key: str) -> str:
+    """Percent-encode the key so colons survive the KV value URL."""
+    encoded = quote(key, safe="")
+    return f"/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/{encoded}"
+
+
+def _next_version(current: str | None) -> str:
+    if current is None or not current.strip():
+        return "1"
+    text = current.strip()
+    if not text.isdigit():
+        raise EarlyVoteSyncError("stored KV version is not a decimal string")
+    return str(int(text) + 1)
+
+
+def _created_uuid(payload: Any) -> str:
+    result = payload.get("result") if isinstance(payload, dict) else None
+    uuid = result.get("uuid") if isinstance(result, dict) else None
+    if not isinstance(uuid, str) or not uuid:
+        raise EarlyVoteSyncError("D1 create did not return a database uuid")
+    return uuid
+
+
+def _database_page(payload: Any) -> tuple[list[dict[str, Any]], int | None]:
+    if not isinstance(payload, dict):
+        raise EarlyVoteSyncError("D1 list response was not a JSON object")
+    rows = payload.get("result")
+    if not isinstance(rows, list):
+        raise EarlyVoteSyncError("D1 list response did not include a result list")
+    parsed = [row for row in rows if isinstance(row, dict)]
+    info = payload.get("result_info")
+    total: int | None = None
+    if isinstance(info, dict) and isinstance(info.get("total_count"), int):
+        total = info["total_count"]
+    return parsed, total
+
+
+def _statement_lists(statement: Statement) -> tuple[str, list[str]]:
+    sql, params = statement
+    return sql, list(params)
+
+
+def _string_column(rows: Sequence[dict[str, Any]], column: str) -> list[str]:
+    found: list[str] = []
+    for row in rows:
+        value = row.get(column)
+        if isinstance(value, str) and value:
+            found.append(value)
+    return found
+
+
+def _first_result_rows(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    result = payload.get("result")
+    if not isinstance(result, list) or not result:
+        return []
+    first = result[0]
+    if not isinstance(first, dict):
+        return []
+    rows = first.get("results")
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _require_query_success(payload: Any) -> None:
+    if not isinstance(payload, dict):
+        raise EarlyVoteSyncError("D1 query response was not a JSON object")
+    result = payload.get("result")
+    if not isinstance(result, list):
+        raise EarlyVoteSyncError("D1 query response did not include a result list")
+    for item in result:
+        if isinstance(item, dict) and item.get("success") is False:
+            raise EarlyVoteSyncError("D1 query failed")
+
+
+def _response_from_envelope_file(path: str) -> httpx.Response:
+    with open(path, "rb") as handle:
+        body = handle.read()
+    return httpx.Response(200, content=body)
+
+
+def _build_store(*, apply: bool, stored_hash: str = "") -> EarlyVoteStore:
+    """Dry runs never open Cloudflare. ``stored_hash`` is only for a second dry run."""
+    if not apply:
+        text = stored_hash.strip()
+        return EmptyHashStore(stored=text or None)
+    config = _cloudflare_config_from_env()
+    if config is None:
+        raise EarlyVoteSyncError(
+            "apply requires CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, "
+            "and CLOUDFLARE_KV_NAMESPACE_ID"
+        )
+    account_id, api_token, namespace_id = config
+    return CloudflareEarlyVoteStore(
+        account_id=account_id,
+        api_token=api_token,
+        kv_namespace_id=namespace_id,
+    )
+
+
+def _load_response(election_id: str, envelope_file: str, election_date: str, backend: str) -> Any:
+    if envelope_file:
+        return _response_from_envelope_file(envelope_file)
+    if not election_date:
+        raise EarlyVoteSyncError("pass --envelope-file or --date")
+    http_backend: HttpBackend = "cloudscraper" if backend == "cloudscraper" else "httpx"
+    return pull_early_vote_file(
+        election_id,
+        parse_mdy(election_date),
+        http_backend=http_backend,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry. ``--dry-run`` never creates Cloudflare resources."""
+    parser = argparse.ArgumentParser(description="Sync one Civix early-vote file to D1 and KV.")
+    parser.add_argument("--election-id", required=True, help="source_election_id string")
+    parser.add_argument("--date", default="", help="Early-vote file date MM/DD/YYYY")
+    parser.add_argument("--envelope-file", default="", help="Local Civix envelope JSON")
+    parser.add_argument("--dry-run", action="store_true", help="Hash and print the plan")
+    parser.add_argument("--apply", action="store_true", help="Write D1, then bump KV")
+    parser.add_argument(
+        "--stored-hash",
+        default="",
+        help="Hash from an earlier run of this file, so a second dry run can skip",
+    )
+    parser.add_argument("--http-backend", default="httpx", choices=["httpx", "cloudscraper"])
+    args = parser.parse_args(argv)
+    if args.dry_run == args.apply:
+        parser.error("pass exactly one of --dry-run or --apply")
+    if args.apply and args.stored_hash:
+        parser.error("--stored-hash is only used with --dry-run")
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    store: EarlyVoteStore | None = None
+    try:
+        store = _build_store(apply=args.apply, stored_hash=args.stored_hash)
+        response = _load_response(
+            args.election_id,
+            args.envelope_file,
+            args.date,
+            args.http_backend,
+        )
+        result = sync_early_vote(
+            args.election_id,
+            response,
+            store,
+            dry_run=args.dry_run,
+        )
+    except (EarlyVoteCapError, EarlyVoteSyncError, ValueError) as exc:
+        logger.error("%s", exc)
+        return 1
+    finally:
+        closer = getattr(store, "close", None)
+        if closer is not None:
+            closer()
+
+    sys.stdout.write(format_sync_report(result) + "\n")
+    return result.exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

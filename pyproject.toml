@@ -29,6 +29,7 @@ tx-turnout = "texas_turnout_scraper.cli:app"
 
 [dependency-groups]
 dev = [
+    "fastapi>=0.115",
     "pytest>=8.2.0",
     "anyio[trio]>=4.4.0",
     "respx>=0.21.0",
@@ -58,6 +59,7 @@ packages = ["src/texas_turnout_scraper"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = ["infra/preview/worker/python_modules"]
 
 [tool.ruff.lint]
 # Selector additions (2026-05-25, post review-suite):
