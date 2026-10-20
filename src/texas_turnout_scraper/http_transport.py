@@ -49,7 +49,7 @@ JSON_RETRY_MULTIPLIER_SECONDS = 0.25
 JSON_RETRY_MAX_SECONDS = 2.0
 JSON_RETRY_JITTER_SECONDS = 0.2
 
-_RETRYABLE_STATUS_CODES = frozenset({502, 503, 504})
+_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
 _MAX_HTTP_RETRIES = 2
 
 
@@ -65,8 +65,8 @@ def format_fetch_error(exc: BaseException) -> str:
 
 _DEFAULT_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; texas-turnout-scraper/1.0; "
-        "+https://github.com/abstract-data/texas-turnout-scraper)"
+        "Abstract-Data/texas-turnout-scraper (Texas SOS public EV data; "
+        "+https://github.com/Abstract-Data/texas-turnout-scraper)"
     ),
 }
 

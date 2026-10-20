@@ -18,6 +18,7 @@ import respx
 from texas_turnout_scraper.civix.evr import API_PREFIX, BASE_URL
 from texas_turnout_scraper.early_vote_sync import (
     _CHUNK_INSERT_SQL,
+    _DAY_FILE_IDS_SQL,
     _DELETE_CHUNK_SQL,
     _DELETE_FILE_SQL,
     _FILE_ID_FOR_HASH_SQL,
@@ -28,6 +29,8 @@ from texas_turnout_scraper.early_vote_sync import (
     CHUNK_RAW_BYTES,
     CLOUDFLARE_API_BASE,
     D1_DATABASE_CAP_BYTES,
+    EVR_HTTP_USER_AGENT,
+    EVR_RETRY_STATUS_CODES,
     KV_NOT_FOR_ELECTION_NIGHT,
     PEAK_STORED_COPIES,
     CloudflareEarlyVoteStore,
@@ -45,6 +48,7 @@ from texas_turnout_scraper.early_vote_sync import (
     hash_key,
     main,
     pull_early_vote_file,
+    pull_statewide_roster_file,
     sha256_decoded,
     stale_file_ids,
     sync_early_vote,
@@ -52,6 +56,9 @@ from texas_turnout_scraper.early_vote_sync import (
 )
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "early_vote" / "sample_envelope.json"
+STATEWIDE_FIXTURE = (
+    Path(__file__).parent.parent / "fixtures" / "early_vote" / "statewide_roster_envelope.json"
+)
 ACCOUNT = "00000000000000000000000000000001"
 NAMESPACE = "ns-test"
 
@@ -63,21 +70,50 @@ class RecordingStore:
         self.calls: list[str] = []
         self.written: bytes | None = None
         self.version: str | None = None
+        self.day_hashes: dict[tuple[str, str], str] = {}
+        self.bump_count = 0
 
-    def stored_hash(self, election_id: str) -> str | None:
-        self.calls.append(f"hash:{election_id}")
+    def stored_hash(self, election_id: str, *, ev_date_iso: str | None = None) -> str | None:
+        self.calls.append(f"hash:{election_id}:{ev_date_iso or ''}")
+        if ev_date_iso:
+            return self.day_hashes.get((election_id, ev_date_iso))
         return self.stored
 
-    def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
-        self.calls.append(f"write:{election_id}")
+    def write_database(
+        self,
+        election_id: str,
+        decoded: bytes,
+        digest: str,
+        *,
+        ev_date_iso: str | None = None,
+        update_pointer: bool = False,
+    ) -> None:
+        self.calls.append(f"write:{election_id}:{ev_date_iso or ''}")
         if self.fail_write:
             raise EarlyVoteSyncError("D1 write failed")
         self.written = decoded
+        if ev_date_iso:
+            self.day_hashes[(election_id, ev_date_iso)] = digest
+        if update_pointer:
+            self.calls.append(f"pointer:{election_id}")
 
     def bump_version(self, election_id: str, digest: str) -> str:
         self.calls.append(f"bump:{election_id}")
+        self.bump_count += 1
         self.version = "2"
+        self.stored = digest
         return self.version
+
+    def finalize_published_roster(
+        self,
+        election_id: str,
+        ev_date_iso: str,
+        content_digest: str,
+        *,
+        manifest_sha256: str | None = None,
+    ) -> str:
+        self.calls.append(f"finalize:{election_id}:{ev_date_iso}")
+        return self.bump_version(election_id, content_digest)
 
 
 def _envelope(payload: bytes) -> httpx.Response:
@@ -107,7 +143,7 @@ def test_leading_zero_election_id_stays_a_string() -> None:
     assert database_name("0123") == "ev-0123"
     assert version_key("0123") == "ev:0123:version"
     assert hash_key("0123") == "ev:0123:sha256"
-    assert store.calls == ["hash:0123"]
+    assert store.calls == ["hash:0123:"]
 
 
 def test_unchanged_hash_exits_without_write() -> None:
@@ -120,7 +156,7 @@ def test_unchanged_hash_exits_without_write() -> None:
     assert result.status == "unchanged"
     assert result.exit_code == 0
     assert result.version is None
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
     assert store.written is None
 
 
@@ -132,7 +168,7 @@ def test_new_hash_writes_d1_before_kv_bump() -> None:
 
     assert result.status == "wrote"
     assert result.version == "2"
-    assert store.calls == ["hash:53813", "write:53813", "bump:53813"]
+    assert store.calls == ["hash:53813:", "write:53813:", "bump:53813"]
     assert store.written == payload
 
 
@@ -142,7 +178,7 @@ def test_failed_d1_write_does_not_bump_kv() -> None:
     with pytest.raises(EarlyVoteSyncError, match="D1 write failed"):
         sync_early_vote("53813", _envelope(b"new-file"), store)
 
-    assert store.calls == ["hash:53813", "write:53813"]
+    assert store.calls == ["hash:53813:", "write:53813:"]
     assert store.version is None
 
 
@@ -161,7 +197,7 @@ def test_over_cap_refuses_before_create_or_kv(monkeypatch: pytest.MonkeyPatch) -
 
     assert "Ada" not in str(raised.value)
     assert "0123456789" not in str(raised.value)
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
     assert store.written is None
     assert store.version is None
 
@@ -184,7 +220,7 @@ def test_over_cap_uses_the_real_limit_constant(monkeypatch: pytest.MonkeyPatch) 
     store = RecordingStore()
     with pytest.raises(EarlyVoteCapError):
         sync_early_vote("53813", _envelope(b"12345"), store)
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
 
 
 def test_unchanged_file_exits_even_when_over_the_patched_cap(
@@ -201,7 +237,7 @@ def test_unchanged_file_exits_even_when_over_the_patched_cap(
 
     assert result.status == "unchanged"
     assert result.exit_code == 0
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
 
 
 def test_dry_run_report_has_no_file_body(caplog: pytest.LogCaptureFixture) -> None:
@@ -219,7 +255,7 @@ def test_dry_run_report_has_no_file_body(caplog: pytest.LogCaptureFixture) -> No
     assert KV_NOT_FOR_ELECTION_NIGHT in report
     assert "d1_database=ev-53813" in report
     assert "kv_version_key=ev:53813:version" in report
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
 
 
 def test_invalid_election_id_is_rejected_before_a_write() -> None:
@@ -227,6 +263,49 @@ def test_invalid_election_id_is_rejected_before_a_write() -> None:
     with pytest.raises(ValueError, match="election id"):
         sync_early_vote("0", _envelope(b"x"), store)
     assert store.calls == []
+
+
+def test_statewide_roster_dry_run_reports_columns_not_rows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        [
+            "--election-id",
+            "53815",
+            "--envelope-file",
+            str(STATEWIDE_FIXTURE),
+            "--payload-kind",
+            "statewide_roster",
+            "--dry-run",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "payload_kind=statewide_roster" in captured.out
+    assert "csv_columns=COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT" in captured.out
+    assert "dropped_columns=POLL_PLACE_NAME" in captured.out
+    assert "voting_method_counts=IN-PERSON:1,MAIL-IN:2" in captured.out
+    assert "source_rows=3" in captured.out
+    assert "SMITH" not in captured.out
+    assert "1000000001" not in captured.out
+
+
+def test_pull_statewide_retries_503_and_sets_user_agent() -> None:
+    payload = b"COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\n"
+    encoded = base64.b64encode(payload).decode("ascii")
+    with respx.mock:
+        route = respx.get(f"{BASE_URL}{API_PREFIX}/getFile").mock(
+            side_effect=[
+                httpx.Response(503),
+                httpx.Response(200, json={"upload": encoded}),
+            ]
+        )
+        response = pull_statewide_roster_file("53815", date(2026, 10, 20), http_backend="httpx")
+        assert route.call_count == 2
+        assert "Abstract-Data" in route.calls[0].request.headers.get("User-Agent", "")
+        assert response.json()["upload"] == encoded
+    assert 503 in EVR_RETRY_STATUS_CODES
+    assert "Abstract-Data" in EVR_HTTP_USER_AGENT
 
 
 def test_pull_sends_election_id_as_a_string() -> None:
@@ -761,6 +840,7 @@ class _MemoryD1:
         return httpx.Response(200, json={"success": True, "result": results})
 
     def _apply_sql(self, sql: str, params: list[str]) -> dict[str, object] | None:
+        sql = sql.strip()
         if "pragma_table_info" in sql:
             self.order.append("schema")
             if "early_vote_chunk" in sql:
@@ -775,6 +855,9 @@ class _MemoryD1:
             self.selections.append(found)
             self.order.append("file-ids")
             return {"success": True, "results": [{"file_id": file_id} for file_id in found]}
+        if sql == _DAY_FILE_IDS_SQL:
+            self.order.append("day-file-ids")
+            return {"success": True, "results": []}
         if sql == _POINTER_SELECT_SQL:
             self.order.append("select-pointer")
             file_id = self.pointer.get(params[0])
@@ -1005,6 +1088,16 @@ def test_stale_file_ids_keep_pointer_and_kv_hash() -> None:
         kv_hash_file_ids=("hash-file",),
     )
 
+    assert stale == ("orphan",)
+
+
+def test_stale_file_ids_keep_day_scoped_files() -> None:
+    stale = stale_file_ids(
+        ["pointer", "day-a", "day-b", "orphan"],
+        pointer_file_id="pointer",
+        kv_hash_file_ids=(),
+        day_file_ids=("day-a", "day-b"),
+    )
     assert stale == ("orphan",)
 
 
