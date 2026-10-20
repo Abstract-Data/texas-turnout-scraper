@@ -1,0 +1,4 @@
+name = "tx-turnout-ev-api-preview"
+main = "entry.py"
+compatibility_date = "2026-10-17"
+compatibility_flags = ["python_workers"]

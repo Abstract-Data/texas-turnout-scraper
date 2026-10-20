@@ -1,0 +1,12 @@
+[project]
+name = "tx-turnout-ev-api-preview"
+version = "0.1.0"
+description = "Preview shell for the Texas early-vote read API Worker"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "workers-py==1.17.8",
+  "workers-runtime-sdk>=1.9",
+]
