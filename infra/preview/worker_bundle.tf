@@ -24,8 +24,22 @@ locals {
     }
   ]
 
+  preview_worker_app_paths = sort([
+    for rel in fileset("${local.preview_worker_dir}/src/ev_api", "**") :
+    rel if endswith(rel, ".py")
+  ])
+
+  preview_worker_app_modules = [
+    for rel in local.preview_worker_app_paths : {
+      name         = "ev_api/${rel}"
+      content_type = "text/x-python"
+      content_file = "${local.preview_worker_dir}/src/ev_api/${rel}"
+    }
+  ]
+
   preview_worker_modules = concat(
     [local.preview_worker_entry_module],
+    local.preview_worker_app_modules,
     local.preview_worker_vendor_modules,
   )
 }

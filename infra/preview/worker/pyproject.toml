@@ -1,9 +1,15 @@
 [project]
 name = "tx-turnout-ev-api-preview"
 version = "0.1.0"
-description = "Preview shell for the Texas early-vote read API Worker"
+description = "Preview FastAPI read API Worker for Texas early-vote aggregates"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "fastapi>=0.115",
+  "texas-turnout-scraper",
+]
+
+[tool.uv.sources]
+texas-turnout-scraper = { path = "../../..", editable = false }
 
 [dependency-groups]
 dev = [

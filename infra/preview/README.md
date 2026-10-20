@@ -16,7 +16,7 @@ uv sync --frozen
 uv run pywrangler sync --force
 ```
 
-Commit `python_modules/` and `pylock.toml` with the change. CI re-runs `pywrangler sync` and fails if those paths drift.
+Commit `python_modules/` and `pylock.toml` with the change. CI re-runs `pywrangler sync` and fails if importable package trees or `pylock.toml` drift (wheel `.dist-info/` metadata is ignored — RECORD hashes and path-dep `direct_url.json` / `uv_cache.json` vary by machine).
 
 Root `pyproject.toml` lists `infra/preview/worker/python_modules` in Ruff `extend-exclude` so `ruff check .` does not lint vendored upstream SDK (do not hand-edit that tree).
 
@@ -82,3 +82,5 @@ endpoints = { s3 = "<TF_STATE_ENDPOINT>" }
 ```
 
 Send the id as `CF-Access-Client-Id` and the secret as `CF-Access-Client-Secret`. Do not log either value.
+
+The preview Worker version binds `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (from the Access service token above), and `EV_D1_BINDINGS` (JSON map from `preview_source_election_id` to the `DB` D1 binding). Rotating the service token requires `terraform apply` so the Worker bindings pick up the new values.

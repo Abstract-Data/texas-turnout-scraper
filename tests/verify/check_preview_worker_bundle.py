@@ -16,7 +16,7 @@ UV_LOCK = WORKER_ROOT / "uv.lock"
 def test_preview_worker_entry_imports_workers_sdk() -> None:
     text = ENTRY.read_text(encoding="utf-8")
     assert "from workers import" in text
-    assert "WorkerEntrypoint" in text
+    assert "asgi" in text or "WorkerEntrypoint" in text
 
 
 def test_preview_worker_vendors_runtime_sdk() -> None:

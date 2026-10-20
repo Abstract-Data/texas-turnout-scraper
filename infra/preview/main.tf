@@ -7,6 +7,10 @@
 
 locals {
   worker_name = "tx-turnout-ev-api-preview"
+  # Preview sync targets Nov 2026 general (see early-vote-sync workflow default).
+  ev_d1_bindings = jsonencode({
+    (var.preview_source_election_id) = "DB"
+  })
 }
 
 resource "cloudflare_d1_database" "preview" {
@@ -79,6 +83,21 @@ resource "cloudflare_worker_version" "preview" {
       type         = "kv_namespace"
       name         = "EV"
       namespace_id = cloudflare_workers_kv_namespace.preview.id
+    },
+    {
+      type = "plain_text"
+      name = "ACCESS_CLIENT_ID"
+      text = cloudflare_zero_trust_access_service_token.preview.client_id
+    },
+    {
+      type = "secret_text"
+      name = "ACCESS_CLIENT_SECRET"
+      text = cloudflare_zero_trust_access_service_token.preview.client_secret
+    },
+    {
+      type = "plain_text"
+      name = "EV_D1_BINDINGS"
+      text = local.ev_d1_bindings
     },
   ]
 }
