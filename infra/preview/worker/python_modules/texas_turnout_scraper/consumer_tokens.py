@@ -57,9 +57,11 @@ def new_token_id() -> str:
     return secrets.token_hex(16)
 
 
-def hash_token(plaintext: str) -> str:
-    """Stable digest stored in D1/KV; never log ``plaintext``."""
-    return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+def hash_token(api_token: str) -> str:
+    """Stable digest stored in D1/KV; never log the minted token."""
+    # High-entropy API secrets (not passwords); SHA-256 is the stored lookup key.
+    # codeql[py/weak-sensitive-data-hashing]
+    return hashlib.sha256(api_token.encode("utf-8")).hexdigest()
 
 
 def kv_key_for_hash(token_hash: str) -> str:
