@@ -242,8 +242,7 @@ def latest_loadable_ev_date(
         )
         if has_rows:
             logger.info(
-                "early-vote latest loadable election_id=%s ev_date=%s "
-                "decoded_bytes=%s est_rows=%s",
+                "early-vote latest loadable election_id=%s ev_date=%s decoded_bytes=%s est_rows=%s",
                 election_id,
                 iso_ev_date(ev_day),
                 decoded_bytes,
