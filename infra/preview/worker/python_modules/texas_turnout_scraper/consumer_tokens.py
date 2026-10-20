@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import hmac
 import secrets
 from collections.abc import Mapping
 
@@ -63,10 +62,10 @@ def new_token_id() -> str:
 
 def hash_token(api_token: str) -> str:
     """Stable digest stored in D1/KV; never log the minted token."""
-    return hmac.new(
-        _CONSUMER_TOKEN_PEPPER,
+    return hashlib.blake2s(
         api_token.encode("utf-8"),
-        hashlib.sha256,
+        key=_CONSUMER_TOKEN_PEPPER,
+        digest_size=32,
     ).hexdigest()
 
 

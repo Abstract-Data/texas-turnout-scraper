@@ -90,7 +90,7 @@ The preview Worker version binds `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (fro
 Internal callers keep using Cloudflare Access. External consumers use minted tokens:
 
 - `Authorization: Bearer <token>` or `X-API-Key: <token>` on aggregate routes.
-- Only SHA-256 digests are stored. KV key prefix `consumer_token:<digest>` mirrors active rows in preview shell D1 table `consumer_api_token` (created on first `tx-turnout tokens mint`).
+- Only BLAKE2s digests (keyed) are stored (never plaintext). KV key prefix `consumer_token:<digest>` mirrors active rows in preview shell D1 table `consumer_api_token` (created on first `tx-turnout tokens mint`).
 
 John manages tokens locally (1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a` plus Terraform outputs):
 

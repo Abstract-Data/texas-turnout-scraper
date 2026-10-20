@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import hmac
 import secrets
 from collections.abc import Mapping
 
@@ -18,8 +17,10 @@ BEARER_PREFIX = "bearer "
 
 KV_PREFIX = "consumer_token:"
 
-# Application pepper for stored digests (high-entropy tokens, not user passwords).
-_CONSUMER_TOKEN_PEPPER = b"Abstract-Data/texas-turnout-scraper/preview-consumer-token/v1"
+# Keyed digest pepper (32 bytes max for BLAKE2s); not a user password.
+_CONSUMER_TOKEN_PEPPER = hashlib.sha256(
+    b"Abstract-Data/texas-turnout-scraper/preview-consumer-token/v1"
+).digest()
 
 _SCHEMA_CREATES: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS consumer_api_token (
@@ -63,10 +64,10 @@ def new_token_id() -> str:
 
 def hash_token(api_token: str) -> str:
     """Stable digest stored in D1/KV; never log the minted token."""
-    return hmac.new(
-        _CONSUMER_TOKEN_PEPPER,
+    return hashlib.blake2s(
         api_token.encode("utf-8"),
-        hashlib.sha256,
+        key=_CONSUMER_TOKEN_PEPPER,
+        digest_size=32,
     ).hexdigest()
 
 
