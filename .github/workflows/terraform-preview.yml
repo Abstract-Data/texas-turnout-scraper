@@ -36,11 +36,24 @@ jobs:
           enable-cache: true
 
       - name: Verify preview Worker bundle (pywrangler sync)
-        working-directory: infra/preview/worker
+        working-directory: .
         run: |
+          set -euo pipefail
+          cd infra/preview/worker
           uv sync --frozen
           uv run pywrangler sync --force
-          test -z "$(git status --porcelain -- python_modules pylock.toml)"
+          cd "${GITHUB_WORKSPACE}"
+          # Wheel .dist-info metadata (RECORD hashes, path-dep direct_url.json, uv_cache.json)
+          # is not reproducible across machines; importable package trees and pylock.toml are.
+          drift="$(git status --porcelain -- infra/preview/worker/python_modules infra/preview/worker/pylock.toml || true)"
+          if [ -n "${drift}" ]; then
+            unexpected="$(printf '%s\n' "${drift}" | grep -vE '/python_modules/[^/]+[.]dist-info/' || true)"
+            if [ -n "${unexpected}" ]; then
+              echo "Unexpected pywrangler drift after sync:"
+              printf '%s\n' "${unexpected}"
+              exit 1
+            fi
+          fi
 
       - uses: hashicorp/setup-terraform@v4
         with:
