@@ -1,0 +1,5 @@
+name: texas-turnout-scraper CodeQL
+
+# Vendored Pyodide trees are synced from src/; scan canonical package only.
+paths-ignore:
+  - infra/preview/worker/python_modules

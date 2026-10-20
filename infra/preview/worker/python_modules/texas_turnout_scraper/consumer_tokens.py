@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import secrets
 from collections.abc import Mapping
 
@@ -16,6 +17,9 @@ X_API_KEY_HEADER = "X-API-Key"
 BEARER_PREFIX = "bearer "
 
 KV_PREFIX = "consumer_token:"
+
+# Application pepper for stored digests (high-entropy tokens, not user passwords).
+_CONSUMER_TOKEN_PEPPER = b"Abstract-Data/texas-turnout-scraper/preview-consumer-token/v1"
 
 _SCHEMA_CREATES: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS consumer_api_token (
@@ -59,9 +63,11 @@ def new_token_id() -> str:
 
 def hash_token(api_token: str) -> str:
     """Stable digest stored in D1/KV; never log the minted token."""
-    # High-entropy API secrets (not passwords); SHA-256 is the stored lookup key.
-    # codeql[py/weak-sensitive-data-hashing]
-    return hashlib.sha256(api_token.encode("utf-8")).hexdigest()
+    return hmac.new(
+        _CONSUMER_TOKEN_PEPPER,
+        api_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def kv_key_for_hash(token_hash: str) -> str:
