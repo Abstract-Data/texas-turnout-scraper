@@ -42,7 +42,10 @@ _DAY_LIST_SQL = (
     "SELECT ev_date, file_id, sha256 FROM early_vote_day "
     "WHERE source_election_id = ? ORDER BY ev_date ASC"
 )
-_DAY_FILE_SQL = "SELECT file_id FROM early_vote_day WHERE source_election_id = ? AND ev_date = ?"
+_DAY_LOOKUP_SQL = (
+    "SELECT ev_date, file_id, sha256 FROM early_vote_day "
+    "WHERE source_election_id = ? AND ev_date = ?"
+)
 
 
 @dataclass(frozen=True)
@@ -120,20 +123,49 @@ async def load_day_rows(db: D1Database, source_election_id: str) -> tuple[EvDayR
     return tuple(days)
 
 
+def _trusted_file_view(
+    files: tuple[EarlyVoteFileView, ...],
+    file_id: str,
+    expected_sha256: str,
+) -> EarlyVoteFileView | None:
+    if expected_sha256 == "":
+        return None
+    for item in files:
+        if item.file_id != file_id:
+            continue
+        if not item.complete or item.sha256 != expected_sha256:
+            return None
+        return item
+    return None
+
+
+async def resolve_day_for_date(
+    db: D1Database,
+    source_election_id: str,
+    ev_date: str,
+) -> EvDayRow | None:
+    election_id = require_election_id(source_election_id)
+    try:
+        row = await db.prepare(_DAY_LOOKUP_SQL).bind(election_id, ev_date).first()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    resolved_date = _row_value(row, "ev_date")
+    file_id = _row_value(row, "file_id")
+    sha256 = _row_value(row, "sha256")
+    if not all(isinstance(item, str) and item for item in (resolved_date, file_id, sha256)):
+        return None
+    return EvDayRow(ev_date=resolved_date, file_id=file_id, sha256=sha256)
+
+
 async def resolve_file_id_for_day(
     db: D1Database,
     source_election_id: str,
     ev_date: str,
 ) -> str | None:
-    election_id = require_election_id(source_election_id)
-    try:
-        row = await db.prepare(_DAY_FILE_SQL).bind(election_id, ev_date).first()
-    except Exception:
-        return None
-    if row is None:
-        return None
-    file_id = _row_value(row, "file_id")
-    return file_id if isinstance(file_id, str) and file_id else None
+    day = await resolve_day_for_date(db, source_election_id, ev_date)
+    return day.file_id if day is not None else None
 
 
 async def load_chunks_b64(
@@ -170,6 +202,7 @@ async def load_published_bytes(
     *,
     kv_sha256: str,
     file_id: str | None = None,
+    expected_sha256: str | None = None,
 ) -> bytes | None:
     """Load one complete published file. ``file_id`` overrides pointer selection."""
     election_id = require_election_id(source_election_id)
@@ -185,7 +218,12 @@ async def load_published_bytes(
             return None
         target_id = published.file_id
     else:
-        target_id = file_id
+        want_hash = expected_sha256 if expected_sha256 is not None else kv_sha256
+        files = await load_file_views(db, election_id)
+        published = _trusted_file_view(files, file_id, want_hash)
+        if published is None:
+            return None
+        target_id = published.file_id
     chunks = await load_chunks_b64(db, election_id, target_id)
     if not chunks:
         return None

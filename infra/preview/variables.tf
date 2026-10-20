@@ -20,6 +20,17 @@ variable "environment" {
   }
 }
 
+variable "preview_source_election_id" {
+  type        = string
+  description = "source_election_id mapped to the preview D1 binding DB in EV_D1_BINDINGS."
+  default     = "53815"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.preview_source_election_id))
+    error_message = "preview_source_election_id must be digits only."
+  }
+}
+
 variable "primary_location_hint" {
   type        = string
   description = "D1 primary location hint for the preview shell database. enam is the US hint; it is not a residency lock."

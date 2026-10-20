@@ -17,7 +17,7 @@ from texas_turnout_scraper.early_vote_d1_read import (
     D1Database,
     load_day_rows,
     load_published_bytes,
-    resolve_file_id_for_day,
+    resolve_day_for_date,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,15 +98,22 @@ class WorkersAggregateStore:
         kv_sha256: str,
         ev_date: str,
         file_id: str | None = None,
+        day_sha256: str | None = None,
     ) -> dict[str, object] | None:
         resolved = file_id
+        expected = day_sha256
         if resolved is None:
-            resolved = await resolve_file_id_for_day(db, election_id, ev_date)
+            day = await resolve_day_for_date(db, election_id, ev_date)
+            if day is None:
+                return None
+            resolved = day.file_id
+            expected = day.sha256
         decoded = await load_published_bytes(
             db,
             election_id,
             kv_sha256=kv_sha256,
             file_id=resolved,
+            expected_sha256=expected,
         )
         if decoded is None:
             return None
@@ -152,6 +159,7 @@ class WorkersAggregateStore:
                     kv_sha256=kv_sha256,
                     ev_date=day.ev_date,
                     file_id=day.file_id,
+                    day_sha256=day.sha256,
                 )
                 if body is not None:
                     rolled.append((day.ev_date, body))
@@ -169,19 +177,26 @@ class WorkersAggregateStore:
                     kv_sha256=kv_sha256,
                     ev_date=day.ev_date,
                     file_id=day.file_id,
+                    day_sha256=day.sha256,
                 )
                 if body is not None:
                     rolled.append((day.ev_date, body))
             return build_county_by_day_series(source_election_id=election_id, days=tuple(rolled))
 
         file_id = None
+        expected_sha256 = None
         if ev_date is not None:
-            file_id = await resolve_file_id_for_day(db, election_id, ev_date)
+            day = await resolve_day_for_date(db, election_id, ev_date)
+            if day is None:
+                return None
+            file_id = day.file_id
+            expected_sha256 = day.sha256
         decoded = await load_published_bytes(
             db,
             election_id,
             kv_sha256=kv_sha256,
             file_id=file_id,
+            expected_sha256=expected_sha256,
         )
         if decoded is None:
             return None
