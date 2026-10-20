@@ -184,7 +184,7 @@ def test_list_elections_parses_correctly() -> None:
     with CivixClient(http_backend="httpx") as client:
         elections = client.list_elections()
 
-    assert len(elections) == 2
+    assert len(elections) == 3
     first = elections[0]
     assert first.source_election_id == "53813"
     assert isinstance(first.source_election_id, str)
@@ -198,8 +198,14 @@ def test_list_elections_parses_correctly() -> None:
     assert first.counties[0].county_id == 1
 
     second = elections[1]
-    assert second.election_type == ElectionType.SPECIAL
-    assert isinstance(second.source_election_id, str)
+    assert second.source_election_id == "53815"
+    assert second.election_name == "2026 NOVEMBER GENERAL ELECTION"
+    assert second.certified is False
+    assert len(second.early_voting_dates) == 2
+
+    third = elections[2]
+    assert third.election_type == ElectionType.SPECIAL
+    assert isinstance(third.source_election_id, str)
 
     _assert_http_mocked(1)
 
