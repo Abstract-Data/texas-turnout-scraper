@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import sys
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -82,6 +83,9 @@ EVR_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
 EVR_HTTP_MAX_RETRIES = 4
 EVR_TURNOUT_TIMEOUT_SECONDS = 60.0
 EVR_STATEWIDE_TIMEOUT_SECONDS = 180.0
+EVR_MIN_REQUEST_INTERVAL_SECONDS = 1.0
+
+_last_evr_request_monotonic = 0.0
 
 EarlyVotePayloadKind = Literal["turnout", "statewide_roster"]
 
@@ -202,11 +206,22 @@ class EarlyVoteStore(Protocol):
         digest: str,
         *,
         ev_date_iso: str | None = None,
+        update_pointer: bool = False,
     ) -> None:
         """Stage a new file_id and flip the pointer once every chunk is written."""
 
     def bump_version(self, election_id: str, digest: str) -> str:
         """Bump ``ev:<election>:version`` and then store ``digest``."""
+
+    def finalize_published_roster(
+        self,
+        election_id: str,
+        ev_date_iso: str,
+        content_digest: str,
+        *,
+        manifest_sha256: str | None = None,
+    ) -> str:
+        """Point ``early_vote_pointer`` at one day file and bump KV content hash."""
 
 
 class EmptyHashStore:
@@ -238,10 +253,21 @@ class EmptyHashStore:
         digest: str,
         *,
         ev_date_iso: str | None = None,
+        update_pointer: bool = False,
     ) -> None:
         raise EarlyVoteSyncError("refusing to write D1 without --apply")
 
     def bump_version(self, election_id: str, digest: str) -> str:
+        raise EarlyVoteSyncError("refusing to bump KV without --apply")
+
+    def finalize_published_roster(
+        self,
+        election_id: str,
+        ev_date_iso: str,
+        content_digest: str,
+        *,
+        manifest_sha256: str | None = None,
+    ) -> str:
         raise EarlyVoteSyncError("refusing to bump KV without --apply")
 
 
@@ -258,6 +284,11 @@ def version_key(election_id: str) -> str:
 def hash_key(election_id: str) -> str:
     """KV key holding the hash of the last file whose version bump succeeded."""
     return f"ev:{require_election_id(election_id)}:sha256"
+
+
+def manifest_key(election_id: str) -> str:
+    """KV key for optional backfill manifest digest (not a file content hash)."""
+    return f"ev:{require_election_id(election_id)}:manifest_sha256"
 
 
 def iso_ev_date(ev_day: date) -> str:
@@ -350,6 +381,13 @@ _DAY_UPSERT_SQL = (
     "INSERT INTO early_vote_day (source_election_id, ev_date, sha256, file_id) "
     "VALUES (?, ?, ?, ?) ON CONFLICT(source_election_id, ev_date) DO UPDATE SET "
     "sha256 = excluded.sha256, file_id = excluded.file_id"
+)
+_DAY_FILE_IDS_SQL = "SELECT file_id FROM early_vote_day WHERE source_election_id = ?"
+_SCHEMA_CREATES: tuple[str, ...] = (
+    _CHUNK_TABLE_SQL,
+    _FILE_TABLE_SQL,
+    _POINTER_TABLE_SQL,
+    _DAY_TABLE_SQL,
 )
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
 _FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"
@@ -485,12 +523,16 @@ def stale_file_ids(
     *,
     pointer_file_id: str | None,
     kv_hash_file_ids: Sequence[str],
+    day_file_ids: Sequence[str] = (),
 ) -> tuple[str, ...]:
-    """File ids to drop. Keep the pointer target and every KV-hash match."""
+    """File ids to drop. Keep pointer, KV-hash matches, and per-day backfill files."""
     keep: set[str] = set()
     if isinstance(pointer_file_id, str) and pointer_file_id:
         keep.add(pointer_file_id)
     for file_id in kv_hash_file_ids:
+        if file_id:
+            keep.add(file_id)
+    for file_id in day_file_ids:
         if file_id:
             keep.add(file_id)
     seen: set[str] = set()
@@ -645,7 +687,14 @@ def sync_early_vote(
             plan=plan,
         )
 
-    store.write_database(election_id, decoded, digest, ev_date_iso=ev_date_iso)
+    update_pointer = bool(ev_date_iso) and not defer_kv_bump
+    store.write_database(
+        election_id,
+        decoded,
+        digest,
+        ev_date_iso=ev_date_iso,
+        update_pointer=update_pointer,
+    )
     version = None
     if not defer_kv_bump:
         version = store.bump_version(election_id, digest)
@@ -728,6 +777,16 @@ def _assert_civix_host() -> None:
         raise EarlyVoteSyncError(f"Civix base URL must use host {CIVIX_EVR_HOST}")
 
 
+def _evr_throttle() -> None:
+    """≥1.0 s between Civix EVR requests (polite scrape policy)."""
+    global _last_evr_request_monotonic
+    now = time.monotonic()
+    wait = EVR_MIN_REQUEST_INTERVAL_SECONDS - (now - _last_evr_request_monotonic)
+    if wait > 0:
+        time.sleep(wait)
+    _last_evr_request_monotonic = time.monotonic()
+
+
 def _evr_paced_client(
     http_backend: HttpBackend,
     *,
@@ -751,6 +810,7 @@ def _evr_get(
     client: httpx.Client | None = None,
 ) -> Any:
     """Polite Civix GET with Abstract Data User-Agent and 429/503 backoff."""
+    _evr_throttle()
     if client is not None:
         response = client.get(f"{BASE_URL}{path}", params=params)
         response.raise_for_status()
@@ -867,7 +927,10 @@ class CloudflareEarlyVoteStore:
     def stored_hash(self, election_id: str, *, ev_date_iso: str | None = None) -> str | None:
         if ev_date_iso:
             election_id = require_election_id(election_id)
-            database_id = self._ensure_one_database(election_id)
+            database_id = self._database_uuid_if_exists(election_id)
+            if database_id is None:
+                return None
+            self._ensure_schema(database_id)
             rows = self._query_rows(
                 database_id,
                 _DAY_SELECT_HASH_SQL,
@@ -890,17 +953,23 @@ class CloudflareEarlyVoteStore:
         digest: str,
         *,
         ev_date_iso: str | None = None,
+        update_pointer: bool = False,
     ) -> None:
         election_id = require_election_id(election_id)
         assert_within_cap(len(decoded), election_id)
         database_id = self._ensure_one_database(election_id)
         self._reject_legacy_schema(database_id)
+        self._ensure_schema(database_id)
         plan = build_publish_plan(election_id, decoded, digest, new_file_id(digest))
-        creates = [_statement_lists(item) for item in plan.creates]
-        self._statements(database_id, creates)
         if ev_date_iso:
             self._write_day_scoped(
-                database_id, election_id, ev_date_iso, plan, digest, len(decoded)
+                database_id,
+                election_id,
+                ev_date_iso,
+                plan,
+                digest,
+                len(decoded),
+                update_pointer=update_pointer,
             )
             return
         # Previous complete files stay until a later run. This pass only drops
@@ -927,22 +996,19 @@ class CloudflareEarlyVoteStore:
         plan: PublishPlan,
         digest: str,
         decoded_len: int,
+        *,
+        update_pointer: bool = False,
     ) -> None:
         rows = self._query_rows(
             database_id,
             _DAY_SELECT_FILE_SQL,
             [election_id, ev_date_iso],
         )
+        old_id: str | None = None
         if rows:
-            old_id = rows[0].get("file_id")
-            if isinstance(old_id, str) and old_id:
-                self._statements(
-                    database_id,
-                    [
-                        (_DELETE_CHUNK_SQL, [election_id, old_id]),
-                        (_DELETE_FILE_SQL, [election_id, old_id]),
-                    ],
-                )
+            candidate = rows[0].get("file_id")
+            if isinstance(candidate, str) and candidate:
+                old_id = candidate
         self._insert_chunks(database_id, plan.chunk_inserts)
         self._statements(database_id, [_statement_lists(plan.file_insert)])
         self._statements(
@@ -954,6 +1020,19 @@ class CloudflareEarlyVoteStore:
                 )
             ],
         )
+        if update_pointer:
+            self._statements(
+                database_id,
+                [_statement_lists(plan.pointer_update)],
+            )
+        if old_id and old_id != plan.file_id:
+            self._statements(
+                database_id,
+                [
+                    (_DELETE_CHUNK_SQL, [election_id, old_id]),
+                    (_DELETE_FILE_SQL, [election_id, old_id]),
+                ],
+            )
         logger.info(
             "early-vote D1 day upsert election_id=%s ev_date=%s database=%s "
             "chunks=%s decoded_bytes=%s",
@@ -971,7 +1050,13 @@ class CloudflareEarlyVoteStore:
         hash_ids: tuple[str, ...] = ()
         if digest is not None:
             hash_ids = self._file_ids_for_hash(database_id, election_id, digest)
-        stale = stale_file_ids(present, pointer_file_id=pointer, kv_hash_file_ids=hash_ids)
+        day_ids = self._day_scoped_file_ids(database_id, election_id)
+        stale = stale_file_ids(
+            present,
+            pointer_file_id=pointer,
+            kv_hash_file_ids=hash_ids,
+            day_file_ids=day_ids,
+        )
         if not stale:
             return
         rows: list[tuple[str, list[str]]] = []
@@ -997,13 +1082,74 @@ class CloudflareEarlyVoteStore:
         return tuple(_string_column(rows, "file_id"))
 
     def bump_version(self, election_id: str, digest: str) -> str:
-        """Write the version key, then the hash key. A failed D1 write never calls this."""
+        """Write the version key, then the file content hash key."""
         key = version_key(election_id)
         current = self._kv_get(key)
         nxt = _next_version(current)
         self._kv_put(key, nxt)
         self._kv_put(hash_key(election_id), digest)
         return nxt
+
+    def finalize_published_roster(
+        self,
+        election_id: str,
+        ev_date_iso: str,
+        content_digest: str,
+        *,
+        manifest_sha256: str | None = None,
+    ) -> str:
+        """Flip pointer to one day's complete file, then bump KV with its content hash."""
+        election_id = require_election_id(election_id)
+        database_id = self._database_uuid_if_exists(election_id)
+        if database_id is None:
+            raise EarlyVoteSyncError(
+                f"election_id {election_id}: cannot publish roster before D1 database exists"
+            )
+        rows = self._query_rows(
+            database_id,
+            _DAY_SELECT_FILE_SQL,
+            [election_id, ev_date_iso],
+        )
+        if not rows:
+            raise EarlyVoteSyncError(
+                f"election_id {election_id}: no early_vote_day row for ev_date={ev_date_iso}"
+            )
+        file_id = rows[0].get("file_id")
+        if not isinstance(file_id, str) or not file_id:
+            raise EarlyVoteSyncError("early_vote_day file_id is not a string")
+        self._statements(
+            database_id,
+            [(_POINTER_UPSERT_SQL, [election_id, file_id])],
+        )
+        version = self.bump_version(election_id, content_digest)
+        if manifest_sha256:
+            self._kv_put(manifest_key(election_id), manifest_sha256)
+        return version
+
+    def _database_uuid_if_exists(self, election_id: str) -> str | None:
+        name = database_name(election_id)
+        matches = self._list_exact_names(name)
+        if len(matches) > 1:
+            raise EarlyVoteSyncError(
+                f"election {election_id} matched {len(matches)} D1 databases "
+                "named for that election; refusing to read"
+            )
+        if len(matches) == 0:
+            return None
+        uuid = matches[0].get("uuid")
+        if not isinstance(uuid, str) or not uuid:
+            raise EarlyVoteSyncError("D1 database is missing a uuid")
+        return uuid
+
+    def _ensure_schema(self, database_id: str) -> None:
+        self._statements(
+            database_id,
+            [(sql, []) for sql in _SCHEMA_CREATES],
+        )
+
+    def _day_scoped_file_ids(self, database_id: str, election_id: str) -> tuple[str, ...]:
+        rows = self._query_rows(database_id, _DAY_FILE_IDS_SQL, [election_id])
+        return tuple(_string_column(rows, "file_id"))
 
     def _ensure_one_database(self, election_id: str) -> str:
         name = database_name(election_id)
@@ -1361,12 +1507,16 @@ def main(argv: list[str] | None = None) -> int:
             args.http_backend,
             payload_kind,
         )
+        ev_date_iso: str | None = None
+        if payload_kind == "statewide_roster" and election_date:
+            ev_date_iso = parse_mdy(election_date).isoformat()
         result = sync_early_vote(
             args.election_id,
             response,
             store,
             dry_run=args.dry_run,
             payload_kind=payload_kind,
+            ev_date_iso=ev_date_iso,
         )
     except (EarlyVoteCapError, EarlyVoteSyncError, ValueError) as exc:
         logger.error("%s", exc)

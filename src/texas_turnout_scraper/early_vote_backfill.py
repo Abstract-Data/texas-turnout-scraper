@@ -1,8 +1,8 @@
 """Backfill all published Civix EV roster dates into one election D1 database.
 
-KV ``ev:<election>:version`` bumps **once** after every day in the run succeeds
-or is skipped as unchanged. The KV ``sha256`` value is a manifest digest over
-sorted per-day content hashes (not one day's file hash).
+KV ``ev:<election>:version`` bumps **once** after backfill when at least one day
+was written. KV ``ev:<election>:sha256`` stays the **published file content hash**
+(latest loaded day). Optional manifest digest lives at ``ev:<election>:manifest_sha256``.
 
 Per-day idempotency uses D1 ``early_vote_day`` rows; re-running backfill does
 not duplicate chunk rows for a day whose redacted payload hash is unchanged.
@@ -215,7 +215,7 @@ def latest_published_ev_date(ev_dates: tuple[date, ...], *, today: date | None =
     cutoff = today or datetime.now(tz=timezone.utc).date()
     eligible = [day for day in ev_dates if day <= cutoff]
     if not eligible:
-        return ev_dates[-1]
+        raise EarlyVoteSyncError("no EV dates on or before today in Civix index")
     return max(eligible)
 
 
@@ -226,18 +226,33 @@ def latest_loadable_ev_date(
     today: date | None = None,
     http_backend: str = "httpx",
 ) -> date:
-    """Latest calendar EV date on or before ``today`` with a non-empty statewide roster."""
-    plan = plan_backfill_load_dates(
-        election_id,
-        calendar_dates,
-        today=today,
-        http_backend=http_backend,
-    )
-    if not plan.load_dates:
-        raise EarlyVoteSyncError(
-            f"election_id {election_id}: no EV dates with roster data on or before today"
+    """Newest eligible calendar day with a non-empty roster (probe newest-first)."""
+    election_id = require_election_id(election_id)
+    if not calendar_dates:
+        raise EarlyVoteSyncError("no calendar EV dates to choose from")
+    cutoff = today or datetime.now(tz=timezone.utc).date()
+    eligible = sorted((day for day in calendar_dates if day <= cutoff), reverse=True)
+    if not eligible:
+        raise EarlyVoteSyncError("no EV dates on or before today in Civix index")
+    for ev_day in eligible:
+        has_rows, decoded_bytes, est_rows = probe_statewide_roster_day(
+            election_id,
+            ev_day,
+            http_backend=http_backend,
         )
-    return plan.load_dates[-1]
+        if has_rows:
+            logger.info(
+                "early-vote latest loadable election_id=%s ev_date=%s "
+                "decoded_bytes=%s est_rows=%s",
+                election_id,
+                iso_ev_date(ev_day),
+                decoded_bytes,
+                est_rows,
+            )
+            return ev_day
+    raise EarlyVoteSyncError(
+        f"election_id {election_id}: no EV dates with roster data on or before today"
+    )
 
 
 def run_backfill(
@@ -314,15 +329,22 @@ def run_backfill(
 
     manifest = backfill_manifest_digest(manifest_inputs) if manifest_inputs else ""
     kv_version: str | None = None
-    if not dry_run and manifest_inputs and (wrote > 0 or unchanged > 0):
-        kv_version = store.bump_version(election_id, manifest)
+    if not dry_run and wrote > 0 and day_results:
+        latest_day = max(day_results, key=lambda item: item.ev_date_iso)
+        kv_version = store.finalize_published_roster(
+            election_id,
+            latest_day.ev_date_iso,
+            latest_day.sha256,
+            manifest_sha256=manifest or None,
+        )
         logger.info(
             "early-vote backfill complete election_id=%s load_days=%s "
-            "wrote=%s unchanged=%s version=%s",
+            "wrote=%s unchanged=%s published_ev_date=%s version=%s",
             election_id,
             len(plan.load_dates),
             wrote,
             unchanged,
+            latest_day.ev_date_iso,
             kv_version,
         )
     elif dry_run:
@@ -373,9 +395,10 @@ def format_backfill_report(result: BackfillResult) -> str:
     ]
     if result.kv_version is not None:
         lines.append(f"kv_version={result.kv_version}")
-        lines.append("kv_bump=once_at_end")
+        lines.append("kv_bump=once_at_end_content_hash")
+        lines.append(f"kv_manifest_key=ev:{result.election_id}:manifest_sha256")
     else:
-        lines.append("kv_bump=deferred_or_dry_run")
+        lines.append("kv_bump=deferred_or_dry_run_or_unchanged")
     for day in result.days:
         lines.append(
             f"day ev_date={day.ev_date_iso} status={day.status} "

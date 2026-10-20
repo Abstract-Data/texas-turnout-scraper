@@ -16,6 +16,7 @@ from texas_turnout_scraper.early_vote_backfill import (
     BackfillDatePlan,
     find_election_ev_dates,
     format_backfill_report,
+    latest_loadable_ev_date,
     latest_published_ev_date,
     plan_backfill_load_dates,
     run_backfill,
@@ -31,6 +32,9 @@ class _BackfillStore:
     def __init__(self) -> None:
         self.day_hashes: dict[tuple[str, str], str] = {}
         self.bump_count = 0
+        self.kv_content_hash: str | None = None
+        self.manifest_sha256: str | None = None
+        self.published_ev_date: str | None = None
 
     def stored_hash(self, election_id: str, *, ev_date_iso: str | None = None) -> str | None:
         if ev_date_iso:
@@ -44,6 +48,7 @@ class _BackfillStore:
         digest: str,
         *,
         ev_date_iso: str | None = None,
+        update_pointer: bool = False,
     ) -> None:
         if not ev_date_iso:
             raise EarlyVoteSyncError("expected ev_date_iso")
@@ -51,6 +56,21 @@ class _BackfillStore:
 
     def bump_version(self, election_id: str, digest: str) -> str:
         self.bump_count += 1
+        self.kv_content_hash = digest
+        return str(self.bump_count)
+
+    def finalize_published_roster(
+        self,
+        election_id: str,
+        ev_date_iso: str,
+        content_digest: str,
+        *,
+        manifest_sha256: str | None = None,
+    ) -> str:
+        self.bump_count += 1
+        self.kv_content_hash = content_digest
+        self.manifest_sha256 = manifest_sha256
+        self.published_ev_date = ev_date_iso
         return str(self.bump_count)
 
 
@@ -96,6 +116,29 @@ def test_latest_published_ev_date_respects_today() -> None:
     ev_dates = (date(2026, 10, 14), date(2026, 10, 20))
     assert latest_published_ev_date(ev_dates, today=date(2026, 10, 18)) == date(2026, 10, 14)
     assert latest_published_ev_date(ev_dates, today=date(2026, 10, 25)) == date(2026, 10, 20)
+    with pytest.raises(EarlyVoteSyncError, match="on or before today"):
+        latest_published_ev_date(ev_dates, today=date(2026, 10, 10))
+
+
+def test_latest_loadable_probes_newest_first() -> None:
+    calendar = (date(2026, 10, 14), date(2026, 10, 15), date(2026, 10, 16))
+    calls: list[date] = []
+
+    def fake_probe(_eid: str, ev_day: date, **_: object) -> tuple[bool, int, int]:
+        calls.append(ev_day)
+        return ev_day == date(2026, 10, 15), 10, 1
+
+    with patch(
+        "texas_turnout_scraper.early_vote_backfill.probe_statewide_roster_day",
+        side_effect=fake_probe,
+    ):
+        picked = latest_loadable_ev_date(
+            DEFAULT_NOV_2026_GENERAL_ID,
+            calendar,
+            today=date(2026, 10, 20),
+        )
+    assert picked == date(2026, 10, 15)
+    assert calls == [date(2026, 10, 16), date(2026, 10, 15)]
 
 
 def test_backfill_manifest_digest_is_order_independent() -> None:
@@ -192,9 +235,12 @@ def test_per_day_idempotency_and_single_kv_bump() -> None:
 
     assert first.days_wrote == 2
     assert second.days_unchanged == 2
-    assert store.bump_count == 2
+    assert store.bump_count == 1
     assert first.kv_version is not None
-    assert second.kv_version is not None
+    assert second.kv_version is None
+    assert store.published_ev_date == "2026-10-15"
+    assert store.kv_content_hash == first.days[-1].sha256
+    assert store.manifest_sha256 == first.manifest_sha256
 
 
 def test_sync_defer_kv_bump_skips_version() -> None:

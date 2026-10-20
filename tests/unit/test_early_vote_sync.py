@@ -18,6 +18,7 @@ import respx
 from texas_turnout_scraper.civix.evr import API_PREFIX, BASE_URL
 from texas_turnout_scraper.early_vote_sync import (
     _CHUNK_INSERT_SQL,
+    _DAY_FILE_IDS_SQL,
     _DELETE_CHUNK_SQL,
     _DELETE_FILE_SQL,
     _FILE_ID_FOR_HASH_SQL,
@@ -85,6 +86,7 @@ class RecordingStore:
         digest: str,
         *,
         ev_date_iso: str | None = None,
+        update_pointer: bool = False,
     ) -> None:
         self.calls.append(f"write:{election_id}:{ev_date_iso or ''}")
         if self.fail_write:
@@ -92,6 +94,8 @@ class RecordingStore:
         self.written = decoded
         if ev_date_iso:
             self.day_hashes[(election_id, ev_date_iso)] = digest
+        if update_pointer:
+            self.calls.append(f"pointer:{election_id}")
 
     def bump_version(self, election_id: str, digest: str) -> str:
         self.calls.append(f"bump:{election_id}")
@@ -99,6 +103,17 @@ class RecordingStore:
         self.version = "2"
         self.stored = digest
         return self.version
+
+    def finalize_published_roster(
+        self,
+        election_id: str,
+        ev_date_iso: str,
+        content_digest: str,
+        *,
+        manifest_sha256: str | None = None,
+    ) -> str:
+        self.calls.append(f"finalize:{election_id}:{ev_date_iso}")
+        return self.bump_version(election_id, content_digest)
 
 
 def _envelope(payload: bytes) -> httpx.Response:
@@ -825,6 +840,7 @@ class _MemoryD1:
         return httpx.Response(200, json={"success": True, "result": results})
 
     def _apply_sql(self, sql: str, params: list[str]) -> dict[str, object] | None:
+        sql = sql.strip()
         if "pragma_table_info" in sql:
             self.order.append("schema")
             if "early_vote_chunk" in sql:
@@ -839,6 +855,9 @@ class _MemoryD1:
             self.selections.append(found)
             self.order.append("file-ids")
             return {"success": True, "results": [{"file_id": file_id} for file_id in found]}
+        if sql == _DAY_FILE_IDS_SQL:
+            self.order.append("day-file-ids")
+            return {"success": True, "results": []}
         if sql == _POINTER_SELECT_SQL:
             self.order.append("select-pointer")
             file_id = self.pointer.get(params[0])
@@ -1069,6 +1088,16 @@ def test_stale_file_ids_keep_pointer_and_kv_hash() -> None:
         kv_hash_file_ids=("hash-file",),
     )
 
+    assert stale == ("orphan",)
+
+
+def test_stale_file_ids_keep_day_scoped_files() -> None:
+    stale = stale_file_ids(
+        ["pointer", "day-a", "day-b", "orphan"],
+        pointer_file_id="pointer",
+        kv_hash_file_ids=(),
+        day_file_ids=("day-a", "day-b"),
+    )
     assert stale == ("orphan",)
 
 
