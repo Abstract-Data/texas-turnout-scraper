@@ -386,7 +386,7 @@ async def create_tcp_listener(
         and any(fam == AddressFamily.AF_INET6 for fam, *_ in gai_res)
     ):
         raw_socket = setup_raw_socket(
-            AddressFamily.AF_INET6, ("::", local_port), v6only=False
+            AddressFamily.AF_INET6, ("::1", local_port), v6only=False
         )
         listener = asynclib.create_tcp_listener(raw_socket)
         return MultiListener([listener])
