@@ -6,6 +6,23 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.6](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.5...texas-turnout-scraper-v0.2.6) (2026-10-20)
+
+
+### Features
+
+* **civix:** add swappable early-vote read client ([#18](https://github.com/Abstract-Data/texas-turnout-scraper/issues/18)) ([a7d8295](https://github.com/Abstract-Data/texas-turnout-scraper/commit/a7d82954be4749e5b8e8246b001b6831b0c6242e))
+* **early-vote:** Civix EVR_STATEWIDE roster sync to D1 (Phase 2) ([#29](https://github.com/Abstract-Data/texas-turnout-scraper/issues/29)) ([dbe5385](https://github.com/Abstract-Data/texas-turnout-scraper/commit/dbe5385a71068d4e1dcb4f8ed8f65d33d0eb43b8))
+* **early-vote:** D1 VUID dup schema and pure roster compare ([#37](https://github.com/Abstract-Data/texas-turnout-scraper/issues/37)) ([cca9f79](https://github.com/Abstract-Data/texas-turnout-scraper/commit/cca9f79c4ed4e85ed6ec29ed092d31b285800d29))
+* **ev-api:** preview aggregate read Worker ([#22](https://github.com/Abstract-Data/texas-turnout-scraper/issues/22)) ([e9233ff](https://github.com/Abstract-Data/texas-turnout-scraper/commit/e9233ff08bd9ba443a231e96d0b7700666f8b669))
+
+
+### Bug Fixes
+
+* **preview:** deep-review pywrangler drift + JS module MIME ([3881e6f](https://github.com/Abstract-Data/texas-turnout-scraper/commit/3881e6f0d72bf3f078e658e03a239a19a5288794))
+* **preview:** vendor workers-runtime-sdk for Python Worker Terraform upload ([a488853](https://github.com/Abstract-Data/texas-turnout-scraper/commit/a4888538b8d1cc0fa8eaab381aaa17d928321795))
+* **preview:** vendor workers-runtime-sdk for Python Worker upload ([bd66da5](https://github.com/Abstract-Data/texas-turnout-scraper/commit/bd66da5dde6869ab7303679ec91a125660265f22))
+
 ## [0.2.5](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.4...texas-turnout-scraper-v0.2.5) (2026-10-20)
 
 
