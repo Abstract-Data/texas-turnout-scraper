@@ -23,8 +23,13 @@ def test_workflow_run_scripts_do_not_interpolate_inputs() -> None:
             in_run = False
     text = "\n".join(lines)
     assert run_blocks >= 4
-    assert "group: early-vote-sync-${{ inputs.election_id }}" in text
+    assert (
+        "group: early-vote-sync-${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}"
+        in text
+    )
+    assert "0 3,15 * * *" in text
+    assert "sync_mode" in text
     assert "cancel-in-progress: false" in text
     assert text.count("election_id must be digits only") == 2
-    assert text.count("election_date must be MM/DD/YYYY") == 4
+    assert text.count("election_date is required when sync_mode=single") == 2
     assert "secrets." not in text.split("jobs:", 1)[1].split("apply:", 1)[0]
