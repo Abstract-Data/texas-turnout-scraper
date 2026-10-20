@@ -1,6 +1,6 @@
 Metadata-Version: 2.5
 Name: texas-turnout-scraper
-Version: 0.2.5
+Version: 0.2.6
 Summary: Texas SOS early-voting turnout scraper — httpx, Pydantic v2, Typer CLI, FastMCP server
 Author-email: "John R. Eakin" <johnreakin@gmail.com>
 Requires-Python: <3.13,>=3.10.5

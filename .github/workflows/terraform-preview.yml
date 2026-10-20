@@ -55,6 +55,12 @@ jobs:
             fi
           fi
 
+      - name: Preview Worker Pyodide startup smoke
+        working-directory: infra/preview/worker
+        run: |
+          set -euo pipefail
+          bash scripts/verify_pyodide_startup.sh
+
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.13.4"

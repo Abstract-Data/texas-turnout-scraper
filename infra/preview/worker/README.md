@@ -22,6 +22,10 @@ uv run pywrangler sync --force
 
 Commit `python_modules/`, `pylock.toml`, and `uv.lock` when dependencies change.
 
+PyEmscripten native modules (`*.cpython-*-wasm32-emscripten.so` under `python_modules/`) must be committed. Root `.gitignore` ignores `*.so` globally but un-ignores that path; without the `.so` files, Workers deploy fails at script validation (`ImportError` for `pydantic_core.ArgsKwargs`).
+
+CI runs `scripts/verify_pyodide_startup.sh` after `pywrangler sync` to catch missing extensions and import failures before Terraform apply.
+
 ## HTTP surface (Access service token required)
 
 - `GET /elections/{source_election_id}/aggregates/totals?ev_date=`
