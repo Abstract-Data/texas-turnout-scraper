@@ -48,6 +48,7 @@ from .models import (
     CountyInfoPayload,
     ElectionPayload,
 )
+from .read_client import EarlyVoteReadClient
 from .transport import DEFAULT_ARCHIVE_BASE_URL, DEFAULT_ENR_BASE_URL
 
 __all__ = [
@@ -69,6 +70,7 @@ __all__ = [
     "CivixElectionPayload",
     "CivixElectionRef",
     "CountyInfoPayload",
+    "EarlyVoteReadClient",
     "ElectionPayload",
     "_decode_envelope",
     "decode_county_info_payload",
