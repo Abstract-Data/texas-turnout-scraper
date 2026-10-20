@@ -28,6 +28,8 @@ from texas_turnout_scraper.early_vote_sync import (
     CHUNK_RAW_BYTES,
     CLOUDFLARE_API_BASE,
     D1_DATABASE_CAP_BYTES,
+    EVR_HTTP_USER_AGENT,
+    EVR_RETRY_STATUS_CODES,
     KV_NOT_FOR_ELECTION_NIGHT,
     PEAK_STORED_COPIES,
     CloudflareEarlyVoteStore,
@@ -45,6 +47,7 @@ from texas_turnout_scraper.early_vote_sync import (
     hash_key,
     main,
     pull_early_vote_file,
+    pull_statewide_roster_file,
     sha256_decoded,
     stale_file_ids,
     sync_early_vote,
@@ -52,6 +55,9 @@ from texas_turnout_scraper.early_vote_sync import (
 )
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "early_vote" / "sample_envelope.json"
+STATEWIDE_FIXTURE = (
+    Path(__file__).parent.parent / "fixtures" / "early_vote" / "statewide_roster_envelope.json"
+)
 ACCOUNT = "00000000000000000000000000000001"
 NAMESPACE = "ns-test"
 
@@ -227,6 +233,49 @@ def test_invalid_election_id_is_rejected_before_a_write() -> None:
     with pytest.raises(ValueError, match="election id"):
         sync_early_vote("0", _envelope(b"x"), store)
     assert store.calls == []
+
+
+def test_statewide_roster_dry_run_reports_columns_not_rows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        [
+            "--election-id",
+            "53815",
+            "--envelope-file",
+            str(STATEWIDE_FIXTURE),
+            "--payload-kind",
+            "statewide_roster",
+            "--dry-run",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "payload_kind=statewide_roster" in captured.out
+    assert "csv_columns=COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT" in captured.out
+    assert "dropped_columns=POLL_PLACE_NAME" in captured.out
+    assert "voting_method_counts=IN-PERSON:1,MAIL-IN:2" in captured.out
+    assert "source_rows=3" in captured.out
+    assert "SMITH" not in captured.out
+    assert "1000000001" not in captured.out
+
+
+def test_pull_statewide_retries_503_and_sets_user_agent() -> None:
+    payload = b"COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\n"
+    encoded = base64.b64encode(payload).decode("ascii")
+    with respx.mock:
+        route = respx.get(f"{BASE_URL}{API_PREFIX}/getFile").mock(
+            side_effect=[
+                httpx.Response(503),
+                httpx.Response(200, json={"upload": encoded}),
+            ]
+        )
+        response = pull_statewide_roster_file("53815", date(2026, 10, 20), http_backend="httpx")
+        assert route.call_count == 2
+        assert "Abstract-Data" in route.calls[0].request.headers.get("User-Agent", "")
+        assert response.json()["upload"] == encoded
+    assert 503 in EVR_RETRY_STATUS_CODES
+    assert "Abstract-Data" in EVR_HTTP_USER_AGENT
 
 
 def test_pull_sends_election_id_as_a_string() -> None:

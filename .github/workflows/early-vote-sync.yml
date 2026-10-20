@@ -42,6 +42,14 @@ on:
         options:
           - "true"
           - "false"
+      payload_kind:
+        description: "turnout JSON or statewide roster CSV (EVR_STATEWIDE, redacted before D1)"
+        required: true
+        default: "statewide_roster"
+        type: choice
+        options:
+          - "statewide_roster"
+          - "turnout"
 
 permissions:
   contents: read
@@ -99,11 +107,13 @@ jobs:
         env:
           ELECTION_ID: ${{ inputs.election_id }}
           ELECTION_DATE: ${{ inputs.election_date }}
+          PAYLOAD_KIND: ${{ inputs.payload_kind }}
         run: |
           set -euo pipefail
           uv run python -m texas_turnout_scraper.early_vote_sync \
             --election-id "${ELECTION_ID}" \
             --date "${ELECTION_DATE}" \
+            --payload-kind "${PAYLOAD_KIND}" \
             --http-backend cloudscraper \
             --dry-run
 
@@ -171,11 +181,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ELECTION_ID: ${{ inputs.election_id }}
           ELECTION_DATE: ${{ inputs.election_date }}
+          PAYLOAD_KIND: ${{ inputs.payload_kind }}
         run: |
           set -euo pipefail
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
             uv run python -m texas_turnout_scraper.early_vote_sync \
             --election-id "${ELECTION_ID}" \
             --date "${ELECTION_DATE}" \
+            --payload-kind "${PAYLOAD_KIND}" \
             --http-backend cloudscraper \
             --apply
