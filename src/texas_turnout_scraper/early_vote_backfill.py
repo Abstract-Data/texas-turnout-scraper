@@ -192,8 +192,7 @@ def plan_backfill_load_dates(
             continue
         load.append(ev_day)
         logger.info(
-            "early-vote backfill will load election_id=%s ev_date=%s "
-            "decoded_bytes=%s est_rows=%s",
+            "early-vote backfill will load election_id=%s ev_date=%s decoded_bytes=%s est_rows=%s",
             election_id,
             iso,
             decoded_bytes,

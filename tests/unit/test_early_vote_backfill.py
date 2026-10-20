@@ -163,8 +163,7 @@ def test_backfill_dry_run_lists_days_without_pii(capsys: pytest.CaptureFixture[s
 
 def test_per_day_idempotency_and_single_kv_bump() -> None:
     payload = (
-        b"COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\n"
-        b"TEST,REDACTED,0000000001,IN-PERSON,1\n"
+        b"COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\nTEST,REDACTED,0000000001,IN-PERSON,1\n"
     )
     encoded = base64.b64encode(payload).decode("ascii")
     response = httpx.Response(200, json={"upload": encoded})
