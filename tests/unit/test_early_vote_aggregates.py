@@ -41,11 +41,11 @@ def test_turnout_json_statewide_and_county_totals() -> None:
 
 def test_roster_csv_method_split_without_pii_fields() -> None:
     csv = (
-        "COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\n"
-        "TRAVIS,Secret,0000000001,IN-PERSON,1\n"
-        "TRAVIS,Secret,0000000002,MAIL-IN,1\n"
-        "HARRIS,Secret,0000000003,IN-PERSON,2\n"
-    ).encode()
+        b"COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\n"
+        b"TRAVIS,Secret,0000000001,IN-PERSON,1\n"
+        b"TRAVIS,Secret,0000000002,MAIL-IN,1\n"
+        b"HARRIS,Secret,0000000003,IN-PERSON,2\n"
+    )
     body = aggregates_from_roster_csv(csv, source_election_id="53815")
     assert body["statewide"]["total"] == 3
     assert body["statewide"]["in_person"] == 2

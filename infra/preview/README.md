@@ -84,3 +84,27 @@ endpoints = { s3 = "<TF_STATE_ENDPOINT>" }
 Send the id as `CF-Access-Client-Id` and the secret as `CF-Access-Client-Secret`. Do not log either value.
 
 The preview Worker version binds `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (from the Access service token above), and `EV_D1_BINDINGS` (JSON map from `preview_source_election_id` to the `DB` D1 binding). Rotating the service token requires `terraform apply` so the Worker bindings pick up the new values.
+
+## Consumer bearer tokens (minted)
+
+Internal callers keep using Cloudflare Access. External consumers use minted tokens:
+
+- `Authorization: Bearer <token>` or `X-API-Key: <token>` on aggregate routes.
+- Only SHA-256 digests are stored. KV key prefix `consumer_token:<digest>` mirrors active rows in preview shell D1 table `consumer_api_token` (created on first `tx-turnout tokens mint`).
+
+John manages tokens locally (1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a` plus Terraform outputs):
+
+| Variable | Source |
+| --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID` | Same as Terraform |
+| `CLOUDFLARE_API_TOKEN` | Same scopes as early-vote sync |
+| `CLOUDFLARE_PREVIEW_D1_DATABASE_ID` | `terraform output -raw d1_database_id` |
+| `CLOUDFLARE_KV_NAMESPACE_ID` | `terraform output -raw kv_namespace_id` |
+
+```bash
+tx-turnout tokens mint --label "partner name"   # prints plaintext once
+tx-turnout tokens list
+tx-turnout tokens revoke <token_id>
+```
+
+No Terraform apply is required for the token table; DDL is idempotent via the CLI. Do not commit or log plaintext tokens.

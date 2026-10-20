@@ -26,7 +26,7 @@ PyEmscripten native modules (`*.cpython-*-wasm32-emscripten.so` under `python_mo
 
 CI runs `scripts/verify_pyodide_startup.sh` after `pywrangler sync` to catch missing extensions and import failures before Terraform apply.
 
-## HTTP surface (Access service token required)
+## HTTP surface (Access service token or consumer bearer/API key)
 
 - `GET /elections/{source_election_id}/aggregates/totals?ev_date=`
 - `GET /elections/{source_election_id}/aggregates/county?ev_date=`
