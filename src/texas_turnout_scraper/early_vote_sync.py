@@ -506,7 +506,10 @@ def summarize_d1_plan(
             chunk_rows += 1
         elif sql == _FILE_INSERT_SQL:
             file_rows += 1
-    source_rows = roster_summary.est_rows if roster_summary is not None else source_row_count(decoded)
+    if roster_summary is not None:
+        source_rows = roster_summary.est_rows
+    else:
+        source_rows = source_row_count(decoded)
     return D1Plan(
         statements=tuple((sql, counts[sql]) for sql in order),
         chunk_rows=chunk_rows,

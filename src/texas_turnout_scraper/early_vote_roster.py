@@ -63,7 +63,12 @@ def redact_roster_csv(decoded: bytes, *, statewide: bool) -> tuple[bytes, Roster
     text = decoded.decode("utf-8")
     reader = csv.DictReader(io.StringIO(text))
     if reader.fieldnames is None:
-        empty = RosterCsvSummary(columns=(), dropped_columns=(), est_rows=0, voting_method_counts=())
+        empty = RosterCsvSummary(
+            columns=(),
+            dropped_columns=(),
+            est_rows=0,
+            voting_method_counts=(),
+        )
         return b"", empty
 
     original_headers = [h for h in reader.fieldnames if h is not None]
