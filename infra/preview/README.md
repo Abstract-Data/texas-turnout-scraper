@@ -16,7 +16,7 @@ uv sync --frozen
 uv run pywrangler sync --force
 ```
 
-Commit `python_modules/` and `pylock.toml` with the change. CI re-runs `pywrangler sync` and fails if importable package trees or `pylock.toml` drift (wheel `.dist-info/` metadata is ignored — RECORD hashes and path-dep `direct_url.json` / `uv_cache.json` vary by machine).
+Commit `python_modules/` and `pylock.toml` with the change, including PyEmscripten `*.cpython-*-wasm32-emscripten.so` files (root `.gitignore` un-ignores them under `worker/python_modules/`). CI re-runs `pywrangler sync`, runs `scripts/verify_pyodide_startup.sh` (Pyodide import smoke), and fails if importable package trees or `pylock.toml` drift (wheel `.dist-info/` metadata is ignored — RECORD hashes and path-dep `direct_url.json` / `uv_cache.json` vary by machine).
 
 Root `pyproject.toml` lists `infra/preview/worker/python_modules` in Ruff `extend-exclude` so `ruff check .` does not lint vendored upstream SDK (do not hand-edit that tree).
 

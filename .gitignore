@@ -28,6 +28,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+# PyEmscripten wheels for the preview Python Worker (see infra/preview/worker/README.md)
+!infra/preview/worker/python_modules/**/*.cpython-*-wasm32-emscripten.so
 
 # Distribution / packaging
 .Python
