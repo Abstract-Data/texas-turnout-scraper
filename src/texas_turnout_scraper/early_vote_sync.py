@@ -5,8 +5,13 @@ The GitHub Action pulls one ``EVR_EARLYVOTING`` file, unwraps the
 A matching stored hash exits without a write. A new file is staged under a
 new ``file_id``: every chunk is inserted before the pointer moves. One
 ``INSERT ... ON CONFLICT`` then flips ``early_vote_pointer``. KV
-``ev:<election>:version`` bumps only after that flip. The previous file's
-chunks are deleted only after the bump.
+``ev:<election>:version`` bumps only after that flip. The previous complete
+file stays through KV propagation. Deleting it in this run would leave an
+edge reader that still holds the old hash with no complete file, and a
+reader mid-chunk could see a partial set. Stale ``file_id`` values — any id
+that is neither the current pointer target nor the file whose SHA-256 matches
+the stored KV hash — are deleted at the start of the next ``write_database``,
+from D1 rows, not from process memory.
 
 Readers — the Worker and the package read client — call
 :func:`choose_published_file` before touching chunk rows. Trust a file only
@@ -68,6 +73,13 @@ logger = logging.getLogger(__name__)
 # Cloudflare's published paid-plan cap is 10 GB (decimal), not 10 GiB.
 # https://developers.cloudflare.com/d1/platform/limits/
 D1_DATABASE_CAP_BYTES = 10_000_000_000
+
+# Peak complete files in one database while a publish is in flight:
+# the pointer target, the file that still matches the stored KV hash when
+# that is a different file_id (a bump that failed after the pointer flip),
+# and the new staged copy. Two copies would miss that window. Every payload
+# is base64: 4 stored bytes per 3 raw bytes.
+PEAK_STORED_COPIES = 3
 
 # Bound parameters are strings. Stay under the 100 KB SQL statement limit and
 # the 2 MB row limit by a wide margin.
@@ -159,9 +171,6 @@ class EarlyVoteStore(Protocol):
     def bump_version(self, election_id: str, digest: str) -> str:
         """Bump ``ev:<election>:version`` and then store ``digest``."""
 
-    def discard_replaced(self, election_id: str) -> None:
-        """Delete the previous file after the pointer swap and the KV bump."""
-
 
 class EmptyHashStore:
     """No Cloudflare calls.
@@ -182,9 +191,6 @@ class EmptyHashStore:
 
     def bump_version(self, election_id: str, digest: str) -> str:
         raise EarlyVoteSyncError("refusing to bump KV without --apply")
-
-    def discard_replaced(self, election_id: str) -> None:
-        raise EarlyVoteSyncError("refusing to delete D1 rows without --apply")
 
 
 def database_name(election_id: str) -> str:
@@ -207,15 +213,35 @@ def sha256_decoded(decoded: bytes) -> str:
     return hashlib.sha256(decoded).hexdigest()
 
 
-def assert_within_cap(byte_length: int, election_id: str) -> None:
-    """Refuse a load over 10 GB. Equal to the cap is still allowed.
+def base64_payload_bytes(raw_bytes: int) -> int:
+    """Stored size of one payload. Base64 uses 4 bytes for every 3 raw bytes."""
+    if raw_bytes < 0:
+        raise EarlyVoteCapError("decoded length is negative")
+    if raw_bytes == 0:
+        return 0
+    return 4 * ((raw_bytes + 2) // 3)
 
-    Does not create a database and does not open a second one.
+
+def estimated_stored_bytes(raw_bytes: int) -> int:
+    """Bytes one publish can hold: retained copies, each stored as base64."""
+    return base64_payload_bytes(raw_bytes) * PEAK_STORED_COPIES
+
+
+def assert_within_cap(byte_length: int, election_id: str) -> None:
+    """Refuse a load whose retained base64 copies would pass 10 GB.
+
+    A publish keeps the pointer file and, when it differs, the file that
+    still matches the stored KV hash, then stages the new copy. Each copy is
+    base64. Equal to the cap is still allowed. Does not create a database
+    and does not open a second one.
     """
-    if byte_length > D1_DATABASE_CAP_BYTES:
+    stored = estimated_stored_bytes(byte_length)
+    cap = D1_DATABASE_CAP_BYTES
+    if stored > cap:
         raise EarlyVoteCapError(
             f"early-vote file for election {election_id} is {byte_length} bytes, "
-            f"over the {D1_DATABASE_CAP_BYTES} byte D1 cap"
+            f"about {stored} stored bytes with {PEAK_STORED_COPIES} retained copies, "
+            f"over the {cap} byte D1 cap"
         )
 
 
@@ -244,6 +270,13 @@ _POINTER_UPSERT_SQL = (
 _DELETE_CHUNK_SQL = "DELETE FROM early_vote_chunk WHERE source_election_id = ? AND file_id = ?"
 _DELETE_FILE_SQL = "DELETE FROM early_vote_file WHERE source_election_id = ? AND file_id = ?"
 _POINTER_SELECT_SQL = "SELECT file_id FROM early_vote_pointer WHERE source_election_id = ?"
+_FILE_IDS_SQL = (
+    "SELECT file_id FROM early_vote_chunk WHERE source_election_id = ? "
+    "UNION SELECT file_id FROM early_vote_file WHERE source_election_id = ?"
+)
+_FILE_ID_FOR_HASH_SQL = (
+    "SELECT file_id FROM early_vote_file WHERE source_election_id = ? AND sha256 = ?"
+)
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
 _FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"
 
@@ -255,8 +288,8 @@ class PublishPlan:
     """Staged statements for one new file.
 
     ``pointer_update`` is a single statement and comes after every chunk insert.
-    Deletes of the previous file are not part of the plan: they run only after
-    the pointer flip and the KV bump.
+    Stale deletes are not bound here. Apply reads them from D1 before this
+    file is inserted, and this ``file_id`` is not one of them.
     """
 
     file_id: str
@@ -372,23 +405,51 @@ def source_row_count(decoded: bytes) -> int | None:
     return None
 
 
+def stale_file_ids(
+    present: Sequence[object],
+    *,
+    pointer_file_id: str | None,
+    kv_hash_file_ids: Sequence[str],
+) -> tuple[str, ...]:
+    """File ids to drop. Keep the pointer target and every KV-hash match."""
+    keep: set[str] = set()
+    if isinstance(pointer_file_id, str) and pointer_file_id:
+        keep.add(pointer_file_id)
+    for file_id in kv_hash_file_ids:
+        if file_id:
+            keep.add(file_id)
+    seen: set[str] = set()
+    stale: list[str] = []
+    for file_id in present:
+        if not isinstance(file_id, str) or not file_id or file_id in seen:
+            continue
+        seen.add(file_id)
+        if file_id not in keep:
+            stale.append(file_id)
+    return tuple(stale)
+
+
 def _plan_statements(plan: PublishPlan) -> tuple[Statement, ...]:
-    """Apply order, plus the post-bump deletes (previous file_id is bound later)."""
+    """Creates, then stale deletes from the previous run, then the new file.
+
+    Delete parameters are bound at apply time from D1. The file being
+    published is not in that set, so these statements do not name it.
+    """
     return (
         *plan.creates,
+        (_DELETE_CHUNK_SQL, ()),
+        (_DELETE_FILE_SQL, ()),
         *plan.chunk_inserts,
         plan.file_insert,
         plan.pointer_update,
-        (_DELETE_CHUNK_SQL, ()),
-        (_DELETE_FILE_SQL, ()),
     )
 
 
 def summarize_d1_plan(election_id: str, decoded: bytes, digest: str) -> D1Plan:
     """Statement text and row counts for a dry run. Bound parameters are dropped.
 
-    Delete statements are listed so the plan shows they exist. Apply runs them
-    only after the pointer swap and the KV bump, with the previous file_id.
+    Deletes are listed before the new inserts. Apply binds ``file_id`` from
+    D1 at the start of the write and skips the pointer target and the KV hash.
     """
     election_id = require_election_id(election_id)
     plan = build_publish_plan(election_id, decoded, digest, new_file_id(digest))
@@ -414,7 +475,7 @@ def summarize_d1_plan(election_id: str, decoded: bytes, digest: str) -> D1Plan:
         source_rows=source_row_count(decoded),
         decoded_bytes=len(decoded),
         cap_bytes=D1_DATABASE_CAP_BYTES,
-        within_cap=len(decoded) <= D1_DATABASE_CAP_BYTES,
+        within_cap=estimated_stored_bytes(len(decoded)) <= D1_DATABASE_CAP_BYTES,
     )
 
 
@@ -470,7 +531,6 @@ def sync_early_vote(
 
     store.write_database(election_id, decoded, digest)
     version = store.bump_version(election_id, digest)
-    store.discard_replaced(election_id)
     logger.info(
         "early-vote wrote election_id=%s sha256=%s decoded_bytes=%s version=%s",
         election_id,
@@ -600,8 +660,6 @@ class CloudflareEarlyVoteStore:
             headers={"Authorization": f"Bearer {api_token}"},
             timeout=60.0,
         )
-        self._publish_database_id: str | None = None
-        self._replaced_file_id: str | None = None
 
     def close(self) -> None:
         if self._owns_client:
@@ -621,14 +679,14 @@ class CloudflareEarlyVoteStore:
         self._reject_legacy_schema(database_id)
         plan = build_publish_plan(election_id, decoded, digest, new_file_id(digest))
         self._statements(database_id, [_statement_lists(item) for item in plan.creates])
-        previous = self._pointer_file_id(database_id, election_id)
+        # Previous complete files stay until a later run. This pass only drops
+        # ids that are already neither the pointer nor the stored KV hash.
+        self._delete_stale_files(database_id, election_id)
         self._insert_chunks(database_id, plan.chunk_inserts)
         self._statements(database_id, [_statement_lists(plan.file_insert)])
         # One statement, after every chunk. A failed batch before this leaves
         # the previous pointer in place.
         self._statements(database_id, [_statement_lists(plan.pointer_update)])
-        self._publish_database_id = database_id
-        self._replaced_file_id = None if previous == plan.file_id else previous
         logger.info(
             "early-vote D1 pointer swap election_id=%s database=%s chunks=%s decoded_bytes=%s",
             election_id,
@@ -637,26 +695,37 @@ class CloudflareEarlyVoteStore:
             len(decoded),
         )
 
-    def discard_replaced(self, election_id: str) -> None:
-        """Delete the file the pointer no longer names. Called after the KV bump."""
-        election_id = require_election_id(election_id)
-        previous = self._replaced_file_id
-        database_id = self._publish_database_id
-        self._replaced_file_id = None
-        self._publish_database_id = None
-        if previous is None or database_id is None:
+    def _delete_stale_files(self, database_id: str, election_id: str) -> None:
+        present = self._distinct_file_ids(database_id, election_id)
+        pointer = self._pointer_file_id(database_id, election_id)
+        digest = self.stored_hash(election_id)
+        hash_ids: tuple[str, ...] = ()
+        if digest is not None:
+            hash_ids = self._file_ids_for_hash(database_id, election_id, digest)
+        stale = stale_file_ids(present, pointer_file_id=pointer, kv_hash_file_ids=hash_ids)
+        if not stale:
             return
-        self._statements(
-            database_id,
-            [
-                (_DELETE_CHUNK_SQL, [election_id, previous]),
-                (_DELETE_FILE_SQL, [election_id, previous]),
-            ],
-        )
+        rows: list[tuple[str, list[str]]] = []
+        for file_id in stale:
+            rows.append((_DELETE_CHUNK_SQL, [election_id, file_id]))
+            rows.append((_DELETE_FILE_SQL, [election_id, file_id]))
+        for start in range(0, len(rows), _INSERT_BATCH):
+            self._statements(database_id, rows[start : start + _INSERT_BATCH])
         logger.info(
-            "early-vote D1 discarded previous file election_id=%s",
+            "early-vote D1 dropped stale files election_id=%s dropped=%s",
             election_id,
+            len(stale),
         )
+
+    def _distinct_file_ids(self, database_id: str, election_id: str) -> list[str]:
+        rows = self._query_rows(database_id, _FILE_IDS_SQL, [election_id, election_id])
+        return _string_column(rows, "file_id")
+
+    def _file_ids_for_hash(
+        self, database_id: str, election_id: str, digest: str
+    ) -> tuple[str, ...]:
+        rows = self._query_rows(database_id, _FILE_ID_FOR_HASH_SQL, [election_id, digest])
+        return tuple(_string_column(rows, "file_id"))
 
     def bump_version(self, election_id: str, digest: str) -> str:
         """Write the version key, then the hash key. A failed D1 write never calls this."""
@@ -844,6 +913,15 @@ def _database_page(payload: Any) -> tuple[list[dict[str, Any]], int | None]:
 def _statement_lists(statement: Statement) -> tuple[str, list[str]]:
     sql, params = statement
     return sql, list(params)
+
+
+def _string_column(rows: Sequence[dict[str, Any]], column: str) -> list[str]:
+    found: list[str] = []
+    for row in rows:
+        value = row.get(column)
+        if isinstance(value, str) and value:
+            found.append(value)
+    return found
 
 
 def _first_result_rows(payload: Any) -> list[dict[str, Any]]:
