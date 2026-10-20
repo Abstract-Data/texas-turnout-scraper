@@ -69,20 +69,35 @@ class RecordingStore:
         self.calls: list[str] = []
         self.written: bytes | None = None
         self.version: str | None = None
+        self.day_hashes: dict[tuple[str, str], str] = {}
+        self.bump_count = 0
 
-    def stored_hash(self, election_id: str) -> str | None:
-        self.calls.append(f"hash:{election_id}")
+    def stored_hash(self, election_id: str, *, ev_date_iso: str | None = None) -> str | None:
+        self.calls.append(f"hash:{election_id}:{ev_date_iso or ''}")
+        if ev_date_iso:
+            return self.day_hashes.get((election_id, ev_date_iso))
         return self.stored
 
-    def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
-        self.calls.append(f"write:{election_id}")
+    def write_database(
+        self,
+        election_id: str,
+        decoded: bytes,
+        digest: str,
+        *,
+        ev_date_iso: str | None = None,
+    ) -> None:
+        self.calls.append(f"write:{election_id}:{ev_date_iso or ''}")
         if self.fail_write:
             raise EarlyVoteSyncError("D1 write failed")
         self.written = decoded
+        if ev_date_iso:
+            self.day_hashes[(election_id, ev_date_iso)] = digest
 
     def bump_version(self, election_id: str, digest: str) -> str:
         self.calls.append(f"bump:{election_id}")
+        self.bump_count += 1
         self.version = "2"
+        self.stored = digest
         return self.version
 
 
@@ -113,7 +128,7 @@ def test_leading_zero_election_id_stays_a_string() -> None:
     assert database_name("0123") == "ev-0123"
     assert version_key("0123") == "ev:0123:version"
     assert hash_key("0123") == "ev:0123:sha256"
-    assert store.calls == ["hash:0123"]
+    assert store.calls == ["hash:0123:"]
 
 
 def test_unchanged_hash_exits_without_write() -> None:
@@ -126,7 +141,7 @@ def test_unchanged_hash_exits_without_write() -> None:
     assert result.status == "unchanged"
     assert result.exit_code == 0
     assert result.version is None
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
     assert store.written is None
 
 
@@ -138,7 +153,7 @@ def test_new_hash_writes_d1_before_kv_bump() -> None:
 
     assert result.status == "wrote"
     assert result.version == "2"
-    assert store.calls == ["hash:53813", "write:53813", "bump:53813"]
+    assert store.calls == ["hash:53813:", "write:53813:", "bump:53813"]
     assert store.written == payload
 
 
@@ -148,7 +163,7 @@ def test_failed_d1_write_does_not_bump_kv() -> None:
     with pytest.raises(EarlyVoteSyncError, match="D1 write failed"):
         sync_early_vote("53813", _envelope(b"new-file"), store)
 
-    assert store.calls == ["hash:53813", "write:53813"]
+    assert store.calls == ["hash:53813:", "write:53813:"]
     assert store.version is None
 
 
@@ -167,7 +182,7 @@ def test_over_cap_refuses_before_create_or_kv(monkeypatch: pytest.MonkeyPatch) -
 
     assert "Ada" not in str(raised.value)
     assert "0123456789" not in str(raised.value)
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
     assert store.written is None
     assert store.version is None
 
@@ -190,7 +205,7 @@ def test_over_cap_uses_the_real_limit_constant(monkeypatch: pytest.MonkeyPatch) 
     store = RecordingStore()
     with pytest.raises(EarlyVoteCapError):
         sync_early_vote("53813", _envelope(b"12345"), store)
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
 
 
 def test_unchanged_file_exits_even_when_over_the_patched_cap(
@@ -207,7 +222,7 @@ def test_unchanged_file_exits_even_when_over_the_patched_cap(
 
     assert result.status == "unchanged"
     assert result.exit_code == 0
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
 
 
 def test_dry_run_report_has_no_file_body(caplog: pytest.LogCaptureFixture) -> None:
@@ -225,7 +240,7 @@ def test_dry_run_report_has_no_file_body(caplog: pytest.LogCaptureFixture) -> No
     assert KV_NOT_FOR_ELECTION_NIGHT in report
     assert "d1_database=ev-53813" in report
     assert "kv_version_key=ev:53813:version" in report
-    assert store.calls == ["hash:53813"]
+    assert store.calls == ["hash:53813:"]
 
 
 def test_invalid_election_id_is_rejected_before_a_write() -> None:

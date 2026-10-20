@@ -1,38 +1,40 @@
 name: Early vote sync
 
-# Pulls one Civix early-vote file, hashes the unwrapped bytes, and on a new
-# file writes that election's D1 database before bumping KV.
+# Civix EVR statewide roster (or turnout JSON) → per-election D1 + KV version bump.
+# data-refresh.yml is unchanged (GitHub Pages CSV).
 #
-# data-refresh.yml is unchanged and still publishes the GitHub Pages CSV.
+# KV propagation ~60s — not election-night real-time.
 #
-# KV writes can take about 60 seconds to show up at every edge. That is not
-# fit for election-night results. This workflow does not build a faster path.
+# workflow_dispatch: dry_run defaults true. Dry-run job has no secrets.
+# Apply uses GitHub Environment `preview` (required reviewers — John must approve).
+# Scheduled runs use sync_mode=latest, election_id=53815, statewide_roster,
+# dry_run=false → apply job still waits on preview approval (not unattended).
 #
-# workflow_dispatch only. dry_run defaults to true. The dry-run job does not
-# reference secrets, does not install 1Password, and does not use a GitHub
-# Environment. Apply is a separate job on the GitHub Environment `preview`.
-# This file does not set deployment branches or required reviewers. Those are
-# GitHub settings on `preview`: deployment branches = main only, and a
-# required reviewer. Do not run this workflow from a pull request.
-#
-# preview environment secrets used here: CLOUDFLARE_ACCOUNT_ID and
-# OP_SERVICE_ACCOUNT_TOKEN. CLOUDFLARE_API_TOKEN and CLOUDFLARE_KV_NAMESPACE_ID
-# are not GitHub secrets. `op run` loads them from 1Password Environment
-# s6tljdcafkgqxfuxhcnj3m5x5a into the writer process. Copy
-# CLOUDFLARE_KV_NAMESPACE_ID into that 1Password Environment after the first
-# Terraform apply (`terraform output -raw kv_namespace_id`). Do not hardcode
-# the namespace id.
+# D1/KV writes use Cloudflare REST API + op run (not the Worker read path).
 
 on:
+  schedule:
+    # ~2×/day UTC while EV window is open (03:00 and 15:00 UTC).
+    - cron: "0 3,15 * * *"
   workflow_dispatch:
     inputs:
-      election_id:
-        description: "source_election_id (string, not an integer)"
+      sync_mode:
+        description: "single date, latest published EV date, or backfill all EV dates"
         required: true
+        default: "single"
+        type: choice
+        options:
+          - single
+          - latest
+          - backfill
+      election_id:
+        description: "source_election_id (Nov 2026 general = 53815)"
+        required: true
+        default: "53815"
         type: string
       election_date:
-        description: "Early-vote file date MM/DD/YYYY"
-        required: true
+        description: "MM/DD/YYYY (required for sync_mode=single)"
+        required: false
         type: string
       dry_run:
         description: "true hashes and prints the plan. false writes D1 then bumps KV."
@@ -54,38 +56,39 @@ on:
 permissions:
   contents: read
 
-# One in-flight sync per election. Do not cancel a running apply: it may be
-# mid-write, and the next run must not start until this one finishes.
 concurrency:
-  group: early-vote-sync-${{ inputs.election_id }}
+  group: early-vote-sync-${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
   cancel-in-progress: false
 
 jobs:
   dry-run:
     name: Dry run
-    if: inputs.dry_run != 'false'
+    if: >-
+      (github.event_name == 'schedule' && false) ||
+      (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'false')
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - name: Validate workflow inputs
         env:
-          ELECTION_ID: ${{ inputs.election_id }}
-          ELECTION_DATE: ${{ inputs.election_date }}
+          SYNC_MODE: ${{ github.event_name == 'schedule' && 'latest' || inputs.sync_mode }}
+          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+          ELECTION_DATE: ${{ github.event_name == 'schedule' && '' || inputs.election_date }}
         run: |
           set -euo pipefail
           if [[ ! "${ELECTION_ID}" =~ ^[0-9]+$ ]]; then
-            echo "::error::election_id must be digits only and is kept as a string"
+            echo "::error::election_id must be digits only"
             exit 1
           fi
-          if [[ ! "${ELECTION_DATE}" =~ ^(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])/[0-9]{4}$ ]]; then
-            echo "::error::election_date must be MM/DD/YYYY"
-            exit 1
-          fi
-          iso="${ELECTION_DATE:6:4}-${ELECTION_DATE:0:2}-${ELECTION_DATE:3:2}"
-          parsed="$(date -d "${iso}" +%F 2>/dev/null || true)"
-          if [[ "${parsed}" != "${iso}" ]]; then
-            echo "::error::election_date must be MM/DD/YYYY"
-            exit 1
+          if [[ "${SYNC_MODE}" == "single" ]]; then
+            if [[ -z "${ELECTION_DATE}" ]]; then
+              echo "::error::election_date is required when sync_mode=single"
+              exit 1
+            fi
+            if [[ ! "${ELECTION_DATE}" =~ ^(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])/[0-9]{4}$ ]]; then
+              echo "::error::election_date must be MM/DD/YYYY"
+              exit 1
+            fi
           fi
 
       - uses: actions/checkout@v7
@@ -103,46 +106,51 @@ jobs:
       - name: Install package
         run: uv sync --extra waf
 
-      - name: Hash the early-vote file
+      - name: Hash early-vote payload(s)
         env:
-          ELECTION_ID: ${{ inputs.election_id }}
-          ELECTION_DATE: ${{ inputs.election_date }}
-          PAYLOAD_KIND: ${{ inputs.payload_kind }}
+          SYNC_MODE: ${{ github.event_name == 'schedule' && 'latest' || inputs.sync_mode }}
+          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+          ELECTION_DATE: ${{ github.event_name == 'schedule' && '' || inputs.election_date }}
+          PAYLOAD_KIND: ${{ github.event_name == 'schedule' && 'statewide_roster' || inputs.payload_kind }}
         run: |
           set -euo pipefail
-          uv run python -m texas_turnout_scraper.early_vote_sync \
-            --election-id "${ELECTION_ID}" \
-            --date "${ELECTION_DATE}" \
-            --payload-kind "${PAYLOAD_KIND}" \
-            --http-backend cloudscraper \
+          args=(
+            --election-id "${ELECTION_ID}"
+            --sync-mode "${SYNC_MODE}"
+            --payload-kind "${PAYLOAD_KIND}"
+            --http-backend cloudscraper
             --dry-run
+          )
+          if [[ -n "${ELECTION_DATE}" ]]; then
+            args+=(--date "${ELECTION_DATE}")
+          fi
+          uv run python -m texas_turnout_scraper.early_vote_sync "${args[@]}"
 
   apply:
     name: Apply preview
-    if: inputs.dry_run == 'false'
+    if: >-
+      (github.event_name == 'schedule') ||
+      (github.event_name == 'workflow_dispatch' && inputs.dry_run == 'false')
     runs-on: ubuntu-latest
     environment: preview
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - name: Validate workflow inputs
         env:
-          ELECTION_ID: ${{ inputs.election_id }}
-          ELECTION_DATE: ${{ inputs.election_date }}
+          SYNC_MODE: ${{ github.event_name == 'schedule' && 'latest' || inputs.sync_mode }}
+          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+          ELECTION_DATE: ${{ github.event_name == 'schedule' && '' || inputs.election_date }}
         run: |
           set -euo pipefail
           if [[ ! "${ELECTION_ID}" =~ ^[0-9]+$ ]]; then
-            echo "::error::election_id must be digits only and is kept as a string"
+            echo "::error::election_id must be digits only"
             exit 1
           fi
-          if [[ ! "${ELECTION_DATE}" =~ ^(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])/[0-9]{4}$ ]]; then
-            echo "::error::election_date must be MM/DD/YYYY"
-            exit 1
-          fi
-          iso="${ELECTION_DATE:6:4}-${ELECTION_DATE:0:2}-${ELECTION_DATE:3:2}"
-          parsed="$(date -d "${iso}" +%F 2>/dev/null || true)"
-          if [[ "${parsed}" != "${iso}" ]]; then
-            echo "::error::election_date must be MM/DD/YYYY"
-            exit 1
+          if [[ "${SYNC_MODE}" == "single" ]]; then
+            if [[ -z "${ELECTION_DATE}" ]]; then
+              echo "::error::election_date is required when sync_mode=single"
+              exit 1
+            fi
           fi
 
       - uses: actions/checkout@v7
@@ -179,15 +187,21 @@ jobs:
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          ELECTION_ID: ${{ inputs.election_id }}
-          ELECTION_DATE: ${{ inputs.election_date }}
-          PAYLOAD_KIND: ${{ inputs.payload_kind }}
+          SYNC_MODE: ${{ github.event_name == 'schedule' && 'latest' || inputs.sync_mode }}
+          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+          ELECTION_DATE: ${{ github.event_name == 'schedule' && '' || inputs.election_date }}
+          PAYLOAD_KIND: ${{ github.event_name == 'schedule' && 'statewide_roster' || inputs.payload_kind }}
         run: |
           set -euo pipefail
-          op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
-            uv run python -m texas_turnout_scraper.early_vote_sync \
-            --election-id "${ELECTION_ID}" \
-            --date "${ELECTION_DATE}" \
-            --payload-kind "${PAYLOAD_KIND}" \
-            --http-backend cloudscraper \
+          args=(
+            --election-id "${ELECTION_ID}"
+            --sync-mode "${SYNC_MODE}"
+            --payload-kind "${PAYLOAD_KIND}"
+            --http-backend cloudscraper
             --apply
+          )
+          if [[ -n "${ELECTION_DATE}" ]]; then
+            args+=(--date "${ELECTION_DATE}")
+          fi
+          op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
+            uv run python -m texas_turnout_scraper.early_vote_sync "${args[@]}"

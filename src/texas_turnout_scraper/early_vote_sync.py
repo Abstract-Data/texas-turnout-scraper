@@ -137,6 +137,16 @@ CREATE TABLE IF NOT EXISTS early_vote_pointer (
 )
 """.strip()
 
+_DAY_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS early_vote_day (
+    source_election_id TEXT NOT NULL,
+    ev_date TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    PRIMARY KEY (source_election_id, ev_date)
+)
+""".strip()
+
 SyncStatus = Literal["unchanged", "dry_run", "wrote"]
 
 
@@ -182,10 +192,17 @@ class SyncResult:
 class EarlyVoteStore(Protocol):
     """Hash read, D1 load, and the KV version bump."""
 
-    def stored_hash(self, election_id: str) -> str | None:
-        """Return the last hash stored after a successful version bump."""
+    def stored_hash(self, election_id: str, *, ev_date_iso: str | None = None) -> str | None:
+        """Return stored hash for KV (no day) or one EV date row in D1."""
 
-    def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
+    def write_database(
+        self,
+        election_id: str,
+        decoded: bytes,
+        digest: str,
+        *,
+        ev_date_iso: str | None = None,
+    ) -> None:
         """Stage a new file_id and flip the pointer once every chunk is written."""
 
     def bump_version(self, election_id: str, digest: str) -> str:
@@ -200,13 +217,28 @@ class EmptyHashStore:
     Write methods refuse so a dry run cannot create a database.
     """
 
-    def __init__(self, stored: str | None = None) -> None:
+    def __init__(
+        self,
+        stored: str | None = None,
+        *,
+        day_hashes: dict[tuple[str, str], str] | None = None,
+    ) -> None:
         self._stored = stored
+        self._day_hashes = day_hashes or {}
 
-    def stored_hash(self, election_id: str) -> str | None:
+    def stored_hash(self, election_id: str, *, ev_date_iso: str | None = None) -> str | None:
+        if ev_date_iso:
+            return self._day_hashes.get((election_id, ev_date_iso))
         return self._stored
 
-    def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
+    def write_database(
+        self,
+        election_id: str,
+        decoded: bytes,
+        digest: str,
+        *,
+        ev_date_iso: str | None = None,
+    ) -> None:
         raise EarlyVoteSyncError("refusing to write D1 without --apply")
 
     def bump_version(self, election_id: str, digest: str) -> str:
@@ -226,6 +258,17 @@ def version_key(election_id: str) -> str:
 def hash_key(election_id: str) -> str:
     """KV key holding the hash of the last file whose version bump succeeded."""
     return f"ev:{require_election_id(election_id)}:sha256"
+
+
+def iso_ev_date(ev_day: date) -> str:
+    """Canonical EV date key for per-day D1 rows."""
+    return ev_day.isoformat()
+
+
+def backfill_manifest_digest(day_hashes: dict[str, str]) -> str:
+    """Stable manifest hash over sorted per-day content digests."""
+    lines = [f"{day}:{digest}" for day, digest in sorted(day_hashes.items())]
+    return sha256_decoded("\n".join(lines).encode("utf-8"))
 
 
 def sha256_decoded(decoded: bytes) -> str:
@@ -297,6 +340,17 @@ _FILE_IDS_SQL = (
 _FILE_ID_FOR_HASH_SQL = (
     "SELECT file_id FROM early_vote_file WHERE source_election_id = ? AND sha256 = ?"
 )
+_DAY_SELECT_HASH_SQL = (
+    "SELECT sha256 FROM early_vote_day WHERE source_election_id = ? AND ev_date = ?"
+)
+_DAY_SELECT_FILE_SQL = (
+    "SELECT file_id FROM early_vote_day WHERE source_election_id = ? AND ev_date = ?"
+)
+_DAY_UPSERT_SQL = (
+    "INSERT INTO early_vote_day (source_election_id, ev_date, sha256, file_id) "
+    "VALUES (?, ?, ?, ?) ON CONFLICT(source_election_id, ev_date) DO UPDATE SET "
+    "sha256 = excluded.sha256, file_id = excluded.file_id"
+)
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
 _FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"
 
@@ -355,6 +409,7 @@ def build_publish_plan(election_id: str, decoded: bytes, digest: str, file_id: s
             (_CHUNK_TABLE_SQL, ()),
             (_FILE_TABLE_SQL, ()),
             (_POINTER_TABLE_SQL, ()),
+            (_DAY_TABLE_SQL, ()),
         ),
         chunk_inserts=chunk_inserts,
         file_insert=(
@@ -532,6 +587,8 @@ def sync_early_vote(
     *,
     dry_run: bool = False,
     payload_kind: EarlyVotePayloadKind = "turnout",
+    ev_date_iso: str | None = None,
+    defer_kv_bump: bool = False,
 ) -> SyncResult:
     """Hash the unwrapped file and write D1, then KV, only when the hash is new.
 
@@ -543,10 +600,12 @@ def sync_early_vote(
     raw = _decode_envelope(response)
     decoded, roster_summary = prepare_payload_bytes(raw, payload_kind)
     digest = sha256_decoded(decoded)
-    if store.stored_hash(election_id) == digest:
+    prior = store.stored_hash(election_id, ev_date_iso=ev_date_iso)
+    if prior == digest:
         logger.info(
-            "early-vote unchanged election_id=%s sha256=%s decoded_bytes=%s",
+            "early-vote unchanged election_id=%s ev_date=%s sha256=%s decoded_bytes=%s",
             election_id,
+            ev_date_iso or "",
             digest,
             len(decoded),
         )
@@ -586,11 +645,14 @@ def sync_early_vote(
             plan=plan,
         )
 
-    store.write_database(election_id, decoded, digest)
-    version = store.bump_version(election_id, digest)
+    store.write_database(election_id, decoded, digest, ev_date_iso=ev_date_iso)
+    version = None
+    if not defer_kv_bump:
+        version = store.bump_version(election_id, digest)
     logger.info(
-        "early-vote wrote election_id=%s sha256=%s decoded_bytes=%s version=%s",
+        "early-vote wrote election_id=%s ev_date=%s sha256=%s decoded_bytes=%s version=%s",
         election_id,
+        ev_date_iso or "",
         digest,
         len(decoded),
         version,
@@ -802,20 +864,45 @@ class CloudflareEarlyVoteStore:
         if self._owns_client:
             self._client.close()
 
-    def stored_hash(self, election_id: str) -> str | None:
+    def stored_hash(self, election_id: str, *, ev_date_iso: str | None = None) -> str | None:
+        if ev_date_iso:
+            election_id = require_election_id(election_id)
+            database_id = self._ensure_one_database(election_id)
+            rows = self._query_rows(
+                database_id,
+                _DAY_SELECT_HASH_SQL,
+                [election_id, ev_date_iso],
+            )
+            if not rows:
+                return None
+            digest = rows[0].get("sha256")
+            return digest if isinstance(digest, str) and digest else None
         value = self._kv_get(hash_key(election_id))
         if value is None:
             return None
         text = value.strip()
         return text or None
 
-    def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
+    def write_database(
+        self,
+        election_id: str,
+        decoded: bytes,
+        digest: str,
+        *,
+        ev_date_iso: str | None = None,
+    ) -> None:
         election_id = require_election_id(election_id)
         assert_within_cap(len(decoded), election_id)
         database_id = self._ensure_one_database(election_id)
         self._reject_legacy_schema(database_id)
         plan = build_publish_plan(election_id, decoded, digest, new_file_id(digest))
-        self._statements(database_id, [_statement_lists(item) for item in plan.creates])
+        creates = [_statement_lists(item) for item in plan.creates]
+        self._statements(database_id, creates)
+        if ev_date_iso:
+            self._write_day_scoped(
+                database_id, election_id, ev_date_iso, plan, digest, len(decoded)
+            )
+            return
         # Previous complete files stay until a later run. This pass only drops
         # ids that are already neither the pointer nor the stored KV hash.
         self._delete_stale_files(database_id, election_id)
@@ -830,6 +917,50 @@ class CloudflareEarlyVoteStore:
             database_name(election_id),
             len(plan.chunk_inserts),
             len(decoded),
+        )
+
+    def _write_day_scoped(
+        self,
+        database_id: str,
+        election_id: str,
+        ev_date_iso: str,
+        plan: PublishPlan,
+        digest: str,
+        decoded_len: int,
+    ) -> None:
+        rows = self._query_rows(
+            database_id,
+            _DAY_SELECT_FILE_SQL,
+            [election_id, ev_date_iso],
+        )
+        if rows:
+            old_id = rows[0].get("file_id")
+            if isinstance(old_id, str) and old_id:
+                self._statements(
+                    database_id,
+                    [
+                        (_DELETE_CHUNK_SQL, [election_id, old_id]),
+                        (_DELETE_FILE_SQL, [election_id, old_id]),
+                    ],
+                )
+        self._insert_chunks(database_id, plan.chunk_inserts)
+        self._statements(database_id, [_statement_lists(plan.file_insert)])
+        self._statements(
+            database_id,
+            [
+                (
+                    _DAY_UPSERT_SQL,
+                    [election_id, ev_date_iso, digest, plan.file_id],
+                )
+            ],
+        )
+        logger.info(
+            "early-vote D1 day upsert election_id=%s ev_date=%s database=%s chunks=%s decoded_bytes=%s",
+            election_id,
+            ev_date_iso,
+            database_name(election_id),
+            len(plan.chunk_inserts),
+            decoded_len,
         )
 
     def _delete_stale_files(self, database_id: str, election_id: str) -> None:
@@ -1150,6 +1281,12 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry. ``--dry-run`` never creates Cloudflare resources."""
     parser = argparse.ArgumentParser(description="Sync one Civix early-vote file to D1 and KV.")
     parser.add_argument("--election-id", required=True, help="source_election_id string")
+    parser.add_argument(
+        "--sync-mode",
+        default="single",
+        choices=["single", "backfill", "latest"],
+        help="single date, all published EV dates, or latest EV date from Civix index",
+    )
     parser.add_argument("--date", default="", help="Early-vote file date MM/DD/YYYY")
     parser.add_argument("--envelope-file", default="", help="Local Civix envelope JSON")
     parser.add_argument("--dry-run", action="store_true", help="Hash and print the plan")
@@ -1174,13 +1311,38 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     payload_kind = _parse_payload_kind(args.payload_kind)
+    sync_mode = args.sync_mode
     store: EarlyVoteStore | None = None
     try:
+        from texas_turnout_scraper.early_vote_backfill import (
+            find_election_ev_dates,
+            format_backfill_report,
+            latest_published_ev_date,
+            run_backfill,
+        )
+
         store = _build_store(apply=args.apply, stored_hash=args.stored_hash)
+        if sync_mode == "backfill":
+            _name, _election_day, ev_dates = find_election_ev_dates(args.election_id)
+            backfill = run_backfill(
+                args.election_id,
+                store,
+                ev_dates,
+                dry_run=args.dry_run,
+                payload_kind=payload_kind,
+                http_backend=args.http_backend,
+            )
+            sys.stdout.write(format_backfill_report(backfill) + "\n")
+            return backfill.exit_code
+        election_date = args.date
+        if sync_mode == "latest":
+            _name, _election_day, ev_dates = find_election_ev_dates(args.election_id)
+            latest = latest_published_ev_date(ev_dates)
+            election_date = latest.strftime("%m/%d/%Y")
         response = _load_response(
             args.election_id,
             args.envelope_file,
-            args.date,
+            election_date,
             args.http_backend,
             payload_kind,
         )
