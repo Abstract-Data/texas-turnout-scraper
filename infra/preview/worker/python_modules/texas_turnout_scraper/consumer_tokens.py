@@ -1,6 +1,6 @@
 """Minted consumer API tokens for the preview early-vote read API.
 
-Plaintext tokens are shown once at mint time. Only SHA-256 digests are stored in
+Plaintext tokens are shown once at mint time. Only scrypt digests are stored in
 D1 and KV. Validation accepts ``Authorization: Bearer`` or ``X-API-Key``.
 """
 
@@ -17,10 +17,8 @@ BEARER_PREFIX = "bearer "
 
 KV_PREFIX = "consumer_token:"
 
-# Keyed digest pepper (32 bytes max for BLAKE2s); not a user password.
-_CONSUMER_TOKEN_PEPPER = hashlib.sha256(
-    b"Abstract-Data/texas-turnout-scraper/preview-consumer-token/v1"
-).digest()
+# Fixed deployment salt for scrypt (not derived from user secrets).
+_CONSUMER_TOKEN_PEPPER = b"tx-turnout-preview-consumer-v1-pepper!!"
 
 _SCHEMA_CREATES: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS consumer_api_token (
