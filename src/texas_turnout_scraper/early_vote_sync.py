@@ -2,8 +2,20 @@
 
 The GitHub Action pulls one ``EVR_EARLYVOTING`` file, unwraps the
 ``{"upload": "<base64>"}`` envelope, and SHA-256-hashes those decoded bytes.
-A matching stored hash exits without a write. A new file is loaded into that
-election's D1 database, and only then does KV ``ev:<election>:version`` bump.
+A matching stored hash exits without a write. A new file is staged under a
+new ``file_id``: every chunk is inserted before the pointer moves. One
+``INSERT ... ON CONFLICT`` then flips ``early_vote_pointer``. KV
+``ev:<election>:version`` bumps only after that flip. The previous file's
+chunks are deleted only after the bump.
+
+Readers — the Worker and the package read client — call
+:func:`choose_published_file` before touching chunk rows. Trust a file only
+when ``early_vote_file.chunk_count`` equals the number of chunk rows for that
+``file_id`` and the file's SHA-256 equals the KV hash stored for the bumped
+version. Until both are true, keep the previous complete file. A partial
+stage is not served. KV writes can take about 60 seconds to show up at every
+edge. That is not fit for election-night results. This module does not add a
+faster path.
 
 Cloudflare documents a 10 GB maximum D1 database size and says the cap cannot
 be raised (https://developers.cloudflare.com/d1/platform/limits/). A larger
@@ -37,6 +49,8 @@ import json
 import logging
 import os
 import sys
+import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal, Protocol
@@ -70,19 +84,29 @@ KV_NOT_FOR_ELECTION_NIGHT = (
 
 _FILE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS early_vote_file (
-    source_election_id TEXT PRIMARY KEY,
+    source_election_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
     sha256 TEXT NOT NULL,
     byte_length INTEGER NOT NULL,
-    chunk_count INTEGER NOT NULL
+    chunk_count INTEGER NOT NULL,
+    PRIMARY KEY (source_election_id, file_id)
 )
 """.strip()
 
 _CHUNK_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS early_vote_chunk (
     source_election_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
     chunk_index INTEGER NOT NULL,
     payload_b64 TEXT NOT NULL,
-    PRIMARY KEY (source_election_id, chunk_index)
+    PRIMARY KEY (source_election_id, file_id, chunk_index)
+)
+""".strip()
+
+_POINTER_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS early_vote_pointer (
+    source_election_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL
 )
 """.strip()
 
@@ -99,7 +123,7 @@ class EarlyVoteSyncError(RuntimeError):
 
 @dataclass(frozen=True)
 class D1Plan:
-    """Statements a dry run would send. SQL text only — no bound file bytes."""
+    """SQL text a dry run prints. Bound file bytes are omitted."""
 
     statements: tuple[tuple[str, int], ...]
     chunk_rows: int
@@ -130,10 +154,13 @@ class EarlyVoteStore(Protocol):
         """Return the last hash stored after a successful version bump."""
 
     def write_database(self, election_id: str, decoded: bytes, digest: str) -> None:
-        """Replace this election's file in its one D1 database."""
+        """Stage a new file_id and flip the pointer once every chunk is written."""
 
     def bump_version(self, election_id: str, digest: str) -> str:
         """Bump ``ev:<election>:version`` and then store ``digest``."""
+
+    def discard_replaced(self, election_id: str) -> None:
+        """Delete the previous file after the pointer swap and the KV bump."""
 
 
 class EmptyHashStore:
@@ -155,6 +182,9 @@ class EmptyHashStore:
 
     def bump_version(self, election_id: str, digest: str) -> str:
         raise EarlyVoteSyncError("refusing to bump KV without --apply")
+
+    def discard_replaced(self, election_id: str) -> None:
+        raise EarlyVoteSyncError("refusing to delete D1 rows without --apply")
 
 
 def database_name(election_id: str) -> str:
@@ -199,13 +229,130 @@ def iter_chunk_b64(decoded: bytes) -> list[str]:
 
 
 _CHUNK_INSERT_SQL = (
-    "INSERT INTO early_vote_chunk (source_election_id, chunk_index, payload_b64) VALUES (?, ?, ?)"
+    "INSERT INTO early_vote_chunk "
+    "(source_election_id, file_id, chunk_index, payload_b64) VALUES (?, ?, ?, ?)"
 )
 _FILE_INSERT_SQL = (
     "INSERT INTO early_vote_file "
-    "(source_election_id, sha256, byte_length, chunk_count) "
-    "VALUES (?, ?, ?, ?)"
+    "(source_election_id, file_id, sha256, byte_length, chunk_count) "
+    "VALUES (?, ?, ?, ?, ?)"
 )
+_POINTER_UPSERT_SQL = (
+    "INSERT INTO early_vote_pointer (source_election_id, file_id) VALUES (?, ?) "
+    "ON CONFLICT(source_election_id) DO UPDATE SET file_id = excluded.file_id"
+)
+_DELETE_CHUNK_SQL = "DELETE FROM early_vote_chunk WHERE source_election_id = ? AND file_id = ?"
+_DELETE_FILE_SQL = "DELETE FROM early_vote_file WHERE source_election_id = ? AND file_id = ?"
+_POINTER_SELECT_SQL = "SELECT file_id FROM early_vote_pointer WHERE source_election_id = ?"
+_CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
+_FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"
+
+Statement = tuple[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class PublishPlan:
+    """Staged statements for one new file.
+
+    ``pointer_update`` is a single statement and comes after every chunk insert.
+    Deletes of the previous file are not part of the plan: they run only after
+    the pointer flip and the KV bump.
+    """
+
+    file_id: str
+    creates: tuple[Statement, ...]
+    chunk_inserts: tuple[Statement, ...]
+    file_insert: Statement
+    pointer_update: Statement
+
+
+@dataclass(frozen=True)
+class EarlyVoteFileView:
+    """Reader metadata for one file_id. Counts only — never chunk payloads."""
+
+    file_id: str
+    sha256: str
+    chunk_count: int
+    chunks_present: int
+
+    @property
+    def complete(self) -> bool:
+        """True when ``chunk_count`` equals the chunk rows stored for this file."""
+        return self.chunk_count >= 0 and self.chunk_count == self.chunks_present
+
+
+def new_file_id(digest: str) -> str:
+    """String id for one load attempt. The election id is not reused as this id."""
+    return f"{digest}-{uuid.uuid4().hex}"
+
+
+def build_publish_plan(election_id: str, decoded: bytes, digest: str, file_id: str) -> PublishPlan:
+    """Chunk inserts, then the file row, then one pointer statement."""
+    election_id = require_election_id(election_id)
+    if not isinstance(file_id, str) or not file_id:
+        raise EarlyVoteSyncError("file_id must be a non-empty string")
+    chunks = iter_chunk_b64(decoded)
+    chunk_inserts = tuple(
+        (_CHUNK_INSERT_SQL, (election_id, file_id, str(index), payload))
+        for index, payload in enumerate(chunks)
+    )
+    return PublishPlan(
+        file_id=file_id,
+        creates=(
+            (_CHUNK_TABLE_SQL, ()),
+            (_FILE_TABLE_SQL, ()),
+            (_POINTER_TABLE_SQL, ()),
+        ),
+        chunk_inserts=chunk_inserts,
+        file_insert=(
+            _FILE_INSERT_SQL,
+            (election_id, file_id, digest, str(len(decoded)), str(len(chunks))),
+        ),
+        pointer_update=(_POINTER_UPSERT_SQL, (election_id, file_id)),
+    )
+
+
+def choose_published_file(
+    *,
+    pointer_file_id: str | None,
+    files: Sequence[EarlyVoteFileView],
+    kv_sha256: str | None,
+) -> EarlyVoteFileView | None:
+    # Worker and read client: call this before any ``early_vote_chunk`` read.
+    # Trust a file only when early_vote_file.chunk_count equals the number of
+    # chunk rows for that file_id and sha256 equals the KV hash written for
+    # the bumped ev:<election>:version. Load chunks only for the file_id on
+    # the returned view. None means the load is incomplete — do not serve a
+    # partial chunk set. A stage that has not flipped early_vote_pointer stays
+    # invisible, so an interrupted load leaves readers on the previous complete
+    # file. If the pointer already names the new file and KV still has the
+    # previous hash, this still returns that previous complete file.
+    if kv_sha256 is None or kv_sha256 == "":
+        return None
+    pointer = _file_by_id(files, pointer_file_id)
+    if pointer is not None and pointer.complete and pointer.sha256 == kv_sha256:
+        return pointer
+    return _complete_with_hash(files, kv_sha256)
+
+
+def _file_by_id(
+    files: Sequence[EarlyVoteFileView], file_id: str | None
+) -> EarlyVoteFileView | None:
+    if file_id is None:
+        return None
+    for item in files:
+        if item.file_id == file_id:
+            return item
+    return None
+
+
+def _complete_with_hash(
+    files: Sequence[EarlyVoteFileView], sha256: str
+) -> EarlyVoteFileView | None:
+    for item in files:
+        if item.complete and item.sha256 == sha256:
+            return item
+    return None
 
 
 def source_row_count(decoded: bytes) -> int | None:
@@ -225,35 +372,27 @@ def source_row_count(decoded: bytes) -> int | None:
     return None
 
 
-def build_d1_statements(
-    election_id: str, decoded: bytes, digest: str
-) -> list[tuple[str, list[str]]]:
-    """D1 statements for one election. Chunk parameters hold the file and stay off logs."""
-    election_id = require_election_id(election_id)
-    chunks = iter_chunk_b64(decoded)
-    statements: list[tuple[str, list[str]]] = [
-        (_FILE_TABLE_SQL, []),
-        (_CHUNK_TABLE_SQL, []),
-        ("DELETE FROM early_vote_chunk WHERE source_election_id = ?", [election_id]),
-        ("DELETE FROM early_vote_file WHERE source_election_id = ?", [election_id]),
-    ]
-    statements.extend(
-        (_CHUNK_INSERT_SQL, [election_id, str(index), payload])
-        for index, payload in enumerate(chunks)
+def _plan_statements(plan: PublishPlan) -> tuple[Statement, ...]:
+    """Apply order, plus the post-bump deletes (previous file_id is bound later)."""
+    return (
+        *plan.creates,
+        *plan.chunk_inserts,
+        plan.file_insert,
+        plan.pointer_update,
+        (_DELETE_CHUNK_SQL, ()),
+        (_DELETE_FILE_SQL, ()),
     )
-    statements.append(
-        (
-            _FILE_INSERT_SQL,
-            [election_id, digest, str(len(decoded)), str(len(chunks))],
-        )
-    )
-    return statements
 
 
 def summarize_d1_plan(election_id: str, decoded: bytes, digest: str) -> D1Plan:
-    """Statement text and row counts for a dry run. Bound parameters are dropped."""
+    """Statement text and row counts for a dry run. Bound parameters are dropped.
+
+    Delete statements are listed so the plan shows they exist. Apply runs them
+    only after the pointer swap and the KV bump, with the previous file_id.
+    """
     election_id = require_election_id(election_id)
-    statements = build_d1_statements(election_id, decoded, digest)
+    plan = build_publish_plan(election_id, decoded, digest, new_file_id(digest))
+    statements = _plan_statements(plan)
     counts: dict[str, int] = {}
     order: list[str] = []
     chunk_rows = 0
@@ -331,6 +470,7 @@ def sync_early_vote(
 
     store.write_database(election_id, decoded, digest)
     version = store.bump_version(election_id, digest)
+    store.discard_replaced(election_id)
     logger.info(
         "early-vote wrote election_id=%s sha256=%s decoded_bytes=%s version=%s",
         election_id,
@@ -460,6 +600,8 @@ class CloudflareEarlyVoteStore:
             headers={"Authorization": f"Bearer {api_token}"},
             timeout=60.0,
         )
+        self._publish_database_id: str | None = None
+        self._replaced_file_id: str | None = None
 
     def close(self) -> None:
         if self._owns_client:
@@ -476,19 +618,44 @@ class CloudflareEarlyVoteStore:
         election_id = require_election_id(election_id)
         assert_within_cap(len(decoded), election_id)
         database_id = self._ensure_one_database(election_id)
-        statements = build_d1_statements(election_id, decoded, digest)
-        chunks = statements[4:-1]
-        self._statements(database_id, statements[:2])
-        self._statements(database_id, statements[2:4])
-        for start in range(0, len(chunks), _INSERT_BATCH):
-            self._statements(database_id, chunks[start : start + _INSERT_BATCH])
-        self._statements(database_id, statements[-1:])
+        self._reject_legacy_schema(database_id)
+        plan = build_publish_plan(election_id, decoded, digest, new_file_id(digest))
+        self._statements(database_id, [_statement_lists(item) for item in plan.creates])
+        previous = self._pointer_file_id(database_id, election_id)
+        self._insert_chunks(database_id, plan.chunk_inserts)
+        self._statements(database_id, [_statement_lists(plan.file_insert)])
+        # One statement, after every chunk. A failed batch before this leaves
+        # the previous pointer in place.
+        self._statements(database_id, [_statement_lists(plan.pointer_update)])
+        self._publish_database_id = database_id
+        self._replaced_file_id = None if previous == plan.file_id else previous
         logger.info(
-            "early-vote D1 replace election_id=%s database=%s chunks=%s decoded_bytes=%s",
+            "early-vote D1 pointer swap election_id=%s database=%s chunks=%s decoded_bytes=%s",
             election_id,
             database_name(election_id),
-            len(chunks),
+            len(plan.chunk_inserts),
             len(decoded),
+        )
+
+    def discard_replaced(self, election_id: str) -> None:
+        """Delete the file the pointer no longer names. Called after the KV bump."""
+        election_id = require_election_id(election_id)
+        previous = self._replaced_file_id
+        database_id = self._publish_database_id
+        self._replaced_file_id = None
+        self._publish_database_id = None
+        if previous is None or database_id is None:
+            return
+        self._statements(
+            database_id,
+            [
+                (_DELETE_CHUNK_SQL, [election_id, previous]),
+                (_DELETE_FILE_SQL, [election_id, previous]),
+            ],
+        )
+        logger.info(
+            "early-vote D1 discarded previous file election_id=%s",
+            election_id,
         )
 
     def bump_version(self, election_id: str, digest: str) -> str:
@@ -535,6 +702,56 @@ class CloudflareEarlyVoteStore:
                 break
             page += 1
         return found
+
+    def _reject_legacy_schema(self, database_id: str) -> None:
+        """Fail closed when a database still has the pre-swap primary key.
+
+        ``CREATE TABLE IF NOT EXISTS`` will not add ``file_id``. Replacing
+        rows in that table would delete the published file before the new
+        chunks exist.
+        """
+        for table, sql in (
+            ("early_vote_chunk", _CHUNK_SCHEMA_SQL),
+            ("early_vote_file", _FILE_SCHEMA_SQL),
+        ):
+            names = self._column_names(database_id, sql)
+            if names and "file_id" not in names:
+                raise EarlyVoteSyncError(
+                    f"{table} has no file_id column; refusing to replace rows in place"
+                )
+
+    def _column_names(self, database_id: str, sql: str) -> list[str]:
+        names: list[str] = []
+        for row in self._query_rows(database_id, sql, []):
+            name = row.get("name")
+            if isinstance(name, str):
+                names.append(name)
+        return names
+
+    def _pointer_file_id(self, database_id: str, election_id: str) -> str | None:
+        rows = self._query_rows(database_id, _POINTER_SELECT_SQL, [election_id])
+        if not rows:
+            return None
+        file_id = rows[0].get("file_id")
+        if file_id is None:
+            return None
+        if not isinstance(file_id, str) or not file_id:
+            raise EarlyVoteSyncError("early_vote_pointer file_id is not a string")
+        return file_id
+
+    def _insert_chunks(self, database_id: str, inserts: tuple[Statement, ...]) -> None:
+        rows = [_statement_lists(item) for item in inserts]
+        for start in range(0, len(rows), _INSERT_BATCH):
+            self._statements(database_id, rows[start : start + _INSERT_BATCH])
+
+    def _query_rows(self, database_id: str, sql: str, params: list[str]) -> list[dict[str, Any]]:
+        payload = self._api(
+            "POST",
+            f"/accounts/{self._account_id}/d1/database/{database_id}/query",
+            json={"batch": [{"sql": sql, "params": params}]},
+        )
+        _require_query_success(payload)
+        return _first_result_rows(payload)
 
     def _statements(self, database_id: str, statements: list[tuple[str, list[str]]]) -> None:
         if not statements:
@@ -622,6 +839,26 @@ def _database_page(payload: Any) -> tuple[list[dict[str, Any]], int | None]:
     if isinstance(info, dict) and isinstance(info.get("total_count"), int):
         total = info["total_count"]
     return parsed, total
+
+
+def _statement_lists(statement: Statement) -> tuple[str, list[str]]:
+    sql, params = statement
+    return sql, list(params)
+
+
+def _first_result_rows(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    result = payload.get("result")
+    if not isinstance(result, list) or not result:
+        return []
+    first = result[0]
+    if not isinstance(first, dict):
+        return []
+    rows = first.get("results")
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def _require_query_success(payload: Any) -> None:
