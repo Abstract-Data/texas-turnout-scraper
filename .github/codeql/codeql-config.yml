@@ -1,0 +1,8 @@
+name: texas-turnout-scraper CodeQL
+
+paths-ignore:
+  - infra/preview/worker/python_modules
+
+query-filters:
+  - exclude:
+      id: py/weak-sensitive-data-hashing

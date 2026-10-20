@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import tokens as _tokens  # noqa: F401 — registers tokens subcommands
 from . import voterfile as _voterfile  # noqa: F401 — registers voterfile subcommands
 from ._common import (
     _build_civix_index_entries,

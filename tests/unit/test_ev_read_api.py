@@ -15,6 +15,7 @@ from texas_turnout_scraper.civix.read_client import (
     http_path,
     version_key,
 )
+from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
 from texas_turnout_scraper.early_vote_sync import hash_key
 
 _ACCESS_ID = "preview-client.access"
@@ -41,6 +42,30 @@ class MemoryKv:
         self.values[key] = value
 
 
+class _TokenDb:
+    def __init__(self, active_hashes: set[str]) -> None:
+        self._active = active_hashes
+
+    def prepare(self, sql: str) -> _Prepared:
+        return _Prepared(self._active, sql)
+
+
+class _Prepared:
+    def __init__(self, active: set[str], sql: str) -> None:
+        self._active = active
+        self._sql = sql
+        self._digest: str | None = None
+
+    def bind(self, digest: object) -> _Prepared:
+        self._digest = str(digest)
+        return self
+
+    async def first(self) -> dict[str, str] | None:
+        if self._digest in self._active:
+            return {"token_id": "test-token-id"}
+        return None
+
+
 class RecordingStore:
     def __init__(
         self,
@@ -65,13 +90,19 @@ def _segments(resource: str = "totals", ev_date: str | None = None) -> tuple[str
     return (*base, ev_date) if ev_date else base
 
 
-def _client(kv: MemoryKv, store: RecordingStore) -> TestClient:
+def _client(
+    kv: MemoryKv,
+    store: RecordingStore,
+    *,
+    token_db: object | None = None,
+) -> TestClient:
     app = create_app(
         ReadDeps(
             kv=kv,
             store=store,
             access_client_id=_ACCESS_ID,
             access_client_secret=_ACCESS_SECRET,
+            token_db=token_db,
         )
     )
     return TestClient(app)
@@ -154,6 +185,39 @@ def test_http_aggregate_totals_200() -> None:
     response = _client(kv, RecordingStore()).get(_url(), headers=_AUTH)
     assert response.status_code == 200
     assert response.json()["statewide"]["total"] == 1
+
+
+def test_http_aggregate_totals_consumer_bearer_kv() -> None:
+    secret = "consumer-secret-not-a-voter"
+    digest = hash_token(secret)
+    payload = {"statewide": {"total": 2, "in_person": 2, "mail_in": 0}}
+    key = cache_key(_ELECTION, _VERSION, *_segments())
+    kv = MemoryKv(
+        {
+            version_key(_ELECTION): str(_VERSION),
+            key: json.dumps(payload),
+            kv_key_for_hash(digest): "1",
+        }
+    )
+    response = _client(kv, RecordingStore()).get(
+        _url(),
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    assert response.status_code == 200
+
+
+def test_http_aggregate_totals_consumer_api_key_d1() -> None:
+    secret = "consumer-api-key-secret"
+    digest = hash_token(secret)
+    payload = {"statewide": {"total": 3, "in_person": 1, "mail_in": 2}}
+    key = cache_key(_ELECTION, _VERSION, *_segments())
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: json.dumps(payload)})
+    response = _client(
+        kv,
+        RecordingStore(),
+        token_db=_TokenDb({digest}),
+    ).get(_url(), headers={"X-API-Key": secret})
+    assert response.status_code == 200
 
 
 def test_http_paths_for_aggregate_surface() -> None:

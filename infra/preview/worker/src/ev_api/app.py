@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from ev_api.auth import access_authorized
+from ev_api.auth import read_request_authorized
 from ev_api.bindings import WorkersAggregateStore, WorkersKvNamespace, binding_map_from_env
 from ev_api.read import (
     DEFAULT_KV_TTL_SECONDS,
@@ -27,6 +27,7 @@ class ReadDeps:
     store: AggregateStore
     access_client_id: str
     access_client_secret: str
+    token_db: object | None = None
     ttl_seconds: int = DEFAULT_KV_TTL_SECONDS
 
 
@@ -56,11 +57,13 @@ def deps_from_env(env: object) -> ReadDeps:
     store: AggregateStore = WorkersAggregateStore(env, mapping)
     client_id = getattr(env, "ACCESS_CLIENT_ID", "") or ""
     client_secret = getattr(env, "ACCESS_CLIENT_SECRET", "") or ""
+    token_db = getattr(env, "DB", None)
     return ReadDeps(
         kv=kv,
         store=store,
         access_client_id=str(client_id),
         access_client_secret=str(client_secret),
+        token_db=token_db,
     )
 
 
@@ -103,10 +106,12 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
         ev_date: str | None = None,
     ) -> Response:
         active = _deps_for_request(request)
-        if not access_authorized(
+        if not await read_request_authorized(
             request.headers,
-            client_id=active.access_client_id,
-            client_secret=active.access_client_secret,
+            access_client_id=active.access_client_id,
+            access_client_secret=active.access_client_secret,
+            kv=active.kv,
+            token_db=active.token_db,
         ):
             return Response(status_code=401)
         segments = _segments(resource, ev_date)
