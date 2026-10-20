@@ -38,9 +38,9 @@ jobs:
       - name: Verify preview Worker bundle (pywrangler sync)
         working-directory: infra/preview/worker
         run: |
-          uv sync
-          uv run pywrangler sync
-          git diff --exit-code python_modules pylock.toml
+          uv sync --frozen
+          uv run pywrangler sync --force
+          test -z "$(git status --porcelain -- python_modules pylock.toml)"
 
       - uses: hashicorp/setup-terraform@v4
         with:

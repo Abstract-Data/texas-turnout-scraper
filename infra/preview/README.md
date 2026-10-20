@@ -12,8 +12,8 @@ Python Workers need the `workers` SDK vendored into `worker/python_modules/` (vi
 
 ```bash
 cd infra/preview/worker
-uv sync
-uv run pywrangler sync
+uv sync --frozen
+uv run pywrangler sync --force
 ```
 
 Commit `python_modules/` and `pylock.toml` with the change. CI re-runs `pywrangler sync` and fails if those paths drift.
