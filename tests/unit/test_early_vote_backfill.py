@@ -51,7 +51,8 @@ class _BackfillStore:
         self.bump_count += 1
         return str(self.bump_count)
 
-FIXTURE_INDEX = Path(__file__).parent.parent / "fixtures" / "early_voting" / "civix_election_index.json"
+_FIXTURE_ROOT = Path(__file__).parent.parent / "fixtures"
+FIXTURE_INDEX = _FIXTURE_ROOT / "early_voting" / "civix_election_index.json"
 STATEWIDE_FIXTURE = (
     Path(__file__).parent.parent / "fixtures" / "early_vote" / "statewide_roster_envelope.json"
 )

@@ -955,7 +955,8 @@ class CloudflareEarlyVoteStore:
             ],
         )
         logger.info(
-            "early-vote D1 day upsert election_id=%s ev_date=%s database=%s chunks=%s decoded_bytes=%s",
+            "early-vote D1 day upsert election_id=%s ev_date=%s database=%s "
+            "chunks=%s decoded_bytes=%s",
             election_id,
             ev_date_iso,
             database_name(election_id),
