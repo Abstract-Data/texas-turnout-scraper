@@ -6,6 +6,23 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.5](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.4...texas-turnout-scraper-v0.2.5) (2026-10-20)
+
+
+### Features
+
+* **early-vote:** D1/KV writer with a hash gate that bumps the KV version only after a successful D1 write ([#21](https://github.com/Abstract-Data/texas-turnout-scraper/issues/21)) ([ca1a1c1](https://github.com/Abstract-Data/texas-turnout-scraper/commit/ca1a1c1b2996a04321a5dc389e8b1f46a19d471f))
+* **infra:** preview Cloudflare stack for D1, KV, Worker, and Access ([#19](https://github.com/Abstract-Data/texas-turnout-scraper/issues/19)) ([07814c4](https://github.com/Abstract-Data/texas-turnout-scraper/commit/07814c42c46486e67cefa55fc4a07fb4450d005e))
+
+
+### Bug Fixes
+
+* **early-vote:** bump the KV version only after the pointer swap ([#28](https://github.com/Abstract-Data/texas-turnout-scraper/issues/28)) ([d2fd547](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d2fd5477007c6933e2d0664e3bc5e08c58062272))
+* **early-vote:** defer cleanup of stale file ids until the next write, from D1 state ([#28](https://github.com/Abstract-Data/texas-turnout-scraper/issues/28)) ([d2fd547](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d2fd5477007c6933e2d0664e3bc5e08c58062272))
+* **early-vote:** fail closed when a database on the [#21](https://github.com/Abstract-Data/texas-turnout-scraper/issues/21) schema has no file_id column ([#28](https://github.com/Abstract-Data/texas-turnout-scraper/issues/28)) ([d2fd547](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d2fd5477007c6933e2d0664e3bc5e08c58062272))
+* **early-vote:** keep early-vote sync to one in-flight run per election ([#28](https://github.com/Abstract-Data/texas-turnout-scraper/issues/28)) ([d2fd547](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d2fd5477007c6933e2d0664e3bc5e08c58062272))
+* **early-vote:** stage D1 chunks under a new file_id, then swap the pointer in one statement ([#28](https://github.com/Abstract-Data/texas-turnout-scraper/issues/28)) ([d2fd547](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d2fd5477007c6933e2d0664e3bc5e08c58062272))
+
 ## [0.2.4](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.3...texas-turnout-scraper-v0.2.4) (2026-10-17)
 
 
