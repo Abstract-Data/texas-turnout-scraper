@@ -1,0 +1,4 @@
+.venv/
+.venv-workers/
+.wrangler/
+uv.lock

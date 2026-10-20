@@ -8,6 +8,16 @@ KV writes can take about 60 seconds to show up. That is not fit for election-nig
 
 The Worker module is a placeholder. It does not query D1 or KV and it does not log roster fields. The read API replaces `worker/entry.py` later. Consumers bind to this Worker as `EV_API`.
 
+Python Workers need the `workers` SDK vendored into `worker/python_modules/` (via [Pywrangler](https://developers.cloudflare.com/workers/languages/python/packages/)). Terraform uploads `entry.py` plus that tree on `cloudflare_worker_version`. After changing `worker/pyproject.toml`, run:
+
+```bash
+cd infra/preview/worker
+uv sync
+uv run pywrangler sync
+```
+
+Commit `python_modules/` and `pylock.toml` with the change. CI re-runs `pywrangler sync` and fails if those paths drift.
+
 Pull requests run `terraform fmt`, `terraform validate`, and `tflint` only. They do not read secrets and they do not plan or apply.
 
 A push to `main` or `workflow_dispatch` on `main` runs two jobs in the GitHub Environment `preview`. Plan is John's first approval. Apply is the second. John sees the plan before anything applies. Do not run `terraform plan` or `terraform apply` on a laptop.

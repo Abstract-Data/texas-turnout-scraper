@@ -67,11 +67,7 @@ resource "cloudflare_worker_version" "preview" {
     workers_tag     = "preview"
   }
 
-  modules = [{
-    name         = "entry.py"
-    content_type = "text/x-python"
-    content_file = "${path.module}/worker/entry.py"
-  }]
+  modules = local.preview_worker_modules
 
   bindings = [
     {
