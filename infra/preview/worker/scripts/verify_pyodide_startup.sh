@@ -240,9 +240,15 @@ class _PreviewD1:
         sha256: str,
         decoded: bytes,
         days: list[dict[str, str]],
+        election_id: str = "53815",
     ) -> None:
-        import base64
+        import sqlite3
 
+        from texas_turnout_scraper.early_vote_aggregates import aggregates_from_decoded
+        from texas_turnout_scraper.early_vote_d1_precompute_store import (
+            PRECOMPUTE_SCHEMA_CREATES,
+            precompute_statements,
+        )
         from texas_turnout_scraper.early_vote_sync import iter_chunk_b64
 
         self._pointer = pointer
@@ -252,6 +258,23 @@ class _PreviewD1:
         self._chunk_b64 = self._chunks.get(0, "")
         self._days = days
         self._byte_length = len(decoded)
+        ev_date = days[0]["ev_date"] if days else None
+        agg_body = aggregates_from_decoded(
+            decoded,
+            source_election_id=election_id,
+            ev_date=ev_date,
+        )
+        self._sqlite = sqlite3.connect(":memory:")
+        for ddl in PRECOMPUTE_SCHEMA_CREATES:
+            self._sqlite.execute(ddl)
+        for stmt_sql, params in precompute_statements(
+            election_id,
+            file_id,
+            agg_body,
+            ev_date_iso=ev_date,
+        ):
+            self._sqlite.execute(stmt_sql, params)
+        self._sqlite.commit()
 
     def prepare(self, sql: str) -> _Prepared:
         return _Prepared(self, sql)
@@ -268,6 +291,13 @@ class _PreviewD1:
             conn.close()
 
     def first(self, sql: str, args: tuple[object, ...]) -> object | None:
+        if "early_vote_file_aggregate" in sql:
+            cur = self._sqlite.execute(sql, args)
+            row = cur.fetchone()
+            if row is None:
+                return None
+            cols = [col[0] for col in cur.description]
+            return dict(zip(cols, row, strict=True))
         if "early_vote_pointer" in sql:
             return {"file_id": self._pointer}
         if "early_vote_day" in sql and "ev_date = ?" in sql:
@@ -312,6 +342,11 @@ class _PreviewD1:
             }
         if "FROM early_vote_day" in sql and "ORDER BY" in sql:
             return {"results": list(self._days), "success": True}
+        if "early_vote_county_aggregate" in sql and "ORDER BY" in sql:
+            cur = self._sqlite.execute(sql, args)
+            cols = [col[0] for col in cur.description]
+            rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+            return {"results": rows, "success": True}
         if "json_each(?1" in sql:
             return {"results": self._sqlite_all(sql, args), "success": True}
         return {"results": [], "success": True}
