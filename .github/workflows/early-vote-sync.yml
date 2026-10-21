@@ -225,12 +225,10 @@ jobs:
           precompute_args=(
             --election-id "${ELECTION_ID}"
             --apply
+            --finalize-kv-digest "${SYNC_SHA}"
           )
           if [[ "${SYNC_STATUS}" == "wrote" ]]; then
-            precompute_args+=(
-              --finalize-kv-digest "${SYNC_SHA}"
-              --finalize-kv-after-sync
-            )
+            precompute_args+=(--finalize-kv-after-sync)
           fi
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
             uv run python -m texas_turnout_scraper.early_vote_d1_precompute_backfill \

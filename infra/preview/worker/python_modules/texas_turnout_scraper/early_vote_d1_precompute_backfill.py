@@ -34,6 +34,7 @@ _CHUNK_PAYLOAD_SQL = (
     "WHERE source_election_id = ? AND file_id = ? AND chunk_index = ?"
 )
 _FILES_SQL = "SELECT file_id, sha256, chunk_count FROM early_vote_file WHERE source_election_id = ?"
+_POINTER_SQL = "SELECT file_id FROM early_vote_pointer WHERE source_election_id = ?"
 _FILE_AGG_EXISTS_SQL = (
     "SELECT file_id FROM early_vote_file_aggregate "
     "WHERE source_election_id = ? AND file_id = ? LIMIT 1"
@@ -73,6 +74,8 @@ class PrecomputeBackfillStore(Protocol):
     ) -> None: ...
 
     def bump_version(self, election_id: str, digest: str) -> str: ...
+
+    def stored_hash(self, election_id: str) -> str | None: ...
 
     def close(self) -> None: ...
 
@@ -183,6 +186,126 @@ def _precompute_complete(
         return False
     actual = _coerce_int(count_rows[0].get("n"))
     return actual is not None and actual == expected_county_rows
+
+
+def _target_file_ids_for_finalize(
+    store: PrecomputeBackfillStore,
+    database_id: str,
+    election_id: str,
+    published_digest: str,
+) -> set[str]:
+    targets: set[str] = set()
+    pointer_rows = store._query_rows(  # noqa: SLF001
+        database_id,
+        _POINTER_SQL,
+        [election_id],
+    )
+    for row in pointer_rows:
+        file_id = row.get("file_id")
+        if isinstance(file_id, str) and file_id:
+            targets.add(file_id)
+    file_rows = store._query_rows(database_id, _FILES_SQL, [election_id])  # noqa: SLF001
+    for row in file_rows:
+        file_id = row.get("file_id")
+        sha256 = row.get("sha256")
+        if isinstance(file_id, str) and file_id and sha256 == published_digest:
+            targets.add(file_id)
+    return targets
+
+
+def _file_needs_precompute_work(
+    store: PrecomputeBackfillStore,
+    database_id: str,
+    election_id: str,
+    row: dict[str, object],
+) -> bool | None:
+    file_id = row.get("file_id")
+    if not isinstance(file_id, str) or not file_id:
+        return None
+    chunk_count = _coerce_int(row.get("chunk_count"))
+    if chunk_count is None or chunk_count < 1:
+        return None
+    chunks = _load_chunks_b64_paged(
+        store,
+        database_id,
+        election_id,
+        file_id,
+        expected_count=chunk_count,
+    )
+    if chunks is None:
+        return None
+    decoded = decode_chunk_payloads(chunks)
+    try:
+        body = aggregate_body_from_decoded(decoded, source_election_id=election_id)
+    except ValueError:
+        return None
+    expected_counties = _expected_county_rows(body)
+    if _precompute_complete(
+        store,
+        database_id,
+        election_id,
+        file_id,
+        expected_county_rows=expected_counties,
+    ):
+        return False
+    return True
+
+
+def published_files_pending_precompute(
+    store: PrecomputeBackfillStore,
+    election_id: str,
+    *,
+    published_digest: str,
+) -> bool:
+    """True when pointer or digest-matched files lack complete aggregate rows."""
+    digest = published_digest.strip()
+    if not digest:
+        return False
+    database_id = store._database_uuid_if_exists(election_id)  # noqa: SLF001
+    if database_id is None:
+        return False
+    store._ensure_schema(database_id)  # noqa: SLF001
+    targets = _target_file_ids_for_finalize(store, database_id, election_id, digest)
+    if not targets:
+        return False
+    file_rows = store._query_rows(database_id, _FILES_SQL, [election_id])  # noqa: SLF001
+    by_id: dict[str, dict[str, object]] = {}
+    for row in file_rows:
+        file_id = row.get("file_id")
+        if isinstance(file_id, str) and file_id:
+            by_id[file_id] = row
+    for file_id in targets:
+        row = by_id.get(file_id)
+        if row is None:
+            continue
+        needs = _file_needs_precompute_work(store, database_id, election_id, row)
+        if needs is True:
+            return True
+    return False
+
+
+def should_finalize_kv_version(
+    *,
+    published_digest: str,
+    files_written: int,
+    finalize_after_sync: bool,
+    pending_before: bool,
+    pending_after: bool,
+    kv_stored_hash: str | None,
+) -> bool:
+    """Whether to bump KV after precompute in the defer-KV workflow."""
+    digest = published_digest.strip()
+    if not digest:
+        return False
+    if files_written > 0:
+        return True
+    if finalize_after_sync:
+        return True
+    if pending_before and not pending_after:
+        return True
+    if kv_stored_hash != digest and not pending_after:
+        return True
+    return False
 
 
 def run_precompute_backfill_on_store(
@@ -334,13 +457,39 @@ def main(argv: list[str] | None = None) -> int:
         kv_namespace_id=namespace_id,
     )
     try:
+        digest = args.finalize_kv_digest.strip()
+        pending_before = (
+            published_files_pending_precompute(
+                store,
+                args.election_id,
+                published_digest=digest,
+            )
+            if digest
+            else False
+        )
         result = run_precompute_backfill_on_store(
             store,
             args.election_id,
             dry_run=args.dry_run,
         )
-        digest = args.finalize_kv_digest.strip()
-        if args.apply and digest and (result.files_written > 0 or args.finalize_kv_after_sync):
+        pending_after = (
+            published_files_pending_precompute(
+                store,
+                args.election_id,
+                published_digest=digest,
+            )
+            if digest
+            else False
+        )
+        kv_stored = store.stored_hash(args.election_id)
+        if args.apply and should_finalize_kv_version(
+            published_digest=digest,
+            files_written=result.files_written,
+            finalize_after_sync=args.finalize_kv_after_sync,
+            pending_before=pending_before,
+            pending_after=pending_after,
+            kv_stored_hash=kv_stored,
+        ):
             version = store.bump_version(args.election_id, digest)
             logger.info(
                 "precompute backfill finalized KV election_id=%s version=%s",
