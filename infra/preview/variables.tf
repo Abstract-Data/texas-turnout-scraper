@@ -41,3 +41,25 @@ variable "primary_location_hint" {
     error_message = "primary_location_hint must be a D1 location hint."
   }
 }
+
+variable "preview_zone_name" {
+  type        = string
+  description = "Cloudflare zone on the Abstract Data personal account that hosts the preview API custom domain. Not the Quorum Report account."
+  default     = "abstractdata.io"
+
+  validation {
+    condition     = can(regex("^[a-z0-9.-]+\\.[a-z]{2,}$", var.preview_zone_name))
+    error_message = "preview_zone_name must be a DNS zone name (e.g. abstractdata.io)."
+  }
+}
+
+variable "preview_api_hostname" {
+  type        = string
+  description = "Custom domain hostname routed to the preview Worker. Cloudflare Access and the Worker app auth apply on this host."
+  default     = "ev-api-preview.abstractdata.io"
+
+  validation {
+    condition     = can(regex("^[a-z0-9.-]+$", var.preview_api_hostname))
+    error_message = "preview_api_hostname must be a hostname without a scheme or path."
+  }
+}

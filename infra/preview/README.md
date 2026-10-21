@@ -1,12 +1,12 @@
 # Preview Terraform
 
-Preview/staging stack on the Abstract Data personal Cloudflare account. It creates one D1 shell database, one KV namespace, the Python Worker `tx-turnout-ev-api-preview`, and a Cloudflare Access service token. There is no production workspace.
+Preview/staging stack on the Abstract Data personal Cloudflare account. It creates one D1 shell database, one KV namespace, the Python Worker `tx-turnout-ev-api-preview`, a **custom domain** route, and a Cloudflare Access service token. There is no production workspace.
 
-The Worker has no `workers.dev` route and no preview or version URL. `subdomain.enabled` and `subdomain.previews_enabled` are both false. Nothing answers on a public hostname.
+The Worker is reachable only on the configured custom domain (default `ev-api-preview.abstractdata.io` in zone `abstractdata.io` on the personal account). `workers.dev` and preview/version URLs stay off (`subdomain.enabled` and `subdomain.previews_enabled` are both false).
 
 KV writes can take about 60 seconds to show up. That is not fit for election-night results. This module does not turn on KV instant mode.
 
-The Worker module is a placeholder. It does not query D1 or KV and it does not log roster fields. The read API replaces `worker/entry.py` later. Consumers bind to this Worker as `EV_API`.
+Consumers bind to this Worker as `EV_API`. The read API is FastAPI on the deployed Python Worker bundle under `worker/`.
 
 Python Workers need the `workers` SDK vendored into `worker/python_modules/` (via [Pywrangler](https://developers.cloudflare.com/workers/languages/python/packages/)). Terraform uploads `entry.py` plus that tree on `cloudflare_worker_version`. After changing `worker/pyproject.toml`, run:
 
@@ -23,6 +23,23 @@ Root `pyproject.toml` lists `infra/preview/worker/python_modules` in Ruff `exten
 Pull requests run `terraform fmt`, `terraform validate`, and `tflint` only. They do not read secrets and they do not plan or apply.
 
 A push to `main` or `workflow_dispatch` on `main` runs two jobs in the GitHub Environment `preview`. Plan is John's first approval. Apply is the second. John sees the plan before anything applies. Do not run `terraform plan` or `terraform apply` on a laptop.
+
+## Routing and Access
+
+Hostname choice: **Workers custom domain** on `abstractdata.io` (personal Cloudflare account), not `workers.dev`. Custom domain keeps preview off the shared `workers.dev` surface, matches production-like hostnames for Quick Results, and pairs with hostname-based Access. Cloudflare documents protecting Workers on custom domains via Access ([Cloudflare Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/), [custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/#require-sign-in-for-a-custom-domain)).
+
+Terraform attaches `cloudflare_workers_custom_domain` and keeps the existing Access application (`preview_service` / service token policy). The Worker destination plus a public hostname destination enforce Access on the custom domain.
+
+### Request outcomes (preview only)
+
+| Caller | Edge (Cloudflare Access) | Worker (`/health`, aggregate routes) |
+| --- | --- | --- |
+| No Access credentials | **403** or block (no public read) | Not reached |
+| Access pass, no Worker credential (no service headers, no consumer token) | Allow | **401** |
+| Access service token headers (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) | Allow | **200** on `/health` and data routes |
+| Access pass + minted consumer bearer or `X-API-Key` | Allow | **200** on `/health` and data routes |
+
+Internal automation should send the Terraform-managed Access service token headers. External consumers must pass Access and send a minted consumer token on each request (see below). Do not log token values.
 
 ## Bootstrap
 
@@ -52,13 +69,15 @@ Do the GitHub settings before adding secrets. Do not try to apply from this pull
 | `R2_SECRET_ACCESS_KEY` | R2 S3 secret access key for the state bucket. |
 | `CLOUDFLARE_KV_NAMESPACE_ID` | Add after the first apply. Copy the `kv_namespace_id` output. |
 
-`CLOUDFLARE_API_TOKEN` account scopes, limited to the Abstract Data personal account. No zone scopes. No Quorum Report account. No Workers R2 Storage permission (state uses the R2 S3 keys):
+`CLOUDFLARE_API_TOKEN` account scopes, limited to the Abstract Data personal account. No Quorum Report account. No Workers R2 Storage permission (state uses the R2 S3 keys). For the custom domain route, the token also needs read access to the `abstractdata.io` zone (or whichever `preview_zone_name` you use):
 
 - Account → D1 → Edit
 - Account → Workers KV Storage → Edit
 - Account → Workers Scripts → Edit
 - Account → Access: Apps and Policies → Write
 - Account → Access: Service Tokens → Write
+- Zone → DNS → Edit (zone `abstractdata.io`, personal account)
+- Zone → Zone → Read (same zone)
 
 Permission names: [Cloudflare API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/).
 
@@ -72,6 +91,7 @@ After the first successful apply, the Access client id and secret are in the R2 
 cd infra/preview
 op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- bash -c 'AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" terraform output -raw access_client_id'
 op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- bash -c 'AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" terraform output -raw access_client_secret'
+op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- bash -c 'AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" terraform output -raw preview_api_url'
 ```
 
 `backend.hcl` is gitignored and contains only:
@@ -87,9 +107,9 @@ The preview Worker version binds `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (fro
 
 ## Consumer bearer tokens (minted)
 
-Internal callers keep using Cloudflare Access. External consumers use minted tokens:
+Internal callers keep using Cloudflare Access service token headers. External consumers use minted tokens in addition to Access:
 
-- `Authorization: Bearer <token>` or `X-API-Key: <token>` on aggregate routes.
+- `Authorization: Bearer <token>` or `X-API-Key: <token>` on aggregate routes and `/health`.
 - Only scrypt digests are stored (never plaintext). KV key prefix `consumer_token:<digest>` mirrors active rows in preview shell D1 table `consumer_api_token` (created on first `tx-turnout tokens mint`).
 
 John manages tokens locally (1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a` plus Terraform outputs):

@@ -116,18 +116,14 @@ app = create_app(
 )
 
 
-@app.get("/health")
-async def _health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
 protected_path = http_path("49664", "aggregates", "totals")
+health_path = "/health"
 
 
 async def _http_smoke() -> tuple[int, int]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
-        health = await client.get("/health")
+        health = await client.get(health_path)
         protected = await client.get(protected_path)
         return health.status_code, protected.status_code
 
@@ -137,8 +133,8 @@ health_status, protected_status = asyncio.run(_http_smoke())
 print(f"pyodide http GET /health status={health_status}")
 print(f"pyodide http GET {protected_path} unauthenticated status={protected_status}")
 
-if health_status != 200:
-    print("expected GET /health status=200", file=sys.stderr)
+if health_status not in {401, 403}:
+    print("expected unauthenticated GET /health status=401 or 403", file=sys.stderr)
     sys.exit(1)
 if protected_status not in {401, 403}:
     print("expected unauthenticated protected route status=401 or 403", file=sys.stderr)
