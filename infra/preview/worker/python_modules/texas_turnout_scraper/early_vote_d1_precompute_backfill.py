@@ -33,9 +33,7 @@ _CHUNK_PAYLOAD_SQL = (
     "SELECT payload_b64 FROM early_vote_chunk "
     "WHERE source_election_id = ? AND file_id = ? AND chunk_index = ?"
 )
-_FILES_SQL = (
-    "SELECT file_id, sha256, chunk_count FROM early_vote_file WHERE source_election_id = ?"
-)
+_FILES_SQL = "SELECT file_id, sha256, chunk_count FROM early_vote_file WHERE source_election_id = ?"
 _FILE_AGG_EXISTS_SQL = (
     "SELECT file_id FROM early_vote_file_aggregate "
     "WHERE source_election_id = ? AND file_id = ? LIMIT 1"
