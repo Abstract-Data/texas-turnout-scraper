@@ -124,6 +124,9 @@ class _SmokeKv:
     async def put(self, key: str, value: str, *, expiration_ttl: int | None) -> None:
         self._values[key] = value
 
+    async def delete(self, key: str) -> None:
+        self._values.pop(key, None)
+
 
 _consumer_plaintext = "pyodide-smoke-consumer-credential"
 _consumer_digest = hash_token(_consumer_plaintext)
@@ -240,18 +243,48 @@ class _PreviewD1:
     ) -> None:
         import base64
 
+        from texas_turnout_scraper.early_vote_sync import iter_chunk_b64
+
         self._pointer = pointer
         self._file_id = file_id
         self._sha256 = sha256
-        self._chunk_b64 = base64.b64encode(decoded).decode()
+        self._chunks = dict(enumerate(iter_chunk_b64(decoded)))
+        self._chunk_b64 = self._chunks.get(0, "")
         self._days = days
+        self._byte_length = len(decoded)
 
     def prepare(self, sql: str) -> _Prepared:
         return _Prepared(self, sql)
 
+    def _sqlite_all(self, sql: str, args: tuple[object, ...]) -> list[dict[str, object]]:
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            cur = conn.execute(sql, args)
+            columns = [col[0] for col in cur.description or []]
+            return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
     def first(self, sql: str, args: tuple[object, ...]) -> object | None:
         if "early_vote_pointer" in sql:
             return {"file_id": self._pointer}
+        if "early_vote_day" in sql and "ev_date = ?" in sql:
+            ev_date = str(args[1])
+            for day in self._days:
+                if day["ev_date"] == ev_date:
+                    return day
+            return None
+        if "byte_length" in sql:
+            return {"byte_length": self._byte_length}
+        if "chunk_index = ?" in sql and "payload_b64" in sql:
+            index = int(args[2])
+            payload = self._chunks.get(index)
+            return {"payload_b64": payload} if payload else None
+        if "json_each(?1" in sql:
+            rows = self._sqlite_all(sql, args)
+            return rows[0] if rows else None
         return None
 
     def run(self, sql: str, args: tuple[object, ...]) -> dict[str, object]:
@@ -267,19 +300,20 @@ class _PreviewD1:
                 ],
                 "success": True,
             }
-        if "FROM early_vote_chunk" in sql:
+        if "chunk_index FROM early_vote_chunk" in sql.replace("\n", " "):
+            return {
+                "results": [{"chunk_index": str(index)} for index in sorted(self._chunks)],
+                "success": True,
+            }
+        if "FROM early_vote_chunk" in sql and "chunk_index = ?" not in sql:
             return {
                 "results": [{"chunk_index": "0", "payload_b64": self._chunk_b64}],
                 "success": True,
             }
         if "FROM early_vote_day" in sql and "ORDER BY" in sql:
             return {"results": list(self._days), "success": True}
-        if "FROM early_vote_day" in sql and "ev_date = ?" in sql:
-            ev_date = str(args[1])
-            for day in self._days:
-                if day["ev_date"] == ev_date:
-                    return day
-            return None
+        if "json_each(?1" in sql:
+            return {"results": self._sqlite_all(sql, args), "success": True}
         return {"results": [], "success": True}
 
 

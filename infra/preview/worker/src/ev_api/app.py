@@ -41,6 +41,9 @@ class _ClosedKv:
     async def put(self, key: str, value: str, *, expiration_ttl: int | None) -> None:
         return None
 
+    async def delete(self, key: str) -> None:
+        return None
+
 
 class _ClosedStore:
     async def build_body(
@@ -87,6 +90,8 @@ def outcome_response(outcome: ReadOutcome) -> Response:
         return JSONResponse({"detail": "not_found"}, status_code=404, headers=headers)
     if outcome.status_code == 400:
         return JSONResponse({"detail": "bad_request"}, status_code=400, headers=headers)
+    if outcome.status_code == 503 and outcome.body is not None:
+        return JSONResponse(outcome.body, status_code=503, headers=headers)
     return Response(status_code=outcome.status_code, headers=headers)
 
 

@@ -100,6 +100,17 @@ def cache_key(election_id: object, version: object, *segments: object) -> str:
     return f"ev:{election}:v{version_no}:{suffix}"
 
 
+def single_flight_lock_key(election_id: object, version: object, *segments: object) -> str:
+    """KV cold-miss lock for one aggregate endpoint at one published version.
+
+    Example: ``ev:53815:v7:lock:aggregates:county-by-day``
+    """
+    election = require_election_id(election_id)
+    version_no = _require_version(version)
+    endpoint = ":".join(_require_segments(segments))
+    return f"ev:{election}:v{version_no}:lock:{endpoint}"
+
+
 def http_path(election_id: object, *segments: object) -> str:
     """HTTP path for the same resource ``cache_key`` addresses.
 

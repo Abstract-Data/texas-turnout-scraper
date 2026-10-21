@@ -23,6 +23,7 @@ from texas_turnout_scraper.civix.read_client import (
     etag_matches,
     http_path,
     queries_d1,
+    single_flight_lock_key,
     version_from_etag,
     version_key,
 )
@@ -56,6 +57,10 @@ def test_version_and_cache_keys_keep_election_ids_as_strings() -> None:
     assert version_key(49664) == "ev:49664:version"
     assert cache_key("49664", 42, "county", "453") == "ev:49664:v42:county:453"
     assert cache_key("049664", 42, "county", "001") == "ev:049664:v42:county:001"
+    assert (
+        single_flight_lock_key("53815", 7, "aggregates", "county-by-day")
+        == "ev:53815:v7:lock:aggregates:county-by-day"
+    )
     assert http_path("49664", "county", "453") == "/elections/49664/county/453"
 
 

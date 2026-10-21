@@ -12,6 +12,8 @@ The former `workers/ev-api/` tree is merged here so Terraform (`worker_bundle.tf
 
 **~60s KV propagation is not fit for election-night results.** Responses use versioned keys `ev:<election>:v<N>:<path>`, ETag `v<N>`, optional `If-None-Match` → 304, and `expirationTtl` on cache writes (default 24h). D1 is queried only on a cache miss.
 
+**Cold-miss stampede guard (best-effort):** concurrent misses on the same election, version, and aggregate endpoint coordinate with a KV lock key `ev:<election>:v<N>:lock:<endpoint>` (60s TTL, Cloudflare minimum). A request that sees the lock rechecks the versioned cache once; if still empty it returns **503** with `Retry-After` and `{"detail":"aggregate_in_progress"}` instead of starting another full D1 chunk walk. KV `get`/`put` are **not atomic**, so the lock narrows overlap but does not eliminate it.
+
 ## Regenerate the Pyodide bundle
 
 ```bash
