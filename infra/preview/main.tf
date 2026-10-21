@@ -49,8 +49,10 @@ resource "cloudflare_worker" "ev_api" {
   logpush    = false
   tags       = ["preview"]
 
+  # Preview-only: full head sampling so aggregate 500s are visible in Workers Logs.
   observability = {
-    enabled = false
+    enabled            = true
+    head_sampling_rate = 1
   }
 
   # workers.dev stays off (no *.workers.dev route). Traffic uses the custom

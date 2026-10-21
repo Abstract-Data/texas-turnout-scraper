@@ -20,15 +20,35 @@ class D1Prepared(Protocol):
     async def first(self) -> object | None: ...
 
 
-def _rows_from_run_result(result: object) -> list[object]:
-    """Normalize a D1 ``run()`` payload to a row list (Python Workers API)."""
-    if result is None:
+def _d1_to_python(value: object) -> object:
+    """Convert Pyodide JsProxy / JS values from D1 into plain Python."""
+    if value is None:
+        return None
+    to_py = getattr(value, "to_py", None)
+    if callable(to_py):
+        try:
+            return to_py()
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return value
+    return value
+
+
+def _coerce_results_list(raw: object) -> list[object]:
+    """Normalize D1 ``run()`` / ``all()`` payloads to a list of row objects."""
+    raw = _d1_to_python(raw)
+    if raw is None:
         return []
-    if isinstance(result, dict):
-        raw = result.get("results")
-        return list(raw) if isinstance(raw, list) else []
-    raw = getattr(result, "results", None)
-    return list(raw) if isinstance(raw, list) else []
+    if isinstance(raw, list):
+        return list(raw)
+    if isinstance(raw, dict):
+        return _coerce_results_list(raw.get("results"))
+    nested = getattr(raw, "results", None)
+    if nested is not None and nested is not raw:
+        return _coerce_results_list(nested)
+    try:
+        return list(raw)  # type: ignore[arg-type]
+    except TypeError:
+        return []
 
 
 async def _d1_fetch_all(prepared: object) -> list[object]:
@@ -36,18 +56,26 @@ async def _d1_fetch_all(prepared: object) -> list[object]:
     all_fn = getattr(prepared, "all", None)
     if callable(all_fn):
         try:
-            rows = await all_fn()
+            outcome = await all_fn()
         except (AttributeError, NotImplementedError, TypeError):
-            rows = None
-        if isinstance(rows, list):
+            outcome = None
+        rows = _coerce_results_list(outcome)
+        if rows:
             return rows
-        from_run = _rows_from_run_result(rows)
-        if from_run:
-            return from_run
     run_fn = getattr(prepared, "run", None)
     if callable(run_fn):
-        return _rows_from_run_result(await run_fn())
+        return _coerce_results_list(await run_fn())
     return []
+
+
+async def _d1_fetch_first(prepared: object) -> object | None:
+    first_fn = getattr(prepared, "first", None)
+    if not callable(first_fn):
+        return None
+    row = await first_fn()
+    if row is None:
+        return None
+    return _d1_to_python(row)
 
 
 class D1Database(Protocol):
@@ -84,9 +112,45 @@ class EvDayRow:
 
 
 def _row_value(row: object, key: str) -> object | None:
+    row = _d1_to_python(row)
     if isinstance(row, dict):
-        return row.get(key)
-    return getattr(row, key, None)
+        return _d1_to_python(row.get(key))
+    try:
+        if hasattr(row, key):
+            return _d1_to_python(getattr(row, key))
+    except (AttributeError, TypeError):
+        pass
+    get_fn = getattr(row, "get", None)
+    if callable(get_fn):
+        try:
+            return _d1_to_python(get_fn(key))
+        except (AttributeError, KeyError, TypeError):
+            return None
+    return None
+
+
+def _d1_int(value: object) -> int | None:
+    value = _d1_to_python(value)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text == "":
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _file_views(rows: list[object]) -> tuple[EarlyVoteFileView, ...]:
@@ -98,16 +162,12 @@ def _file_views(rows: list[object]) -> tuple[EarlyVoteFileView, ...]:
         chunks_present = _row_value(row, "chunks_present")
         if not isinstance(file_id, str) or not isinstance(sha256, str):
             continue
-        if not isinstance(chunk_count, int):
-            try:
-                chunk_count = int(chunk_count)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                continue
-        if not isinstance(chunks_present, int):
-            try:
-                chunks_present = int(chunks_present)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                chunks_present = 0
+        chunk_count = _d1_int(chunk_count)
+        if chunk_count is None:
+            continue
+        chunks_present = _d1_int(chunks_present)
+        if chunks_present is None:
+            chunks_present = 0
         views.append(
             EarlyVoteFileView(
                 file_id=file_id,
@@ -121,7 +181,7 @@ def _file_views(rows: list[object]) -> tuple[EarlyVoteFileView, ...]:
 
 async def load_pointer_file_id(db: D1Database, source_election_id: str) -> str | None:
     election_id = require_election_id(source_election_id)
-    row = await db.prepare(_POINTER_SQL).bind(election_id).first()
+    row = await _d1_fetch_first(db.prepare(_POINTER_SQL).bind(election_id))
     if row is None:
         return None
     file_id = _row_value(row, "file_id")
@@ -174,7 +234,7 @@ async def resolve_day_for_date(
 ) -> EvDayRow | None:
     election_id = require_election_id(source_election_id)
     try:
-        row = await db.prepare(_DAY_LOOKUP_SQL).bind(election_id, ev_date).first()
+        row = await _d1_fetch_first(db.prepare(_DAY_LOOKUP_SQL).bind(election_id, ev_date))
     except Exception:
         return None
     if row is None:
@@ -209,11 +269,9 @@ async def load_chunks_b64(
         payload = _row_value(row, "payload_b64")
         if not isinstance(payload, str):
             continue
-        if not isinstance(index, int):
-            try:
-                index = int(index)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                continue
+        index = _d1_int(index)
+        if index is None:
+            continue
         chunks.append((index, payload))
     chunks.sort(key=lambda item: item[0])
     return [payload for _, payload in chunks]

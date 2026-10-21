@@ -13,6 +13,24 @@ from texas_turnout_scraper.early_vote_aggregates import (
 )
 
 
+def test_turnout_json_uses_civix_county_name_field() -> None:
+    payload = {
+        "turnout_by_county": [
+            {
+                "name": "TRAVIS",
+                "total_in_person_votes_for_election": 4,
+                "total_mail_votes_for_election": 1,
+            }
+        ]
+    }
+    body = aggregates_from_turnout_json(
+        json.dumps(payload).encode(),
+        source_election_id="53815",
+    )
+    assert body["statewide"]["total"] == 5
+    assert body["by_county"][0]["county"] == "TRAVIS"
+
+
 def test_turnout_json_statewide_and_county_totals() -> None:
     payload = {
         "turnout_by_county": [
