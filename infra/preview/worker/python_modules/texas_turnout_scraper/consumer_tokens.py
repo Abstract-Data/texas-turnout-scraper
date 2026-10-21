@@ -81,7 +81,7 @@ def _scrypt_digest(password: bytes) -> bytes:
             )
         except (AttributeError, NotImplementedError, ValueError):
             pass
-    from pyscrypt import hash as pyscrypt_hash
+    from texas_turnout_scraper._vendor.pyscrypt.hash import hash as pyscrypt_hash
 
     return pyscrypt_hash(
         password,
