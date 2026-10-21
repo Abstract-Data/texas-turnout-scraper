@@ -259,3 +259,17 @@ def test_http_health_invalid_consumer_token_401() -> None:
         token_db=_TokenDb(set()),
     ).get("/health", headers={"Authorization": f"Bearer {secret}"})
     assert response.status_code == 401
+
+
+def test_http_health_consumer_bearer_revoked_401() -> None:
+    """Revoked tokens are absent from KV and excluded by ACTIVE_BY_HASH_SQL."""
+    secret = "consumer-health-revoked-after-mint"
+    digest = hash_token(secret)
+    assert digest  # digest only; never log the minted secret
+    kv = MemoryKv()  # revoke clears KV mirror
+    response = _client(
+        kv,
+        RecordingStore(),
+        token_db=_TokenDb(set()),
+    ).get("/health", headers={"Authorization": f"Bearer {secret}"})
+    assert response.status_code == 401

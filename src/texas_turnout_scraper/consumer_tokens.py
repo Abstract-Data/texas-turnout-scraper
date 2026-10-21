@@ -1,13 +1,16 @@
 """Minted consumer API tokens for the preview early-vote read API.
 
-Plaintext tokens are shown once at mint time. Only scrypt digests are stored in
-D1 and KV. Validation accepts ``Authorization: Bearer`` or ``X-API-Key``.
+Plaintext tokens are shown once at mint time. Only digests are stored in D1 and
+KV (scheme ``v2`` = HMAC-SHA256). Validation accepts ``Authorization: Bearer`` or
+``X-API-Key``. Legacy scrypt digests (preview-only, pre-v2) no longer match and
+fail closed with 401 until tokens are re-minted.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import secrets
 from collections.abc import Mapping
 
@@ -17,8 +20,9 @@ BEARER_PREFIX = "bearer "
 
 KV_PREFIX = "consumer_token:"
 
-# Fixed deployment salt for scrypt (not derived from user secrets).
-_CONSUMER_TOKEN_PEPPER = b"tx-turnout-preview-consumer-v1-pepper!!"
+# Active digest scheme (fast on Pyodide; shared by CLI mint and Worker auth).
+DIGEST_SCHEME_V2 = "v2"
+_CONSUMER_TOKEN_PEPPER_V2 = b"tx-turnout-preview-consumer-v2-hmac-pepper!!"
 
 _SCHEMA_CREATES: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS consumer_api_token (
@@ -62,14 +66,12 @@ def new_token_id() -> str:
 
 def hash_token(api_token: str) -> str:
     """Stable digest stored in D1/KV; never log the minted token."""
-    return hashlib.scrypt(
+    digest = hmac.new(
+        _CONSUMER_TOKEN_PEPPER_V2,
         api_token.encode("utf-8"),
-        salt=_CONSUMER_TOKEN_PEPPER,
-        n=2**14,
-        r=8,
-        p=1,
-        dklen=32,
-    ).hex()
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{DIGEST_SCHEME_V2}:{digest}"
 
 
 def kv_key_for_hash(token_hash: str) -> str:

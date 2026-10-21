@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+
+from texas_turnout_scraper import consumer_tokens as ct
 from texas_turnout_scraper.consumer_tokens import (
+    DIGEST_SCHEME_V2,
     extract_consumer_credential,
     hash_token,
     kv_key_for_hash,
@@ -10,10 +15,25 @@ from texas_turnout_scraper.consumer_tokens import (
 )
 
 
-def test_hash_token_is_stable_hex() -> None:
+def test_hash_token_v2_is_stable_hmac_sha256() -> None:
     digest = hash_token("example-secret")
-    assert len(digest) == 64
+    assert digest.startswith(f"{DIGEST_SCHEME_V2}:")
+    hex_part = digest.split(":", 1)[1]
+    assert len(hex_part) == 64
+    expected = hmac.new(
+        ct._CONSUMER_TOKEN_PEPPER_V2,
+        b"example-secret",
+        hashlib.sha256,
+    ).hexdigest()
+    assert hex_part == expected
     assert digest == hash_token("example-secret")
+
+
+def test_hash_token_v2_prefixed_not_legacy_scrypt_shape() -> None:
+    """Pre-v2 scrypt rows used bare 64-char hex; v2 digests are ``v2:<hex>``."""
+    digest = hash_token("legacy-check")
+    assert digest.startswith(f"{DIGEST_SCHEME_V2}:")
+    assert len(digest) > 64
 
 
 def test_extract_bearer_and_api_key() -> None:

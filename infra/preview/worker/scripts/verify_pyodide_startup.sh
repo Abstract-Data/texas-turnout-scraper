@@ -79,6 +79,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import sys
+import time
 
 # Block real sockets so import-time network fails here (Workers have no host egress).
 def _deny_socket(*_args: object, **_kwargs: object) -> socket.socket:
@@ -100,15 +101,28 @@ import entry as _worker_entry  # noqa: F401
 
 from ev_api.app import ReadDeps, _ClosedKv, _ClosedStore, create_app
 from texas_turnout_scraper.civix.read_client import http_path
+from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
 
 assert create_app().title == "Early vote read API"
 _ = ArgsKwargs((), {})
 print("pyodide startup import smoke: OK")
 
-# Stub D1/KV via closed in-process deps (no Cloudflare bindings).
+class _SmokeKv:
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    async def get(self, key: str) -> str | None:
+        return self._values.get(key)
+
+
+_consumer_plaintext = "pyodide-smoke-consumer-credential"
+_consumer_digest = hash_token(_consumer_plaintext)
+_smoke_kv = _SmokeKv({kv_key_for_hash(_consumer_digest): "1"})
+
+# Stub D1/KV via in-process deps (no Cloudflare bindings).
 app = create_app(
     ReadDeps(
-        kv=_ClosedKv(),
+        kv=_smoke_kv,
         store=_ClosedStore(),
         access_client_id="pyodide-smoke-client-id",
         access_client_secret="pyodide-smoke-client-secret",
@@ -120,24 +134,47 @@ protected_path = http_path("49664", "aggregates", "totals")
 health_path = "/health"
 
 
-async def _http_smoke() -> tuple[int, int, int]:
+async def _http_smoke() -> tuple[int, int, int, int, int, float]:
     transport = ASGITransport(app=app)
     access_headers = {
         "CF-Access-Client-Id": app.state.read_deps.access_client_id,
         "CF-Access-Client-Secret": app.state.read_deps.access_client_secret,
     }
+    bearer_unknown = {"Authorization": "Bearer pyodide-smoke-unknown-token"}
+    bearer_valid = {"Authorization": f"Bearer {_consumer_plaintext}"}
     async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
         health = await client.get(health_path)
         protected = await client.get(protected_path)
         health_authorized = await client.get(health_path, headers=access_headers)
-        return health.status_code, protected.status_code, health_authorized.status_code
+        bearer_t0 = time.perf_counter()
+        health_bearer_unknown = await client.get(health_path, headers=bearer_unknown)
+        health_bearer_valid = await client.get(health_path, headers=bearer_valid)
+        bearer_wall_ms = (time.perf_counter() - bearer_t0) * 1000.0
+        return (
+            health.status_code,
+            protected.status_code,
+            health_authorized.status_code,
+            health_bearer_unknown.status_code,
+            health_bearer_valid.status_code,
+            bearer_wall_ms,
+        )
 
 
-health_status, protected_status, health_authorized_status = asyncio.run(_http_smoke())
+(
+    health_status,
+    protected_status,
+    health_authorized_status,
+    health_bearer_unknown_status,
+    health_bearer_valid_status,
+    bearer_auth_wall_ms,
+) = asyncio.run(_http_smoke())
 
 print(f"pyodide http GET /health status={health_status}")
 print(f"pyodide http GET {protected_path} unauthenticated status={protected_status}")
 print(f"pyodide http GET /health authorized status={health_authorized_status}")
+print(f"pyodide http GET /health bearer-unknown status={health_bearer_unknown_status}")
+print(f"pyodide http GET /health bearer-valid status={health_bearer_valid_status}")
+print(f"pyodide http bearer-auth wall_ms={bearer_auth_wall_ms:.1f}")
 
 if health_status not in {401, 403}:
     print("expected unauthenticated GET /health status=401 or 403", file=sys.stderr)
@@ -147,6 +184,15 @@ if protected_status not in {401, 403}:
     sys.exit(1)
 if health_authorized_status != 200:
     print("expected authorized GET /health status=200", file=sys.stderr)
+    sys.exit(1)
+if health_bearer_unknown_status != 401:
+    print("expected bearer-unknown GET /health status=401", file=sys.stderr)
+    sys.exit(1)
+if health_bearer_valid_status != 200:
+    print("expected bearer-valid GET /health status=200", file=sys.stderr)
+    sys.exit(1)
+if bearer_auth_wall_ms >= 2000.0:
+    print("expected bearer-auth wall_ms < 2000", file=sys.stderr)
     sys.exit(1)
 
 print("pyodide http startup smoke: OK")

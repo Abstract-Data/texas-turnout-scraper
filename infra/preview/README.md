@@ -111,7 +111,7 @@ The preview Worker version binds `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (fro
 Internal callers keep using Cloudflare Access service token headers. External consumers use minted tokens in addition to Access:
 
 - `Authorization: Bearer <token>` or `X-API-Key: <token>` on aggregate routes and `/health`.
-- Only scrypt digests are stored (never plaintext). KV key prefix `consumer_token:<digest>` mirrors active rows in preview shell D1 table `consumer_api_token` (created on first `tx-turnout tokens mint`).
+- Only HMAC-SHA256 digests (`v2:<hex>`, never plaintext) are stored. KV key prefix `consumer_token:<digest>` mirrors active rows in preview shell D1 table `consumer_api_token` (created on first `tx-turnout tokens mint`). Re-mint after digest scheme changes; legacy scrypt rows fail closed (401).
 
 John manages tokens locally (1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a` plus Terraform outputs):
 
