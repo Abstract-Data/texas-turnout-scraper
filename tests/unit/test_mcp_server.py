@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import respx
 
-from texas_turnout_scraper.civix import API_PREFIX, BASE_URL
+from texas_turnout_scraper.civix import API_PREFIX, BASE_URL, CivixClient
 from texas_turnout_scraper.enums import ElectionType, VoteMethod
 from texas_turnout_scraper.mcp_server import (
     civix_fetch_county_roster,
@@ -120,7 +120,11 @@ def test_civix_fetch_ed_turnout_tool() -> None:
 
 
 @respx.mock
-def test_civix_fetch_polling_places_tool() -> None:
+@patch(
+    "texas_turnout_scraper.civix.CivixClient",
+    side_effect=lambda *args, **kwargs: CivixClient(http_backend="httpx", *args, **kwargs),
+)
+def test_civix_fetch_polling_places_tool(_mock_client: MagicMock) -> None:
     csv_text = "COUNTY,POLLING_PLACE\nHARRIS,Example Location\n"
     respx.get(
         f"{BASE_URL}{API_PREFIX}/getFileByFormat",

@@ -8,6 +8,8 @@ KV writes can take about 60 seconds to show up. That is not fit for election-nig
 
 Consumers bind to this Worker as `EV_API`. The read API is FastAPI on the deployed Python Worker bundle under `worker/`.
 
+Preview Worker observability is enabled in Terraform with **`observability.logs.enabled = true`** and **`invocation_logs = false`**. Invocation logs capture inbound HTTP headers; this Worker accepts `CF-Access-Client-Secret`, `Authorization`, and `X-API-Key`, so invocation logging is off to avoid credential leakage in Workers Logs. Application **`console` / structured `logger` output** (for example unhandled exception type + route template only) remains available with **`head_sampling_rate = 1`** so operators still see aggregate read failures without sampling down debug signal on the low-traffic preview host. CI runs `tests/verify/check_ev_api_no_credential_logs.py` to block credential/header logging regressions in `ev_api`.
+
 Python Workers need the `workers` SDK vendored into `worker/python_modules/` (via [Pywrangler](https://developers.cloudflare.com/workers/languages/python/packages/)). Terraform uploads `entry.py` plus that tree on `cloudflare_worker_version`. After changing `worker/pyproject.toml`, run:
 
 ```bash

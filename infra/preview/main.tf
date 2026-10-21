@@ -49,8 +49,15 @@ resource "cloudflare_worker" "ev_api" {
   logpush    = false
   tags       = ["preview"]
 
+  # Preview-only: Workers Logs for app console/structured output (see README).
+  # invocation_logs stays false — this API accepts Access + bearer/API-key headers.
   observability = {
-    enabled = false
+    enabled = true
+    logs = {
+      enabled            = true
+      invocation_logs    = false
+      head_sampling_rate = 1
+    }
   }
 
   # workers.dev stays off (no *.workers.dev route). Traffic uses the custom

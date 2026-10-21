@@ -100,9 +100,10 @@ _ = ZoneInfo("America/Chicago")
 import entry as _worker_entry  # noqa: F401
 
 from ev_api.app import ReadDeps, _ClosedKv, _ClosedStore, create_app
+from ev_api.bindings import WorkersAggregateStore
 from texas_turnout_scraper.civix.read_client import http_path, version_key
 from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
-from texas_turnout_scraper.early_vote_sync import hash_key
+from texas_turnout_scraper.early_vote_sync import hash_key, sha256_decoded
 
 assert create_app().title == "Early vote read API"
 _ = ArgsKwargs((), {})
@@ -200,22 +201,127 @@ if bearer_auth_wall_ms >= 2000.0:
     sys.exit(1)
 
 
-class _RecordingStore:
-    async def build_body(
+class _Prepared:
+    def __init__(self, db: object, sql: str) -> None:
+        self._db = db
+        self._sql = sql
+        self._args: tuple[object, ...] = ()
+
+    def bind(self, *args: object) -> _Prepared:
+        self._args = args
+        return self
+
+    async def first(self) -> object | None:
+        return self._db.first(self._sql, self._args)
+
+    async def all(self) -> object:
+        return self._db.run(self._sql, self._args)
+
+    async def run(self) -> dict[str, object]:
+        return self._db.run(self._sql, self._args)
+
+
+class _PreviewD1:
+    """D1 stub: ``run()`` envelopes + numeric fields as strings (preview shape)."""
+
+    def __init__(
         self,
-        source_election_id: str,
-        segments: tuple[str, ...],
         *,
-        kv_sha256: str,
-    ) -> dict[str, object] | None:
-        return {"statewide": {"total": 2, "in_person": 2, "mail_in": 0}}
+        pointer: str,
+        file_id: str,
+        sha256: str,
+        decoded: bytes,
+        days: list[dict[str, str]],
+    ) -> None:
+        import base64
+
+        self._pointer = pointer
+        self._file_id = file_id
+        self._sha256 = sha256
+        self._chunk_b64 = base64.b64encode(decoded).decode()
+        self._days = days
+
+    def prepare(self, sql: str) -> _Prepared:
+        return _Prepared(self, sql)
+
+    def first(self, sql: str, args: tuple[object, ...]) -> object | None:
+        if "early_vote_pointer" in sql:
+            return {"file_id": self._pointer}
+        return None
+
+    def run(self, sql: str, args: tuple[object, ...]) -> dict[str, object]:
+        if "FROM early_vote_file" in sql:
+            return {
+                "results": [
+                    {
+                        "file_id": self._file_id,
+                        "sha256": self._sha256,
+                        "chunk_count": "1",
+                        "chunks_present": "1",
+                    }
+                ],
+                "success": True,
+            }
+        if "FROM early_vote_chunk" in sql:
+            return {
+                "results": [{"chunk_index": "0", "payload_b64": self._chunk_b64}],
+                "success": True,
+            }
+        if "FROM early_vote_day" in sql and "ORDER BY" in sql:
+            return {"results": list(self._days), "success": True}
+        if "FROM early_vote_day" in sql and "ev_date = ?" in sql:
+            ev_date = str(args[1])
+            for day in self._days:
+                if day["ev_date"] == ev_date:
+                    return day
+            return None
+        return {"results": [], "success": True}
 
 
 _AGG_ELECTION = "53815"
 _AGG_VERSION = 7
-_AGG_SHA = "smoke-sha256-not-a-voter-id"
-_agg_segments = ("aggregates", "totals")
-_agg_path = http_path(_AGG_ELECTION, *_agg_segments)
+_turnout_payload = (
+    b'{"turnout_by_county":[{"name":"TRAVIS",'
+    b'"total_in_person_votes_for_election":10,"total_mail_votes_for_election":2}]}'
+)
+_AGG_SHA = sha256_decoded(_turnout_payload)
+_day_row = {
+    "ev_date": "2026-10-20",
+    "file_id": "f53815",
+    "sha256": _AGG_SHA,
+}
+_preview_db = _PreviewD1(
+    pointer="f53815",
+    file_id="f53815",
+    sha256=_AGG_SHA,
+    decoded=_turnout_payload,
+    days=[_day_row],
+)
+
+
+class _Env:
+    DB = _preview_db
+
+
+_agg_routes = (
+    "totals",
+    "county",
+    "by-method",
+    "by-day",
+    "county-by-day",
+)
+
+
+def _agg_app(kv: _SmokeKv) -> object:
+    return create_app(
+        ReadDeps(
+            kv=kv,
+            store=WorkersAggregateStore(_Env(), {_AGG_ELECTION: "DB"}),
+            access_client_id=app.state.read_deps.access_client_id,
+            access_client_secret=app.state.read_deps.access_client_secret,
+        )
+    )
+
 
 agg_kv = _SmokeKv(
     {
@@ -223,67 +329,117 @@ agg_kv = _SmokeKv(
         hash_key(_AGG_ELECTION): _AGG_SHA,
     }
 )
-agg_app = create_app(
+agg_app = _agg_app(agg_kv)
+
+_no_days_db = _PreviewD1(
+    pointer="f53815",
+    file_id="f53815",
+    sha256=_AGG_SHA,
+    decoded=_turnout_payload,
+    days=[],
+)
+
+
+class _EnvNoDays:
+    DB = _no_days_db
+
+
+empty_days_kv = _SmokeKv(
+    {
+        version_key(_AGG_ELECTION): str(_AGG_VERSION),
+        hash_key(_AGG_ELECTION): _AGG_SHA,
+    }
+)
+county_by_day_empty_app = create_app(
     ReadDeps(
-        kv=agg_kv,
-        store=_RecordingStore(),
+        kv=empty_days_kv,
+        store=WorkersAggregateStore(_EnvNoDays(), {_AGG_ELECTION: "DB"}),
         access_client_id=app.state.read_deps.access_client_id,
         access_client_secret=app.state.read_deps.access_client_secret,
     )
 )
 
-empty_kv = _SmokeKv({})
-empty_app = create_app(
-    ReadDeps(
-        kv=empty_kv,
-        store=_ClosedStore(),
-        access_client_id=app.state.read_deps.access_client_id,
-        access_client_secret=app.state.read_deps.access_client_secret,
+
+async def _route_roundtrip(
+    client: AsyncClient,
+    path: str,
+    access_headers: dict[str, str],
+) -> tuple[int, bool, int]:
+    first = await client.get(path, headers=access_headers)
+    etag = first.headers.get("etag")
+    second = await client.get(
+        path,
+        headers={**access_headers, "If-None-Match": etag or ""},
     )
-)
+    return first.status_code, bool(etag), second.status_code
 
 
-async def _aggregate_smoke() -> tuple[int, bool, int, int]:
+async def _aggregate_smoke() -> list[tuple[str, int, bool, int]]:
     transport = ASGITransport(app=agg_app)
     access_headers = {
         "CF-Access-Client-Id": agg_app.state.read_deps.access_client_id,
         "CF-Access-Client-Secret": agg_app.state.read_deps.access_client_secret,
     }
+    outcomes: list[tuple[str, int, bool, int]] = []
     async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
-        first = await client.get(_agg_path, headers=access_headers)
-        etag = first.headers.get("etag")
-        second = await client.get(
-            _agg_path,
-            headers={**access_headers, "If-None-Match": etag or ""},
-        )
-    empty_transport = ASGITransport(app=empty_app)
-    async with AsyncClient(transport=empty_transport, base_url="http://pyodide-smoke") as client:
+        for resource in _agg_routes:
+            path = http_path(_AGG_ELECTION, "aggregates", resource)
+            status, etag_ok, inm = await _route_roundtrip(client, path, access_headers)
+            outcomes.append((resource, status, etag_ok, inm))
         missing = await client.get(
             http_path("99999", "aggregates", "totals"),
             headers=access_headers,
         )
-    return first.status_code, bool(etag), second.status_code, missing.status_code
+        outcomes.append(("unknown-election", missing.status_code, False, 0))
+    empty_transport = ASGITransport(app=county_by_day_empty_app)
+    async with AsyncClient(transport=empty_transport, base_url="http://pyodide-smoke") as client:
+        path = http_path(_AGG_ELECTION, "aggregates", "county-by-day")
+        status, etag_ok, inm = await _route_roundtrip(client, path, access_headers)
+        outcomes.append(("county-by-day-empty", status, etag_ok, inm))
+    return outcomes
 
 
-agg_status, etag_present, inm_status, empty_status = asyncio.run(_aggregate_smoke())
+agg_outcomes = asyncio.run(_aggregate_smoke())
 
-print(f"aggregate-authorized status={agg_status}")
-print(f"etag present={'yes' if etag_present else 'no'}")
-print(f"if-none-match status={inm_status}")
-print(f"empty-election status={empty_status}")
+for label, status, etag_ok, inm in agg_outcomes:
+    if label == "unknown-election":
+        print(f"empty-election status={status}")
+        continue
+    if label == "county-by-day-empty":
+        print(f"aggregate county-by-day-empty authorized status={status}")
+        print(f"aggregate county-by-day-empty etag present={'yes' if etag_ok else 'no'}")
+        print(f"aggregate county-by-day-empty if-none-match status={inm}")
+        continue
+    print(f"aggregate {label} authorized-200 status={status}")
+    print(f"aggregate {label} etag present={'yes' if etag_ok else 'no'}")
+    print(f"aggregate {label} if-none-match status={inm}")
 
-if agg_status != 200:
-    print("expected aggregate-authorized status=200", file=sys.stderr)
-    sys.exit(1)
-if not etag_present:
-    print("expected etag on aggregate response", file=sys.stderr)
-    sys.exit(1)
-if inm_status != 304:
-    print("expected if-none-match status=304", file=sys.stderr)
-    sys.exit(1)
-if empty_status != 404:
-    print("expected empty-election status=404", file=sys.stderr)
-    sys.exit(1)
+for label, status, etag_ok, inm in agg_outcomes:
+    if label == "unknown-election":
+        if status != 404:
+            print("expected empty-election status=404", file=sys.stderr)
+            sys.exit(1)
+        continue
+    if label == "county-by-day-empty":
+        if status != 404:
+            print("expected county-by-day-empty status=404", file=sys.stderr)
+            sys.exit(1)
+        if not etag_ok:
+            print("expected etag on county-by-day-empty", file=sys.stderr)
+            sys.exit(1)
+        if inm != 304:
+            print("expected county-by-day-empty if-none-match status=304", file=sys.stderr)
+            sys.exit(1)
+        continue
+    if status != 200:
+        print(f"expected aggregate {label} status=200", file=sys.stderr)
+        sys.exit(1)
+    if not etag_ok:
+        print(f"expected etag on aggregate {label}", file=sys.stderr)
+        sys.exit(1)
+    if inm != 304:
+        print(f"expected aggregate {label} if-none-match status=304", file=sys.stderr)
+        sys.exit(1)
 
 print("pyodide http startup smoke: OK")
 PY

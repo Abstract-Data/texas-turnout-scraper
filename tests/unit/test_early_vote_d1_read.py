@@ -201,3 +201,90 @@ async def test_load_published_bytes_accepts_explicit_file_id_with_day_hash() -> 
         expected_sha256="day-hash",
     )
     assert result == raw
+
+
+class _JsRow:
+    """Minimal JsProxy stand-in: attribute access + ``to_py()``."""
+
+    def __init__(self, data: dict[str, object]) -> None:
+        self._data = data
+
+    def __getattr__(self, name: str) -> object:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self._data[name]
+
+    def to_py(self) -> dict[str, object]:
+        return dict(self._data)
+
+
+class _AllReturnsRunEnvelope:
+    """Python Workers D1: ``all()`` may return the same shape as ``run()``."""
+
+    def __init__(self, db: _RunOnlyDatabaseJsRows, sql: str) -> None:
+        self._db = db
+        self._sql = sql
+        self._args: tuple[object, ...] = ()
+
+    def bind(self, *args: object) -> _AllReturnsRunEnvelope:
+        self._args = args
+        return self
+
+    async def first(self) -> object | None:
+        return None
+
+    async def all(self) -> dict[str, object]:
+        return self._db._run(self._sql, self._args)
+
+
+class _RunOnlyDatabaseJsRows(_RunOnlyDatabase):
+    def _run(self, sql: str, args: tuple[object, ...]) -> dict[str, object]:
+        if "FROM early_vote_file" in sql:
+            return {
+                "results": (
+                    _JsRow(
+                        {
+                            "file_id": "f1",
+                            "sha256": "day-hash",
+                            "chunk_count": 1,
+                            "chunks_present": 1,
+                        }
+                    ),
+                ),
+                "success": True,
+            }
+        if "FROM early_vote_chunk" in sql:
+            _election_id, file_id = args
+            payloads = self._chunks.get(str(file_id), [])
+            return {
+                "results": tuple(
+                    _JsRow({"chunk_index": index, "payload_b64": payload})
+                    for index, payload in enumerate(payloads)
+                ),
+                "success": True,
+            }
+        return {"results": (), "success": True}
+
+    def prepare(self, sql: str) -> _AllReturnsRunEnvelope:
+        return _AllReturnsRunEnvelope(self, sql)
+
+
+@pytest.mark.asyncio
+async def test_load_published_bytes_coerces_js_proxy_run_envelope() -> None:
+    raw = (
+        b'{"turnout_by_county":[{"name":"TRAVIS",'
+        b'"total_in_person_votes_for_election":1,"total_mail_votes_for_election":0}]}'
+    )
+    payload = base64.b64encode(raw).decode()
+    db = _RunOnlyDatabaseJsRows(
+        files=[],
+        chunks={"f1": [payload]},
+    )
+    result = await load_published_bytes(
+        db,
+        "53815",
+        kv_sha256="kv-hash",
+        file_id="f1",
+        expected_sha256="day-hash",
+    )
+    assert result == raw
