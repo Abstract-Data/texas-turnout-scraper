@@ -78,6 +78,7 @@ Do the GitHub settings before adding secrets. Do not try to apply from this pull
 - Account → Access: Service Tokens → Write
 - Zone → DNS → Edit (zone `abstractdata.io`, personal account)
 - Zone → Zone → Read (same zone)
+- Zone → Workers Routes → Write (same zone)
 
 Permission names: [Cloudflare API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/).
 
