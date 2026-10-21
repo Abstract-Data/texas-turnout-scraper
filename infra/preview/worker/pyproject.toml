@@ -6,8 +6,6 @@ requires-python = ">=3.14"
 dependencies = [
   "fastapi>=0.115",
   "texas-turnout-scraper",
-  # Pure-Python scrypt for consumer token digests on Pyodide (no OpenSSL hashlib.scrypt).
-  "pyscrypt>=1.6.2",
   # Pyodide has no host zoneinfo DB; zoneinfo falls back to the tzdata package.
   "tzdata",
 ]
