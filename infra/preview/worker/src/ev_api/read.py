@@ -132,6 +132,34 @@ async def _cached_hit(
     return ReadOutcome(200, etag, cached_body, "hit")
 
 
+async def _populate_versioned_cache(
+    kv: KvNamespace,
+    store: AggregateStore,
+    election_id: str,
+    query: ResourceQuery,
+    etag: str,
+    key: str,
+    *,
+    ttl_seconds: int | None,
+) -> ReadOutcome:
+    kv_sha256 = await kv.get(hash_key(election_id))
+    if kv_sha256 is None or kv_sha256 == "":
+        return ReadOutcome(404, etag, None, "miss")
+    try:
+        body = await store.build_body(
+            election_id,
+            query.segments,
+            kv_sha256=kv_sha256,
+        )
+    except AggregatesNotComputed:
+        return _not_computed_outcome(etag)
+    if body is None:
+        return ReadOutcome(404, etag, None, "miss")
+    raw = json.dumps(body, separators=(",", ":"), sort_keys=True)
+    await kv.put(key, raw, expiration_ttl=ttl_seconds)
+    return ReadOutcome(200, etag, body, "miss")
+
+
 async def read_resource(
     query: ResourceQuery,
     kv: KvNamespace,
@@ -176,23 +204,15 @@ async def read_resource(
         if recheck is not None:
             return recheck
 
-        kv_sha256 = await kv.get(hash_key(election_id))
-        if kv_sha256 is None or kv_sha256 == "":
-            return ReadOutcome(404, etag, None, "miss")
-
-        try:
-            body = await store.build_body(
-                election_id,
-                query.segments,
-                kv_sha256=kv_sha256,
-            )
-        except AggregatesNotComputed:
-            return _not_computed_outcome(etag)
-        if body is None:
-            return ReadOutcome(404, etag, None, "miss")
-        raw = json.dumps(body, separators=(",", ":"), sort_keys=True)
-        await kv.put(key, raw, expiration_ttl=ttl_seconds)
-        return ReadOutcome(200, etag, body, "miss")
+        return await _populate_versioned_cache(
+            kv,
+            store,
+            election_id,
+            query,
+            etag,
+            key,
+            ttl_seconds=ttl_seconds,
+        )
     finally:
         await kv.delete(lock_key)
 

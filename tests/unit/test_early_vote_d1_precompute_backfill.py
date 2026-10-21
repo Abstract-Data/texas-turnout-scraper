@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 
-from texas_turnout_scraper.early_vote_d1_precompute_backfill import backfill_precomputed_aggregates
+from texas_turnout_scraper.early_vote_d1_precompute_backfill import run_precompute_backfill_on_store
 from texas_turnout_scraper.early_vote_d1_precompute_store import PRECOMPUTE_SCHEMA_CREATES
 from texas_turnout_scraper.early_vote_sync import sha256_decoded
 
@@ -52,12 +52,12 @@ class _BackfillStore:
 
 
 def test_backfill_idempotent_skip_when_rows_exist() -> None:
-    decoded = b'{"turnout_by_county": []}'
+    decoded = b'{"turnout_by_county":[{"name":"TRAVIS","total_in_person_votes_for_election":1,"total_mail_votes_for_election":0}]}'
     store = _BackfillStore("53815", "f1", decoded)
-    first = backfill_precomputed_aggregates(store, "53815", dry_run=False)
+    first = run_precompute_backfill_on_store(store, "53815", dry_run=False)
     assert first.files_written == 1
     assert store.writes == 1
-    second = backfill_precomputed_aggregates(store, "53815", dry_run=False)
+    second = run_precompute_backfill_on_store(store, "53815", dry_run=False)
     assert second.files_written == 0
     assert second.files_skipped == 1
     assert store.writes == 1

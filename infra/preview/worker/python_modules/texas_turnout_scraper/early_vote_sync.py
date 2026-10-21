@@ -1266,6 +1266,19 @@ class CloudflareEarlyVoteStore:
         for start in range(0, len(rows), _INSERT_BATCH):
             self._statements(database_id, rows[start : start + _INSERT_BATCH])
 
+    def backfill_precomputed_aggregates(
+        self,
+        election_id: str,
+        *,
+        dry_run: bool,
+    ) -> object:
+        from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
+            PrecomputeBackfillResult,
+            run_precompute_backfill_on_store,
+        )
+
+        return run_precompute_backfill_on_store(self, election_id, dry_run=dry_run)
+
     def _write_precomputed_aggregates(
         self,
         database_id: str,

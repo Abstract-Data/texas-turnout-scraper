@@ -10,10 +10,6 @@ from typing import Literal
 
 from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.early_vote_d1_read import decode_chunk_payloads
-from texas_turnout_scraper.early_vote_d1_precompute_store import (
-    aggregate_body_from_decoded,
-    precompute_statements,
-)
 from texas_turnout_scraper.early_vote_sync import (
     CloudflareEarlyVoteStore,
     EarlyVoteSyncError,
@@ -64,7 +60,7 @@ def _chunks_b64(rows: list[dict[str, object]]) -> list[str]:
     return [payload for _, payload in ordered]
 
 
-def backfill_precomputed_aggregates(
+def run_precompute_backfill_on_store(
     store: CloudflareEarlyVoteStore,
     election_id: str,
     *,
@@ -72,7 +68,7 @@ def backfill_precomputed_aggregates(
 ) -> PrecomputeBackfillResult:
     """Write aggregate rows for every complete file missing precompute data."""
     election_id = require_election_id(election_id)
-    database_id = store._database_uuid_if_exists(election_id)
+    database_id = store._database_uuid_if_exists(election_id)  # noqa: SLF001
     if database_id is None:
         return PrecomputeBackfillResult(
             election_id=election_id,
@@ -81,8 +77,8 @@ def backfill_precomputed_aggregates(
             files_skipped=0,
             status="unchanged",
         )
-    store._ensure_schema(database_id)
-    files = store._query_rows(database_id, _FILES_SQL, [election_id])
+    store._ensure_schema(database_id)  # noqa: SLF001
+    files = store._query_rows(database_id, _FILES_SQL, [election_id])  # noqa: SLF001
     considered = 0
     written = 0
     skipped = 0
@@ -91,26 +87,26 @@ def backfill_precomputed_aggregates(
         if not isinstance(file_id, str) or not file_id:
             continue
         considered += 1
-        existing = store._query_rows(database_id, _AGG_EXISTS_SQL, [election_id, file_id])
+        existing = store._query_rows(database_id, _AGG_EXISTS_SQL, [election_id, file_id])  # noqa: SLF001
         if existing:
             skipped += 1
             continue
         if dry_run:
             written += 1
             continue
-        chunk_rows = store._query_rows(database_id, _CHUNK_SQL, [election_id, file_id])
+        chunk_rows = store._query_rows(database_id, _CHUNK_SQL, [election_id, file_id])  # noqa: SLF001
         chunks = _chunks_b64(chunk_rows)
         if not chunks:
             skipped += 1
             continue
         decoded = decode_chunk_payloads(chunks)
         ev_date_iso: str | None = None
-        day_rows = store._query_rows(database_id, _DAY_BY_FILE_SQL, [election_id, file_id])
+        day_rows = store._query_rows(database_id, _DAY_BY_FILE_SQL, [election_id, file_id])  # noqa: SLF001
         if day_rows:
             ev = day_rows[0].get("ev_date")
             if isinstance(ev, str) and ev:
                 ev_date_iso = ev
-        store._write_precomputed_aggregates(
+        store._write_precomputed_aggregates(  # noqa: SLF001
             database_id,
             election_id,
             file_id,
@@ -170,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         kv_namespace_id=namespace_id,
     )
     try:
-        result = backfill_precomputed_aggregates(
+        result = run_precompute_backfill_on_store(
             store,
             args.election_id,
             dry_run=args.dry_run,
