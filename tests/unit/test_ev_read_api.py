@@ -189,6 +189,7 @@ async def test_precompute_miss_returns_503_not_computed() -> None:
     assert outcome.body == {"detail": "aggregates_not_yet_computed"}
     assert outcome.retry_after == _AGGREGATES_NOT_COMPUTED_RETRY_AFTER_SECONDS
     assert outcome.cache == "not_computed"
+    assert outcome.etag is None
 
 
 @pytest.mark.asyncio
@@ -255,9 +256,17 @@ async def test_cache_miss_sets_default_ttl() -> None:
 
 
 @pytest.mark.asyncio
-async def test_if_none_match_returns_304_without_d1() -> None:
-    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
-    store = RecordingStore({(_ELECTION, _segments()): {"statewide": {"total": 1}}})
+async def test_if_none_match_returns_304_only_when_versioned_cache_exists() -> None:
+    payload = {"statewide": {"total": 1}}
+    key = cache_key(_ELECTION, _VERSION, *_segments())
+    kv = MemoryKv(
+        {
+            version_key(_ELECTION): str(_VERSION),
+            hash_key(_ELECTION): _SHA,
+            key: json.dumps(payload),
+        }
+    )
+    store = RecordingStore()
 
     outcome = await read_resource(
         ResourceQuery(_ELECTION, _segments(), etag_for_version(_VERSION)),
@@ -268,6 +277,21 @@ async def test_if_none_match_returns_304_without_d1() -> None:
     assert outcome.status_code == 304
     assert outcome.cache == "not_modified"
     assert store.calls == []
+
+
+@pytest.mark.asyncio
+async def test_if_none_match_without_cache_populates_from_d1() -> None:
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
+    store = RecordingStore({(_ELECTION, _segments()): {"statewide": {"total": 1}}})
+
+    outcome = await read_resource(
+        ResourceQuery(_ELECTION, _segments(), etag_for_version(_VERSION)),
+        kv,
+        store,
+    )
+
+    assert outcome.status_code == 200
+    assert store.calls == [(_ELECTION, _segments(), _SHA)]
 
 
 def test_http_aggregate_totals_404_json_when_version_missing() -> None:

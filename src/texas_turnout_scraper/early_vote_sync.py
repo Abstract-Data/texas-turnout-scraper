@@ -1164,6 +1164,7 @@ class CloudflareEarlyVoteStore:
             database_id,
             [(_POINTER_UPSERT_SQL, [election_id, file_id])],
         )
+        self.backfill_precomputed_aggregates(election_id, dry_run=False)
         version = self.bump_version(election_id, content_digest)
         if manifest_sha256:
             self._kv_put(manifest_key(election_id), manifest_sha256)
@@ -1306,8 +1307,7 @@ class CloudflareEarlyVoteStore:
                 ev_date_iso=ev_date_iso,
             )
         ]
-        for start in range(0, len(statements), _INSERT_BATCH):
-            self._statements(database_id, statements[start : start + _INSERT_BATCH])
+        self._statements(database_id, statements)
         logger.info(
             "early-vote D1 precomputed aggregates election_id=%s file_id=%s rows=%s",
             election_id,
@@ -1526,6 +1526,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Hash and print the plan")
     parser.add_argument("--apply", action="store_true", help="Write D1, then bump KV")
     parser.add_argument(
+        "--defer-kv-bump",
+        action="store_true",
+        help="Write D1 and precompute only; skip KV bump (finalize after backfill)",
+    )
+    parser.add_argument(
         "--stored-hash",
         default="",
         help="Hash from an earlier run of this file, so a second dry run can skip",
@@ -1604,6 +1609,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             payload_kind=payload_kind,
             ev_date_iso=ev_date_iso,
+            defer_kv_bump=args.defer_kv_bump,
         )
     except (EarlyVoteCapError, EarlyVoteSyncError, ValueError) as exc:
         logger.error("%s", exc)

@@ -221,6 +221,37 @@ async def test_precomputed_parity_with_streaming_on_fixture() -> None:
     assert precomputed == streamed
 
 
+def test_turnout_duplicate_counties_merge_before_insert() -> None:
+    decoded = json.dumps(
+        {
+            "turnout_by_county": [
+                {
+                    "name": "TRAVIS",
+                    "total_in_person_votes_for_election": 1,
+                    "total_mail_votes_for_election": 0,
+                },
+                {
+                    "name": "TRAVIS",
+                    "total_in_person_votes_for_election": 2,
+                    "total_mail_votes_for_election": 1,
+                },
+            ]
+        }
+    ).encode()
+    body = aggregate_body_from_decoded(decoded, source_election_id="53815")
+    by_county = body.get("by_county")
+    assert isinstance(by_county, list)
+    assert len(by_county) == 1
+    assert by_county[0]["in_person"] == 3
+    assert by_county[0]["mail_in"] == 1
+
+
+def test_precompute_statements_file_row_last_marks_complete_write() -> None:
+    body = aggregate_body_from_decoded(_turnout_decoded(), source_election_id="53815")
+    statements = precompute_statements("53815", "f1", body)
+    assert statements[-1][0].startswith("INSERT INTO early_vote_file_aggregate")
+
+
 def test_precompute_statements_idempotent_replace() -> None:
     decoded = _turnout_decoded()
     body = aggregate_body_from_decoded(decoded, source_election_id="53815")

@@ -107,10 +107,10 @@ def _contended_outcome(etag: str) -> ReadOutcome:
     )
 
 
-def _not_computed_outcome(etag: str) -> ReadOutcome:
+def _not_computed_outcome() -> ReadOutcome:
     return ReadOutcome(
         503,
-        etag,
+        None,
         {"detail": _AGGREGATES_NOT_COMPUTED_DETAIL},
         "not_computed",
         retry_after=_AGGREGATES_NOT_COMPUTED_RETRY_AFTER_SECONDS,
@@ -152,7 +152,7 @@ async def _populate_versioned_cache(
             kv_sha256=kv_sha256,
         )
     except AggregatesNotComputed:
-        return _not_computed_outcome(etag)
+        return _not_computed_outcome()
     if body is None:
         return ReadOutcome(404, etag, None, "miss")
     raw = json.dumps(body, separators=(",", ":"), sort_keys=True)
@@ -180,11 +180,11 @@ async def read_resource(
         matched = etag_matches(query.if_none_match, etag)
     except ValueError:
         return ReadOutcome(400, etag, None, "bad_etag")
-    if matched:
-        return ReadOutcome(304, etag, None, "not_modified")
-
     key = cache_key(election_id, version, *query.segments)
     cached = await kv.get(key)
+    if matched:
+        if cached is not None and _object_json(cached) is not None:
+            return ReadOutcome(304, etag, None, "not_modified")
     cached_body = _object_json(cached) if cached is not None else None
     if not queries_d1(cache_hit=cached_body is not None):
         return ReadOutcome(200, etag, cached_body, "hit")

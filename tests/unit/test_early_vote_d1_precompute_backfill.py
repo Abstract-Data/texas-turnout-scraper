@@ -3,21 +3,40 @@
 from __future__ import annotations
 
 import base64
+import json
 
-from texas_turnout_scraper.early_vote_d1_precompute_backfill import run_precompute_backfill_on_store
+from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
+    _load_chunks_b64_paged,
+    run_precompute_backfill_on_store,
+)
 from texas_turnout_scraper.early_vote_d1_precompute_store import PRECOMPUTE_SCHEMA_CREATES
 from texas_turnout_scraper.early_vote_sync import sha256_decoded
 
 
 class _BackfillStore:
-    def __init__(self, election_id: str, file_id: str, decoded: bytes) -> None:
+    def __init__(
+        self,
+        election_id: str,
+        file_id: str,
+        decoded: bytes,
+        *,
+        chunk_count: int = 1,
+    ) -> None:
         self._election_id = election_id
         self._file_id = file_id
         self._digest = sha256_decoded(decoded)
-        self._chunk = base64.b64encode(decoded).decode()
+        self._chunk_count = chunk_count
+        self._chunks = {
+            index: base64.b64encode(decoded if index == 0 else b"").decode()
+            for index in range(chunk_count)
+        }
+        if chunk_count == 1:
+            self._chunks[0] = base64.b64encode(decoded).decode()
         self._schema: list[str] = []
         self._agg_rows: set[str] = set()
+        self._county_rows: dict[str, int] = {}
         self.writes = 0
+        self.batches: list[int] = []
 
     def _database_uuid_if_exists(self, election_id: str) -> str | None:
         return "db-1" if election_id == self._election_id else None
@@ -26,14 +45,31 @@ class _BackfillStore:
         self._schema.extend(PRECOMPUTE_SCHEMA_CREATES)
 
     def _query_rows(self, database_id: str, sql: str, params: list[str]) -> list[dict[str, object]]:
-        if "early_vote_file " in sql and "file_id" in sql:
-            return [{"file_id": self._file_id, "sha256": self._digest}]
-        if "early_vote_file_aggregate" in sql:
+        if "chunk_count" in sql and "early_vote_file" in sql:
+            return [
+                {
+                    "file_id": self._file_id,
+                    "sha256": self._digest,
+                    "chunk_count": self._chunk_count,
+                }
+            ]
+        if "chunk_index FROM early_vote_chunk" in sql.replace("\n", " "):
+            limit = int(params[2])
+            offset = int(params[3])
+            indices = list(range(self._chunk_count))[offset : offset + limit]
+            return [{"chunk_index": index} for index in indices]
+        if "payload_b64 FROM early_vote_chunk" in sql.replace("\n", " "):
+            index = int(params[2])
+            payload = self._chunks.get(index)
+            if payload is None:
+                return []
+            return [{"payload_b64": payload}]
+        if "early_vote_file_aggregate" in sql and "LIMIT 1" in sql:
             if self._file_id in self._agg_rows:
                 return [{"file_id": self._file_id}]
             return []
-        if "early_vote_chunk" in sql:
-            return [{"chunk_index": 0, "payload_b64": self._chunk}]
+        if "COUNT(*) AS n" in sql:
+            return [{"n": self._county_rows.get(self._file_id, 0)}]
         if "early_vote_day" in sql:
             return [{"ev_date": "2026-10-20"}]
         return []
@@ -49,13 +85,54 @@ class _BackfillStore:
     ) -> None:
         self.writes += 1
         self._agg_rows.add(file_id)
+        payload = json.loads(decoded)
+        counties = payload.get("turnout_by_county", [])
+        self._county_rows[file_id] = len(counties) if isinstance(counties, list) else 0
+
+    def bump_version(self, election_id: str, digest: str) -> str:
+        return "1"
+
+    def close(self) -> None:
+        return None
 
 
-def test_backfill_idempotent_skip_when_rows_exist() -> None:
+def test_backfill_refuses_short_chunk_set() -> None:
     decoded = (
         b'{"turnout_by_county":[{"name":"TRAVIS",'
         b'"total_in_person_votes_for_election":1,"total_mail_votes_for_election":0}]}'
     )
+    store = _BackfillStore("53815", "f1", decoded, chunk_count=2)
+    store._chunks = {0: base64.b64encode(decoded).decode()}
+    result = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    assert result.files_written == 0
+    assert store.writes == 0
+
+
+def test_backfill_pages_chunks_by_index() -> None:
+    decoded = b'{"turnout_by_county":[]}'
+    store = _BackfillStore("53815", "f1", decoded, chunk_count=3)
+    store._chunks = {
+        0: base64.b64encode(b"a").decode(),
+        1: base64.b64encode(b"b").decode(),
+        2: base64.b64encode(b"c").decode(),
+    }
+    loaded = _load_chunks_b64_paged(store, "db-1", "53815", "f1", expected_count=3)
+    assert loaded is not None
+    assert len(loaded) == 3
+
+
+def test_backfill_idempotent_skip_when_rows_complete() -> None:
+    decoded = json.dumps(
+        {
+            "turnout_by_county": [
+                {
+                    "name": "TRAVIS",
+                    "total_in_person_votes_for_election": 1,
+                    "total_mail_votes_for_election": 0,
+                }
+            ]
+        }
+    ).encode()
     store = _BackfillStore("53815", "f1", decoded)
     first = run_precompute_backfill_on_store(store, "53815", dry_run=False)
     assert first.files_written == 1
@@ -63,4 +140,56 @@ def test_backfill_idempotent_skip_when_rows_exist() -> None:
     second = run_precompute_backfill_on_store(store, "53815", dry_run=False)
     assert second.files_written == 0
     assert second.files_skipped == 1
+    assert store.writes == 1
+
+
+def test_finalize_kv_digest_bumps_after_apply(monkeypatch) -> None:
+    store = _BackfillStore("53815", "f1", b'{"turnout_by_county":[]}')
+    bumped: list[str] = []
+
+    def _bump(election_id: str, digest: str) -> str:
+        bumped.append(digest)
+        return "9"
+
+    store.bump_version = _bump  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "texas_turnout_scraper.early_vote_d1_precompute_backfill._cloudflare_config_from_env",
+        lambda: ("acct", "token", "ns"),
+    )
+    monkeypatch.setattr(
+        "texas_turnout_scraper.early_vote_d1_precompute_backfill.CloudflareEarlyVoteStore",
+        lambda **kwargs: store,
+    )
+    from texas_turnout_scraper.early_vote_d1_precompute_backfill import main
+
+    code = main(
+        [
+            "--election-id",
+            "53815",
+            "--apply",
+            "--finalize-kv-digest",
+            "abc123",
+        ]
+    )
+    assert code == 0
+    assert bumped == ["abc123"]
+
+
+def test_backfill_rewrites_when_county_set_incomplete() -> None:
+    decoded = json.dumps(
+        {
+            "turnout_by_county": [
+                {
+                    "name": "TRAVIS",
+                    "total_in_person_votes_for_election": 1,
+                    "total_mail_votes_for_election": 0,
+                }
+            ]
+        }
+    ).encode()
+    store = _BackfillStore("53815", "f1", decoded)
+    store._agg_rows.add("f1")
+    store._county_rows["f1"] = 0
+    result = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    assert result.files_written == 1
     assert store.writes == 1
