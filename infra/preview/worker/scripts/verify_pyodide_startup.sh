@@ -110,10 +110,13 @@ print("pyodide startup import smoke: OK")
 
 class _SmokeKv:
     def __init__(self, values: dict[str, str]) -> None:
-        self._values = values
+        self._values = dict(values)
 
     async def get(self, key: str) -> str | None:
         return self._values.get(key)
+
+    async def put(self, key: str, value: str, *, expiration_ttl: int | None) -> None:
+        self._values[key] = value
 
 
 _consumer_plaintext = "pyodide-smoke-consumer-credential"
