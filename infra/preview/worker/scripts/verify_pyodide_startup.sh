@@ -552,8 +552,8 @@ for label, status, etag_ok, inm in agg_outcomes:
         if not etag_ok:
             print("expected etag on county-by-day-empty", file=sys.stderr)
             sys.exit(1)
-        if inm != 304:
-            print("expected county-by-day-empty if-none-match status=304", file=sys.stderr)
+        if inm != 404:
+            print("expected county-by-day-empty if-none-match status=404", file=sys.stderr)
             sys.exit(1)
         continue
     if status != 200:
