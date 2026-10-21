@@ -43,7 +43,7 @@ fi
 # shellcheck source=/dev/null
 source "${pyodide_venv}/bin/activate"
 export PYTHONPATH="${worker_dir}/python_modules:${worker_dir}/src:${worker_dir}"
-repo_root="$(cd "${worker_dir}/../.." && pwd)"
+repo_root="$(cd "${worker_dir}/../../.." && pwd)"
 export TX_TURNOUT_AGG_BINDING="$(
   PYTHONPATH="${repo_root}" python3 -c "from tests.verify.preview_tf_bindings import preview_election_d1_binding_name; print(preview_election_d1_binding_name())"
 )"
