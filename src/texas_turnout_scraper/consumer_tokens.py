@@ -11,8 +11,6 @@ import hashlib
 import secrets
 from collections.abc import Mapping
 
-from pyscrypt import hash as pyscrypt_hash
-
 AUTHORIZATION_HEADER = "Authorization"
 X_API_KEY_HEADER = "X-API-Key"
 BEARER_PREFIX = "bearer "
@@ -83,6 +81,7 @@ def _scrypt_digest(password: bytes) -> bytes:
             )
         except (AttributeError, NotImplementedError, ValueError):
             pass
+    from pyscrypt import hash as pyscrypt_hash
 
     return pyscrypt_hash(
         password,
