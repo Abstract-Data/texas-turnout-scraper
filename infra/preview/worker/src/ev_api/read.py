@@ -1,4 +1,11 @@
-"""Versioned KV cache in front of per-election D1 aggregate reads."""
+"""Versioned KV cache in front of per-election D1 aggregate reads.
+
+Cold-cache stampede guard: a best-effort KV lock per election/version/endpoint
+(``single_flight_lock_key``) with a 60s TTL. KV ``get``/``put`` are not atomic,
+so concurrent misses may still overlap; the lock narrows the race. Holders that
+see an existing lock recheck the versioned cache once, then return 503 with
+``Retry-After`` instead of starting another D1 chunk walk.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +20,7 @@ from texas_turnout_scraper.civix.read_client import (
     etag_for_version,
     etag_matches,
     queries_d1,
+    single_flight_lock_key,
     version_key,
 )
 from texas_turnout_scraper.early_vote_sync import hash_key
@@ -22,11 +30,21 @@ logger = logging.getLogger(__name__)
 # Daily early-vote snapshots: old version keys expire by TTL; they are not purged.
 DEFAULT_KV_TTL_SECONDS = 86_400
 
+# Cloudflare KV minimum expiration TTL for single-flight locks (seconds).
+SINGLE_FLIGHT_LOCK_TTL_SECONDS = 60
+
+# Suggested client backoff when another request is populating the cache.
+SINGLE_FLIGHT_RETRY_AFTER_SECONDS = 5
+
+_AGGREGATE_IN_PROGRESS_DETAIL = "aggregate_in_progress"
+
 
 class KvNamespace(Protocol):
     async def get(self, key: str) -> str | None: ...
 
     async def put(self, key: str, value: str, *, expiration_ttl: int | None) -> None: ...
+
+    async def delete(self, key: str) -> None: ...
 
 
 class AggregateStore(Protocol):
@@ -52,6 +70,7 @@ class ReadOutcome:
     etag: str | None
     body: dict[str, object] | None
     cache: str
+    retry_after: int | None = None
 
 
 def _object_json(raw: str) -> dict[str, object] | None:
@@ -71,6 +90,31 @@ def _version_number(raw: str | None) -> int | None:
     if version < 1:
         return None
     return version
+
+
+def _contended_outcome(etag: str) -> ReadOutcome:
+    return ReadOutcome(
+        503,
+        etag,
+        {"detail": _AGGREGATE_IN_PROGRESS_DETAIL},
+        "contended",
+        retry_after=SINGLE_FLIGHT_RETRY_AFTER_SECONDS,
+    )
+
+
+async def _cached_hit(
+    kv: KvNamespace,
+    key: str,
+    etag: str,
+) -> ReadOutcome | None:
+    cached = await kv.get(key)
+    if cached is None:
+        return None
+    cached_body = _object_json(cached)
+    if cached_body is None:
+        logger.warning("cached payload was not an object key_suffix=%s", key.split(":")[-1])
+        return None
+    return ReadOutcome(200, etag, cached_body, "hit")
 
 
 async def read_resource(
@@ -104,23 +148,42 @@ async def read_resource(
     if cached is not None:
         logger.warning("cached payload was not an object election=%s", election_id)
 
-    kv_sha256 = await kv.get(hash_key(election_id))
-    if kv_sha256 is None or kv_sha256 == "":
-        return ReadOutcome(404, etag, None, "miss")
+    lock_key = single_flight_lock_key(election_id, version, *query.segments)
+    if await kv.get(lock_key) is not None:
+        recheck = await _cached_hit(kv, key, etag)
+        if recheck is not None:
+            return recheck
+        return _contended_outcome(etag)
 
-    body = await store.build_body(
-        election_id,
-        query.segments,
-        kv_sha256=kv_sha256,
-    )
-    if body is None:
-        return ReadOutcome(404, etag, None, "miss")
-    raw = json.dumps(body, separators=(",", ":"), sort_keys=True)
-    await kv.put(key, raw, expiration_ttl=ttl_seconds)
-    return ReadOutcome(200, etag, body, "miss")
+    await kv.put(lock_key, "1", expiration_ttl=SINGLE_FLIGHT_LOCK_TTL_SECONDS)
+    try:
+        recheck = await _cached_hit(kv, key, etag)
+        if recheck is not None:
+            return recheck
+
+        kv_sha256 = await kv.get(hash_key(election_id))
+        if kv_sha256 is None or kv_sha256 == "":
+            return ReadOutcome(404, etag, None, "miss")
+
+        body = await store.build_body(
+            election_id,
+            query.segments,
+            kv_sha256=kv_sha256,
+        )
+        if body is None:
+            return ReadOutcome(404, etag, None, "miss")
+        raw = json.dumps(body, separators=(",", ":"), sort_keys=True)
+        await kv.put(key, raw, expiration_ttl=ttl_seconds)
+        return ReadOutcome(200, etag, body, "miss")
+    finally:
+        await kv.delete(lock_key)
 
 
 def response_headers(outcome: ReadOutcome) -> dict[str, str]:
-    if outcome.etag is None:
-        return {}
-    return {"ETag": outcome.etag, "Cache-Control": "private"}
+    headers: dict[str, str] = {}
+    if outcome.etag is not None:
+        headers["ETag"] = outcome.etag
+        headers["Cache-Control"] = "private"
+    if outcome.retry_after is not None:
+        headers["Retry-After"] = str(outcome.retry_after)
+    return headers

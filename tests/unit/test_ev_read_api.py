@@ -6,13 +6,20 @@ import json
 
 import pytest
 from ev_api.app import ReadDeps, create_app
-from ev_api.read import DEFAULT_KV_TTL_SECONDS, ResourceQuery, read_resource
+from ev_api.read import (
+    DEFAULT_KV_TTL_SECONDS,
+    SINGLE_FLIGHT_LOCK_TTL_SECONDS,
+    SINGLE_FLIGHT_RETRY_AFTER_SECONDS,
+    ResourceQuery,
+    read_resource,
+)
 from fastapi.testclient import TestClient
 
 from texas_turnout_scraper.civix.read_client import (
     cache_key,
     etag_for_version,
     http_path,
+    single_flight_lock_key,
     version_key,
 )
 from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
@@ -33,6 +40,7 @@ class MemoryKv:
     def __init__(self, values: dict[str, str] | None = None) -> None:
         self.values = dict(values or {})
         self.puts: list[tuple[str, str, int | None]] = []
+        self.deletes: list[str] = []
 
     async def get(self, key: str) -> str | None:
         return self.values.get(key)
@@ -40,6 +48,10 @@ class MemoryKv:
     async def put(self, key: str, value: str, *, expiration_ttl: int | None) -> None:
         self.puts.append((key, value, expiration_ttl))
         self.values[key] = value
+
+    async def delete(self, key: str) -> None:
+        self.deletes.append(key)
+        self.values.pop(key, None)
 
 
 class _TokenDb:
@@ -139,6 +151,67 @@ async def test_cache_hit_does_not_query_d1() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cache_miss_acquires_single_flight_lock() -> None:
+    payload = {"statewide": {"total": 4, "in_person": 3, "mail_in": 1}}
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
+    store = RecordingStore({(_ELECTION, _segments()): payload})
+    lock_key = single_flight_lock_key(_ELECTION, _VERSION, *_segments())
+
+    await read_resource(
+        ResourceQuery(_ELECTION, _segments(), None),
+        kv,
+        store,
+    )
+
+    lock_puts = [item for item in kv.puts if item[0] == lock_key]
+    assert len(lock_puts) == 1
+    assert lock_puts[0][2] == SINGLE_FLIGHT_LOCK_TTL_SECONDS
+    assert lock_key in kv.deletes
+
+
+@pytest.mark.asyncio
+async def test_lock_held_returns_503_without_d1() -> None:
+    lock_key = single_flight_lock_key(_ELECTION, _VERSION, *_segments())
+    kv = MemoryKv(
+        {
+            version_key(_ELECTION): str(_VERSION),
+            hash_key(_ELECTION): _SHA,
+            lock_key: "1",
+        }
+    )
+    store = RecordingStore({(_ELECTION, _segments()): {"statewide": {"total": 1}}})
+
+    outcome = await read_resource(
+        ResourceQuery(_ELECTION, _segments(), None),
+        kv,
+        store,
+    )
+
+    assert outcome.status_code == 503
+    assert outcome.body == {"detail": "aggregate_in_progress"}
+    assert outcome.retry_after == SINGLE_FLIGHT_RETRY_AFTER_SECONDS
+    assert outcome.cache == "contended"
+    assert store.calls == []
+
+
+def test_http_aggregate_totals_503_when_lock_held() -> None:
+    lock_key = single_flight_lock_key(_ELECTION, _VERSION, *_segments())
+    kv = MemoryKv(
+        {
+            version_key(_ELECTION): str(_VERSION),
+            hash_key(_ELECTION): _SHA,
+            lock_key: "1",
+        }
+    )
+    store = RecordingStore({(_ELECTION, _segments()): {"statewide": {"total": 1}}})
+    response = _client(kv, store).get(_url(), headers=_AUTH)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "aggregate_in_progress"}
+    assert response.headers.get("Retry-After") == str(SINGLE_FLIGHT_RETRY_AFTER_SECONDS)
+    assert store.calls == []
+
+
+@pytest.mark.asyncio
 async def test_cache_miss_sets_default_ttl() -> None:
     payload = {"statewide": {"total": 4, "in_person": 3, "mail_in": 1}}
     kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
@@ -153,7 +226,10 @@ async def test_cache_miss_sets_default_ttl() -> None:
     assert outcome.status_code == 200
     assert outcome.cache == "miss"
     assert store.calls == [(_ELECTION, _segments(), _SHA)]
-    assert kv.puts[0][2] == DEFAULT_KV_TTL_SECONDS
+    cache_key_name = cache_key(_ELECTION, _VERSION, *_segments())
+    cache_puts = [item for item in kv.puts if item[0] == cache_key_name]
+    assert len(cache_puts) == 1
+    assert cache_puts[0][2] == DEFAULT_KV_TTL_SECONDS
 
 
 @pytest.mark.asyncio

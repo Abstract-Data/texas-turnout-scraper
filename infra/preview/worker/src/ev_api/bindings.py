@@ -28,6 +28,9 @@ class WorkersKvNamespace:
             return
         await self._namespace.put(key, value, {"expirationTtl": expiration_ttl})
 
+    async def delete(self, key: str) -> None:
+        await self._namespace.delete(key)
+
 
 def binding_map_from_env(raw: object) -> dict[str, str]:
     if raw is None or raw == "":
