@@ -11,7 +11,7 @@ from texas_turnout_scraper.early_vote_d1_aggregate import (
     _ROSTER_BATCH_SQL,
     build_aggregate_resource,
 )
-from texas_turnout_scraper.early_vote_sync import iter_chunk_b64, sha256_decoded
+from texas_turnout_scraper.early_vote_sync import CHUNK_RAW_BYTES, iter_chunk_b64, sha256_decoded
 
 
 class _Prepared:
@@ -182,6 +182,7 @@ async def test_sql_totals_matches_python_turnout(turnout_db: _AggregateD1) -> No
     expected = aggregates_from_decoded(turnout_db._decoded, source_election_id="53815")
     actual = await build_aggregate_resource(turnout_db, "53815", "totals", kv_sha256=digest)
     assert actual == expected
+    assert isinstance(actual["source_election_id"], str)
 
 
 @pytest.mark.asyncio
@@ -210,6 +211,7 @@ async def test_sql_by_day_matches_python_turnout(turnout_db: _AggregateD1) -> No
     expected = aggregates_from_decoded(turnout_db._decoded, source_election_id="53815")
     actual = await build_aggregate_resource(turnout_db, "53815", "by-day", kv_sha256=digest)
     assert actual is not None
+    assert isinstance(actual["source_election_id"], str)
     assert actual["series"][0]["total"] == expected["statewide"]["total"]
 
 
@@ -219,6 +221,7 @@ async def test_sql_county_by_day_matches_python_turnout(turnout_db: _AggregateD1
     expected = aggregates_from_decoded(turnout_db._decoded, source_election_id="53815")
     actual = await build_aggregate_resource(turnout_db, "53815", "county-by-day", kv_sha256=digest)
     assert actual is not None
+    assert isinstance(actual["source_election_id"], str)
     assert actual["series"][0]["by_county"] == expected["by_county"]
 
 
@@ -228,6 +231,35 @@ async def test_sql_totals_matches_python_roster(roster_db: _AggregateD1) -> None
     expected = aggregates_from_decoded(roster_db._decoded, source_election_id="53815")
     actual = await build_aggregate_resource(roster_db, "53815", "totals", kv_sha256=digest)
     assert actual == expected
+    assert isinstance(actual["source_election_id"], str)
+
+
+def _roster_bytes_utf8_split_at_chunk() -> bytes:
+    """Roster with a multibyte voter name split across CHUNK_RAW_BYTES boundary."""
+    header = b"COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\n"
+    row_head = b"TRAVIS,Pe\xc3"
+    suffix = b"\xb1a,0000000001,IN-PERSON,1\n"
+    pad = CHUNK_RAW_BYTES - len(header) - len(row_head)
+    assert pad >= 0
+    return header + (b"X" * pad) + row_head + suffix
+
+
+@pytest.mark.asyncio
+async def test_roster_incremental_utf8_across_chunk_boundary() -> None:
+    decoded = _roster_bytes_utf8_split_at_chunk()
+    assert len(decoded) > CHUNK_RAW_BYTES
+    digest = sha256_decoded(decoded)
+    db = _AggregateD1(
+        pointer="f53815",
+        file_id="f53815",
+        sha256=digest,
+        decoded=decoded,
+    )
+    expected = aggregates_from_decoded(decoded, source_election_id="53815")
+    actual = await build_aggregate_resource(db, "53815", "totals", kv_sha256=digest)
+    assert actual == expected
+    assert isinstance(actual["source_election_id"], str)
+    assert actual["statewide"]["total"] == 1
 
 
 @pytest.mark.asyncio

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import sys
-
 import pytest
 
-from texas_turnout_scraper.early_vote_d1_aggregate import build_aggregate_resource
+from texas_turnout_scraper.early_vote_d1_aggregate import (
+    _MAX_TURNOUT_JSON_BYTES,
+    build_aggregate_resource,
+)
 from texas_turnout_scraper.early_vote_sync import sha256_decoded
 
 from .test_early_vote_d1_aggregate import _AggregateD1
@@ -83,7 +84,21 @@ async def test_turnout_sql_path_memory_bounded() -> None:
         sha256=digest,
         decoded=decoded,
     )
-    before = sys.getsizeof(db._decoded)
+    peak_bound_bytes = 0
+    original_sqlite_all = db._sqlite_all
+
+    def _tracking_sqlite_all(sql: str, args: tuple[object, ...]) -> list[dict[str, object]]:
+        nonlocal peak_bound_bytes
+        if "json_each" in sql and args:
+            bound = args[0]
+            if isinstance(bound, str):
+                peak_bound_bytes = max(peak_bound_bytes, len(bound.encode("utf-8")))
+        return original_sqlite_all(sql, args)
+
+    db._sqlite_all = _tracking_sqlite_all  # type: ignore[method-assign]
+
     body = await build_aggregate_resource(db, "53815", "totals", kv_sha256=digest)
     assert body is not None
-    assert sys.getsizeof(db._decoded) == before
+    assert body["statewide"]["total"] == 1
+    assert peak_bound_bytes == len(decoded)
+    assert peak_bound_bytes < _MAX_TURNOUT_JSON_BYTES

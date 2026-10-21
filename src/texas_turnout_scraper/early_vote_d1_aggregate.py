@@ -11,6 +11,7 @@ Logs must never include voter names or VUIDs.
 from __future__ import annotations
 
 import base64
+import codecs
 import csv
 import io
 import json
@@ -38,8 +39,9 @@ from texas_turnout_scraper.early_vote_sync import EarlyVoteFileView, choose_publ
 
 PayloadKind = Literal["turnout", "statewide_roster"]
 
-# Turnout JSON for all Texas counties is far below roster size; cap SQL json_each input.
-_MAX_TURNOUT_JSON_BYTES = 8_000_000
+# D1 max bound string/BLOB is 2_000_000 bytes per
+# https://developers.cloudflare.com/d1/platform/limits/ — stay below for json_each bind.
+_MAX_TURNOUT_JSON_BYTES = 1_900_000
 
 _CHUNK_INDEX_SQL = (
     "SELECT chunk_index FROM early_vote_chunk "
@@ -339,11 +341,54 @@ def _lines_from_carry(carry: str, fragment: str) -> tuple[str, list[str]]:
     return carry_out, parts
 
 
+def _decode_chunk_text(
+    decoder: codecs.IncrementalDecoder, piece_b64: str
+) -> str | None:
+    try:
+        return decoder.decode(base64.b64decode(piece_b64))
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return None
+
+
+def _finalize_utf8_carry(decoder: codecs.IncrementalDecoder, carry: str) -> str | None:
+    try:
+        return carry + decoder.decode(b"", final=True)
+    except UnicodeDecodeError:
+        return None
+
+
 async def _roster_sql_batch(db: D1Database, rows: list[dict[str, str]]) -> list[object]:
     if not rows:
         return []
     payload = json.dumps(rows, separators=(",", ":"))
     return await _d1_fetch_all(db.prepare(_ROSTER_BATCH_SQL).bind(payload))
+
+
+async def _rollup_roster_lines(
+    db: D1Database,
+    rollup: _RosterRollup,
+    lines: list[str],
+    header_line: str | None,
+) -> str | None:
+    batch: list[dict[str, str]] = []
+    for line in lines:
+        if header_line is None:
+            if "COUNTY" in line.upper() and "VOTING_METHOD" in line.upper():
+                header_line = line
+            continue
+        parsed = _parse_roster_line(line, header_line)
+        if parsed is None:
+            continue
+        county, method = parsed
+        batch.append({"county": county, "method": method})
+        if len(batch) >= 500:
+            sql_rows = await _roster_sql_batch(db, batch)
+            _merge_roster_sql_rows(rollup, sql_rows)
+            batch = []
+    if batch:
+        sql_rows = await _roster_sql_batch(db, batch)
+        _merge_roster_sql_rows(rollup, sql_rows)
+    return header_line
 
 
 def _merge_roster_sql_rows(rollup: _RosterRollup, rows: list[object]) -> None:
@@ -387,6 +432,36 @@ def _roster_body_from_rollup(
     return body
 
 
+async def _scan_roster_chunks_to_rollup(
+    db: D1Database,
+    election_id: str,
+    file_id: str,
+) -> _RosterRollup | None:
+    rollup = _RosterRollup()
+    carry = ""
+    header_line: str | None = None
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    for index in await _chunk_indices(db, election_id, file_id):
+        piece_b64 = await _chunk_b64_at(db, election_id, file_id, index)
+        if piece_b64 is None:
+            return None
+        piece_text = _decode_chunk_text(decoder, piece_b64)
+        if piece_text is None:
+            return None
+        carry, lines = _lines_from_carry(carry, piece_text)
+        header_line = await _rollup_roster_lines(db, rollup, lines, header_line)
+    carry = _finalize_utf8_carry(decoder, carry)
+    if carry is None:
+        return None
+    if carry.strip() and header_line is not None:
+        parsed = _parse_roster_line(carry, header_line)
+        if parsed is not None:
+            county, method = parsed
+            sql_rows = await _roster_sql_batch(db, [{"county": county, "method": method}])
+            _merge_roster_sql_rows(rollup, sql_rows)
+    return rollup
+
+
 async def aggregate_roster_from_d1(
     db: D1Database,
     source_election_id: str,
@@ -396,42 +471,9 @@ async def aggregate_roster_from_d1(
 ) -> dict[str, object] | None:
     """Scan roster chunks; SQL aggregates each batch of county/method pairs."""
     election_id = require_election_id(source_election_id)
-    rollup = _RosterRollup()
-    carry = ""
-    header_line: str | None = None
-    for index in await _chunk_indices(db, election_id, file_id):
-        piece_b64 = await _chunk_b64_at(db, election_id, file_id, index)
-        if piece_b64 is None:
-            return None
-        try:
-            piece_text = base64.b64decode(piece_b64).decode("utf-8")
-        except (ValueError, TypeError, UnicodeDecodeError):
-            return None
-        carry, lines = _lines_from_carry(carry, piece_text)
-        batch: list[dict[str, str]] = []
-        for line in lines:
-            if header_line is None:
-                if "COUNTY" in line.upper() and "VOTING_METHOD" in line.upper():
-                    header_line = line
-                continue
-            parsed = _parse_roster_line(line, header_line)
-            if parsed is None:
-                continue
-            county, method = parsed
-            batch.append({"county": county, "method": method})
-            if len(batch) >= 500:
-                sql_rows = await _roster_sql_batch(db, batch)
-                _merge_roster_sql_rows(rollup, sql_rows)
-                batch = []
-        if batch:
-            sql_rows = await _roster_sql_batch(db, batch)
-            _merge_roster_sql_rows(rollup, sql_rows)
-    if carry.strip() and header_line is not None:
-        parsed = _parse_roster_line(carry, header_line)
-        if parsed is not None:
-            county, method = parsed
-            sql_rows = await _roster_sql_batch(db, [{"county": county, "method": method}])
-            _merge_roster_sql_rows(rollup, sql_rows)
+    rollup = await _scan_roster_chunks_to_rollup(db, election_id, file_id)
+    if rollup is None:
+        return None
     return _roster_body_from_rollup(rollup, source_election_id=election_id, ev_date=ev_date)
 
 
