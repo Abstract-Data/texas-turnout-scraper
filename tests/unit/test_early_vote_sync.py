@@ -563,9 +563,9 @@ def test_dry_run_counts_turnout_rows_for_one_election(capsys: pytest.CaptureFixt
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert "rows election_id=53813 source_rows=3 d1_chunk_rows=1 d1_file_rows=1 d1_rows=2" in (
-        captured.out
-    )
+    assert "source_rows=3" in captured.out
+    assert "d1_aggregate_rows=" in captured.out
+    assert "d1_chunk_rows=1 d1_file_rows=1 d1_rows=2" in captured.out
     assert "within_cap=true" in captured.out
     assert "d1_cap_bytes=10000000000" in captured.out
     assert "ANDERSON" not in captured.out
@@ -903,6 +903,9 @@ class _MemoryD1:
             self.files[(params[0], params[1])] = params[2]
             self.order.append("file")
             return {"success": True, "results": []}
+        if "early_vote_file_aggregate" in sql or "early_vote_county_aggregate" in sql:
+            self.order.append("precompute")
+            return {"success": True, "results": []}
         if sql == _POINTER_UPSERT_SQL:
             self.pointer[params[0]] = params[1]
             self.pointer_params.append(params)
@@ -966,7 +969,11 @@ def test_cloudflare_pointer_swap_is_one_statement_and_delete_follows_kv() -> Non
     assert state.deleted == []
     assert "delete" not in state.order
     assert state.order.index("pointer") < state.order.index("kv")
-    assert not any(sql.startswith("DELETE") for batch in state.batches for sql in batch)
+
+    def _chunk_or_file_delete(sql: str) -> bool:
+        return sql.startswith("DELETE") and "aggregate" not in sql
+
+    assert not any(_chunk_or_file_delete(sql) for batch in state.batches for sql in batch)
     pointer_batches = [sqls for sqls in state.batches if _POINTER_UPSERT_SQL in sqls]
     assert pointer_batches == [[_POINTER_UPSERT_SQL]]
     assert state.pointer_params[0][0] == "53813"

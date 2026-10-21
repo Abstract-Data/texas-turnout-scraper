@@ -7,7 +7,10 @@ import logging
 from typing import Any
 
 from texas_turnout_scraper.civix.ids import require_election_id
-from texas_turnout_scraper.early_vote_d1_aggregate import build_aggregate_resource
+from texas_turnout_scraper.early_vote_d1_precompute_read import (
+    AggregatesNotComputed,
+    build_precomputed_aggregate_resource,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +30,6 @@ class WorkersKvNamespace:
             await self._namespace.put(key, value)
             return
         await self._namespace.put(key, value, {"expirationTtl": expiration_ttl})
-
-    async def delete(self, key: str) -> None:
-        await self._namespace.delete(key)
 
 
 def binding_map_from_env(raw: object) -> dict[str, str]:
@@ -68,7 +68,7 @@ def _database(env: Any, binding_name: str) -> Any | None:
 
 
 class WorkersAggregateStore:
-    """Build aggregate JSON from chunked D1 roster / turnout publishes."""
+    """Build aggregate JSON from loader-precomputed D1 rows (fail fast on miss)."""
 
     def __init__(self, env: Any, binding_map: dict[str, str]) -> None:
         self._env = env
@@ -98,10 +98,13 @@ class WorkersAggregateStore:
 
         resource = segments[1]
         ev_date = segments[2] if len(segments) > 2 else None
-        return await build_aggregate_resource(
-            db,
-            election_id,
-            resource,
-            kv_sha256=kv_sha256,
-            ev_date=ev_date,
-        )
+        try:
+            return await build_precomputed_aggregate_resource(
+                db,
+                election_id,
+                resource,
+                kv_sha256=kv_sha256,
+                ev_date=ev_date,
+            )
+        except AggregatesNotComputed:
+            raise
