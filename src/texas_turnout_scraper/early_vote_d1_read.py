@@ -19,7 +19,35 @@ class D1Prepared(Protocol):
 
     async def first(self) -> object | None: ...
 
-    async def all(self) -> list[object]: ...
+
+def _rows_from_run_result(result: object) -> list[object]:
+    """Normalize a D1 ``run()`` payload to a row list (Python Workers API)."""
+    if result is None:
+        return []
+    if isinstance(result, dict):
+        raw = result.get("results")
+        return list(raw) if isinstance(raw, list) else []
+    raw = getattr(result, "results", None)
+    return list(raw) if isinstance(raw, list) else []
+
+
+async def _d1_fetch_all(prepared: object) -> list[object]:
+    """Fetch all rows from a bound D1 statement (``.all()`` or ``.run()``)."""
+    all_fn = getattr(prepared, "all", None)
+    if callable(all_fn):
+        try:
+            rows = await all_fn()
+        except (AttributeError, NotImplementedError, TypeError):
+            rows = None
+        if isinstance(rows, list):
+            return rows
+        from_run = _rows_from_run_result(rows)
+        if from_run:
+            return from_run
+    run_fn = getattr(prepared, "run", None)
+    if callable(run_fn):
+        return _rows_from_run_result(await run_fn())
+    return []
 
 
 class D1Database(Protocol):
@@ -102,14 +130,14 @@ async def load_pointer_file_id(db: D1Database, source_election_id: str) -> str |
 
 async def load_file_views(db: D1Database, source_election_id: str) -> tuple[EarlyVoteFileView, ...]:
     election_id = require_election_id(source_election_id)
-    rows = await db.prepare(_FILE_SQL).bind(election_id).all()
+    rows = await _d1_fetch_all(db.prepare(_FILE_SQL).bind(election_id))
     return _file_views(rows)
 
 
 async def load_day_rows(db: D1Database, source_election_id: str) -> tuple[EvDayRow, ...]:
     election_id = require_election_id(source_election_id)
     try:
-        rows = await db.prepare(_DAY_LIST_SQL).bind(election_id).all()
+        rows = await _d1_fetch_all(db.prepare(_DAY_LIST_SQL).bind(election_id))
     except Exception:
         return ()
     days: list[EvDayRow] = []
@@ -174,7 +202,7 @@ async def load_chunks_b64(
     file_id: str,
 ) -> list[str]:
     election_id = require_election_id(source_election_id)
-    rows = await db.prepare(_CHUNK_SQL).bind(election_id, file_id).all()
+    rows = await _d1_fetch_all(db.prepare(_CHUNK_SQL).bind(election_id, file_id))
     chunks: list[tuple[int, str]] = []
     for row in rows:
         index = _row_value(row, "chunk_index")
