@@ -24,6 +24,16 @@ if [[ ! -f "${required}" ]]; then
   exit 1
 fi
 
+while IFS= read -r -d '' native_so; do
+  case "${native_so}" in
+    *wasm32-emscripten*) ;;
+    *)
+      echo "Non-PyEmscripten extension in bundle (host .so leak): ${native_so}"
+      exit 1
+      ;;
+  esac
+done < <(find "${worker_dir}/python_modules" -name '*.so' -print0)
+
 pyodide_venv="${worker_dir}/.venv-workers/pyodide-venv"
 if [[ ! -f "${pyodide_venv}/bin/activate" ]]; then
   echo "Pyodide venv not found at ${pyodide_venv}; run pywrangler sync first."
@@ -32,16 +42,61 @@ fi
 
 # shellcheck source=/dev/null
 source "${pyodide_venv}/bin/activate"
-export PYTHONPATH="${worker_dir}/python_modules:${worker_dir}/src"
+export PYTHONPATH="${worker_dir}/python_modules:${worker_dir}/src:${worker_dir}"
 
-python - <<'PY'
+# Isolate from host OS: no zoneinfo DB, no home/cwd config, UTC clock, no sockets.
+smoke_root="$(mktemp -d)"
+cleanup_smoke() {
+  rm -rf "${smoke_root}"
+}
+trap cleanup_smoke EXIT
+
+export PYTHONTZPATH="${smoke_root}/empty-tz"
+export TZDIR="${PYTHONTZPATH}"
+export HOME="${smoke_root}/empty-home"
+export TZ=UTC
+export LANG=C
+export LC_ALL=C
+mkdir -p "${PYTHONTZPATH}" "${HOME}"
+smoke_cwd="${smoke_root}/empty-cwd"
+mkdir -p "${smoke_cwd}"
+cd "${smoke_cwd}"
+
+if [[ ! -d "${worker_dir}/python_modules/tzdata" ]]; then
+  echo "Missing bundled tzdata under python_modules/ (add tzdata to worker pyproject.toml and pywrangler sync)."
+  exit 1
+fi
+
+# Prefer network namespace isolation when available (matches no egress at import).
+py_run=(python)
+if command -v unshare >/dev/null 2>&1 && unshare -r -n true 2>/dev/null; then
+  py_run=(unshare -r -n python)
+fi
+
+"${py_run[@]}" - <<'PY'
 from __future__ import annotations
 
 import asyncio
+import socket
 import sys
+
+# Block real sockets so import-time network fails here (Workers have no host egress).
+def _deny_socket(*_args: object, **_kwargs: object) -> socket.socket:
+    raise OSError("pyodide smoke: socket use blocked")
+
+
+socket.socket = _deny_socket  # type: ignore[misc,assignment]
 
 from httpx import ASGITransport, AsyncClient
 from pydantic_core import ArgsKwargs
+
+from zoneinfo import ZoneInfo
+
+# Prove tzdata is bundled (not the host zoneinfo DB).
+_ = ZoneInfo("America/Chicago")
+
+# Mirror Worker main (entry.py) top-level import before ASGI mount.
+import entry as _worker_entry  # noqa: F401
 
 from ev_api.app import ReadDeps, _ClosedKv, _ClosedStore, create_app
 from texas_turnout_scraper.civix.read_client import http_path

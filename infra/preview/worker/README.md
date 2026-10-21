@@ -6,7 +6,7 @@ Single deployable Worker for preview Terraform (`tx-turnout-ev-api-preview`).
 |------|------|
 | `entry.py` | `workers.asgi.entrypoint` mounting the FastAPI app |
 | `src/ev_api/` | Aggregate read API (KV cache, D1 chunk reads, Access gate) |
-| `python_modules/` | Pyodide bundle from `uv run pywrangler sync` (runtime SDK, FastAPI, `texas_turnout_scraper`) |
+| `python_modules/` | Pyodide bundle from `uv run pywrangler sync` (runtime SDK, FastAPI, `tzdata`, `texas_turnout_scraper`) |
 
 The former `workers/ev-api/` tree is merged here so Terraform (`worker_bundle.tf`) ships one module list: `entry.py`, `ev_api/**`, and vendored `python_modules/**`.
 
