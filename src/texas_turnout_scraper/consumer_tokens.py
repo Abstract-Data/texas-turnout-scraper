@@ -11,6 +11,8 @@ import hashlib
 import secrets
 from collections.abc import Mapping
 
+from pyscrypt import hash as pyscrypt_hash
+
 AUTHORIZATION_HEADER = "Authorization"
 X_API_KEY_HEADER = "X-API-Key"
 BEARER_PREFIX = "bearer "
@@ -60,16 +62,41 @@ def new_token_id() -> str:
     return secrets.token_hex(16)
 
 
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_DKLEN = 32
+
+
+def _scrypt_digest(password: bytes) -> bytes:
+    """RFC 7914 scrypt; OpenSSL on CPython, pure Python on Pyodide (no OpenSSL hashlib)."""
+    scrypt = getattr(hashlib, "scrypt", None)
+    if scrypt is not None:
+        try:
+            return scrypt(
+                password,
+                salt=_CONSUMER_TOKEN_PEPPER,
+                n=_SCRYPT_N,
+                r=_SCRYPT_R,
+                p=_SCRYPT_P,
+                dklen=_SCRYPT_DKLEN,
+            )
+        except (AttributeError, NotImplementedError, ValueError):
+            pass
+
+    return pyscrypt_hash(
+        password,
+        _CONSUMER_TOKEN_PEPPER,
+        _SCRYPT_N,
+        _SCRYPT_R,
+        _SCRYPT_P,
+        _SCRYPT_DKLEN,
+    )
+
+
 def hash_token(api_token: str) -> str:
     """Stable digest stored in D1/KV; never log the minted token."""
-    return hashlib.scrypt(
-        api_token.encode("utf-8"),
-        salt=_CONSUMER_TOKEN_PEPPER,
-        n=2**14,
-        r=8,
-        p=1,
-        dklen=32,
-    ).hex()
+    return _scrypt_digest(api_token.encode("utf-8")).hex()
 
 
 def kv_key_for_hash(token_hash: str) -> str:

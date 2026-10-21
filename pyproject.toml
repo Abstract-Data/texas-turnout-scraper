@@ -12,6 +12,8 @@ dependencies = [
     "lxml>=5.2.0",
     "anyio>=4.4.0",
     "tenacity>=9.0.0",
+    # Pure-Python scrypt fallback when hashlib.scrypt is unavailable (Pyodide Workers).
+    "pyscrypt>=1.6.2",
 ]
 
 [project.optional-dependencies]

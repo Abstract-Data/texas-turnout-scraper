@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+
+import pytest
+
+from texas_turnout_scraper import consumer_tokens as ct
 from texas_turnout_scraper.consumer_tokens import (
     extract_consumer_credential,
     hash_token,
@@ -33,3 +38,25 @@ def test_mint_plaintext_has_entropy() -> None:
     b = mint_plaintext_token()
     assert a != b
     assert len(a) >= 32
+
+
+def test_hash_token_pyscrypt_fallback_matches_hashlib() -> None:
+    """Pyodide lacks OpenSSL hashlib.scrypt; fallback must match CLI digests."""
+    reference = hashlib.scrypt(
+        b"example-secret",
+        salt=ct._CONSUMER_TOKEN_PEPPER,
+        n=ct._SCRYPT_N,
+        r=ct._SCRYPT_R,
+        p=ct._SCRYPT_P,
+        dklen=ct._SCRYPT_DKLEN,
+    ).hex()
+
+    def _no_scrypt(*_args: object, **_kwargs: object) -> bytes:
+        raise AttributeError("hashlib.scrypt unavailable")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(ct.hashlib, "scrypt", _no_scrypt, raising=False)
+    try:
+        assert ct.hash_token("example-secret") == reference
+    finally:
+        monkeypatch.undo()

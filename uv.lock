@@ -790,6 +790,12 @@ wheels = [
 ]
 
 [[package]]
+name = "pyscrypt"
+version = "1.6.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c6/56/51603b5714d221b784e4cbc2790b1215b3fb108e4d308a0bd52e4c3ce532/pyscrypt-1.6.2.tar.gz", hash = "sha256:bafdd195f10f7c7395f0133bad09746a68e0e6b66da202c9bdb6b1eb4abba5e9", size = 36555, upload-time = "2015-02-03T21:44:52.793Z" }
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1109,7 +1115,7 @@ wheels = [
 
 [[package]]
 name = "texas-turnout-scraper"
-version = "0.2.5"
+version = "0.2.6"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
@@ -1117,6 +1123,7 @@ dependencies = [
     { name = "httpx" },
     { name = "lxml" },
     { name = "pydantic" },
+    { name = "pyscrypt" },
     { name = "tenacity" },
 ]
 
@@ -1164,6 +1171,7 @@ requires-dist = [
     { name = "lxml", specifier = ">=5.2.0" },
     { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.3.0" },
     { name = "pydantic", specifier = ">=2.9.2" },
+    { name = "pyscrypt", specifier = ">=1.6.2" },
     { name = "questionary", marker = "extra == 'cli'", specifier = ">=2.1.1" },
     { name = "rich", marker = "extra == 'cli'", specifier = ">=13.9.0" },
     { name = "tenacity", specifier = ">=9.0.0" },
