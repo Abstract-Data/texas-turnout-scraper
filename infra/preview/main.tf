@@ -11,6 +11,15 @@ locals {
   ev_d1_bindings = jsonencode({
     (var.preview_source_election_id) = "DB"
   })
+  preview_api_url = "https://${var.preview_api_hostname}"
+  preview_zone_id = data.cloudflare_zones.preview.result[0].id
+}
+
+data "cloudflare_zones" "preview" {
+  account = {
+    id = var.account_id
+  }
+  name = var.preview_zone_name
 }
 
 resource "cloudflare_d1_database" "preview" {
@@ -44,15 +53,26 @@ resource "cloudflare_worker" "ev_api" {
     enabled = false
   }
 
-  # workers.dev is off. Wrangler names this workers_dev; provider v5.28.0
-  # sets it with subdomain.enabled. Disabling that route does not disable
-  # preview or version URLs, so subdomain.previews_enabled is false too.
-  # No workers.dev, preview, or version hostname is routed. The Access
-  # application below is attached for a later route change; this resource
-  # does not enable one.
+  # workers.dev stays off (no *.workers.dev route). Traffic uses the custom
+  # domain in cloudflare_workers_custom_domain.preview. previews_enabled stays
+  # false so version/preview URLs are not routed.
   subdomain = {
     enabled          = false
     previews_enabled = false
+  }
+}
+
+resource "cloudflare_workers_custom_domain" "preview" {
+  account_id = var.account_id
+  hostname   = var.preview_api_hostname
+  service    = cloudflare_worker.ev_api.name
+  zone_id    = local.preview_zone_id
+
+  lifecycle {
+    precondition {
+      condition     = length(data.cloudflare_zones.preview.result) == 1
+      error_message = "Expected exactly one zone named ${var.preview_zone_name} on account ${var.account_id}."
+    }
   }
 }
 
@@ -149,8 +169,8 @@ resource "cloudflare_zero_trust_access_application" "preview" {
       worker_id = cloudflare_worker.ev_api.id
     },
     {
-      type      = "preview_worker"
-      worker_id = cloudflare_worker.ev_api.id
+      type = "public"
+      uri  = var.preview_api_hostname
     },
   ]
 

@@ -23,9 +23,19 @@ output "service_binding_name" {
   value       = "EV_API"
 }
 
+output "preview_api_url" {
+  description = "HTTPS base URL for the routed preview read API (custom domain behind Access)."
+  value       = local.preview_api_url
+}
+
+output "preview_api_hostname" {
+  description = "Custom domain hostname attached to the preview Worker."
+  value       = var.preview_api_hostname
+}
+
 output "workers_dev_url" {
-  description = "workers.dev hostname this Worker would use if subdomain.enabled were true. The route is disabled, so this URL does not serve traffic."
-  value       = cloudflare_worker.ev_api.subdomain.url
+  description = "Not routed. subdomain.enabled is false; use preview_api_url instead."
+  value       = null
 }
 
 output "access_client_id" {

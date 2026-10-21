@@ -16,3 +16,5 @@ def test_preview_worker_version_binds_access_and_d1_map() -> None:
     assert "local.ev_d1_bindings" in text
     assert "cloudflare_zero_trust_access_service_token.preview.client_id" in text
     assert "cloudflare_zero_trust_access_service_token.preview.client_secret" in text
+    assert "cloudflare_workers_custom_domain.preview" in text
+    assert "preview_api_hostname" in text

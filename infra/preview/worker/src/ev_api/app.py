@@ -128,6 +128,19 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
         )
         return outcome_response(outcome)
 
+    @app.get("/health")
+    async def health(request: Request) -> Response:
+        active = _deps_for_request(request)
+        if not await read_request_authorized(
+            request.headers,
+            access_client_id=active.access_client_id,
+            access_client_secret=active.access_client_secret,
+            kv=active.kv,
+            token_db=active.token_db,
+        ):
+            return Response(status_code=401)
+        return JSONResponse({"status": "ok"})
+
     @app.get("/elections/{source_election_id}/aggregates/totals")
     async def aggregates_totals(
         source_election_id: str,
