@@ -205,3 +205,13 @@ jobs:
           fi
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
             uv run python -m texas_turnout_scraper.early_vote_sync "${args[@]}"
+      - name: Backfill precomputed D1 aggregates (idempotent)
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+        run: |
+          set -euo pipefail
+          op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
+            uv run python -m texas_turnout_scraper.early_vote_d1_precompute_backfill \
+            --election-id "${ELECTION_ID}" --apply
