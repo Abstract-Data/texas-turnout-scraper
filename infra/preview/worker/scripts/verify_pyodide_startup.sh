@@ -100,12 +100,7 @@ _ = ZoneInfo("America/Chicago")
 import entry as _worker_entry  # noqa: F401
 
 from ev_api.app import ReadDeps, _ClosedKv, _ClosedStore, create_app
-from texas_turnout_scraper.civix.read_client import (
-    cache_key,
-    etag_for_version,
-    http_path,
-    version_key,
-)
+from texas_turnout_scraper.civix.read_client import http_path, version_key
 from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
 from texas_turnout_scraper.early_vote_sync import hash_key
 
