@@ -94,7 +94,11 @@ def _collect_log_call_issues(path: Path) -> list[str]:
             if isinstance(arg, ast.Attribute) and arg.attr in _FORBIDDEN_LOG_NAMES:
                 issues.append(f"{path}:{node.lineno}: logs sensitive attribute {arg.attr!r}")
         for kw in node.keywords:
-            if kw.arg == "exc_info" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+            if (
+                kw.arg == "exc_info"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is True
+            ):
                 issues.append(f"{path}:{node.lineno}: log call uses exc_info=True")
     return issues
 
