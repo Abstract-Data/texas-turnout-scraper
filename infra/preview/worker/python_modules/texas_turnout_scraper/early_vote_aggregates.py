@@ -48,7 +48,7 @@ def _normalize_method(raw: str) -> str | None:
 def _sum_turnout_rows(rows: list[dict[str, Any]]) -> tuple[MethodTotals, list[CountyMethodTotals]]:
     statewide_ip = 0
     statewide_mail = 0
-    by_county: list[CountyMethodTotals] = []
+    merged: dict[str, CountyMethodTotals] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -61,8 +61,16 @@ def _sum_turnout_rows(rows: list[dict[str, Any]]) -> tuple[MethodTotals, list[Co
         mail = int(row.get("total_mail_votes_for_election") or 0)
         statewide_ip += ip
         statewide_mail += mail
-        by_county.append(CountyMethodTotals(county=county, in_person=ip, mail_in=mail))
-    by_county.sort(key=lambda item: item.county)
+        prior = merged.get(county)
+        if prior is None:
+            merged[county] = CountyMethodTotals(county=county, in_person=ip, mail_in=mail)
+        else:
+            merged[county] = CountyMethodTotals(
+                county=county,
+                in_person=prior.in_person + ip,
+                mail_in=prior.mail_in + mail,
+            )
+    by_county = sorted(merged.values(), key=lambda item: item.county)
     return MethodTotals(in_person=statewide_ip, mail_in=statewide_mail), by_county
 
 

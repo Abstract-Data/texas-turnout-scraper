@@ -243,6 +243,29 @@ def test_per_day_idempotency_and_single_kv_bump() -> None:
     assert store.manifest_sha256 == first.manifest_sha256
 
 
+def test_backfill_report_includes_sha256_and_status_for_workflow() -> None:
+    elections = _load_fixture_elections()
+    _, _, ev_dates = find_election_ev_dates(DEFAULT_NOV_2026_GENERAL_ID, elections=elections)
+    plan = _fixture_plan(ev_dates)
+    store = _BackfillStore()
+    with patch(
+        "texas_turnout_scraper.early_vote_backfill.pull_statewide_roster_file",
+        return_value=_envelope_response(),
+    ):
+        result = run_backfill(
+            DEFAULT_NOV_2026_GENERAL_ID,
+            store,
+            plan,
+            dry_run=True,
+            payload_kind="statewide_roster",
+        )
+    report = format_backfill_report(result)
+    sha_line = next(line for line in report.splitlines() if line.startswith("sha256="))
+    assert sha_line.removeprefix("sha256=")
+    status_line = next(line for line in report.splitlines() if line.startswith("status="))
+    assert status_line == "status=unchanged"
+
+
 def test_sync_defer_kv_bump_skips_version() -> None:
     payload = b"x"
     store = _BackfillStore()

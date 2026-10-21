@@ -59,7 +59,12 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
+
+if TYPE_CHECKING:
+    from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
+        PrecomputeBackfillResult,
+    )
 from urllib.parse import quote
 
 import httpx
@@ -67,6 +72,13 @@ import httpx
 from texas_turnout_scraper.civix.envelope import _decode_envelope
 from texas_turnout_scraper.civix.evr import API_PREFIX, BASE_URL
 from texas_turnout_scraper.civix.ids import require_election_id
+from texas_turnout_scraper.early_vote_d1_precompute_store import (
+    PRECOMPUTE_SCHEMA_CREATES,
+    aggregate_body_from_decoded,
+    delete_precompute_statements,
+    precompute_row_count,
+    precompute_statements,
+)
 from texas_turnout_scraper.early_vote_roster import RosterCsvSummary, redact_roster_csv
 from texas_turnout_scraper.http_transport import HttpBackend, PacedHttpClient
 
@@ -177,6 +189,7 @@ class D1Plan:
     csv_columns: tuple[str, ...] | None = None
     dropped_columns: tuple[str, ...] | None = None
     voting_method_counts: tuple[tuple[str, int], ...] | None = None
+    aggregate_rows: int | None = None
 
 
 @dataclass(frozen=True)
@@ -388,6 +401,7 @@ _SCHEMA_CREATES: tuple[str, ...] = (
     _FILE_TABLE_SQL,
     _POINTER_TABLE_SQL,
     _DAY_TABLE_SQL,
+    *PRECOMPUTE_SCHEMA_CREATES,
 )
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
 _FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"
@@ -607,6 +621,12 @@ def summarize_d1_plan(
         source_rows = roster_summary.est_rows
     else:
         source_rows = source_row_count(decoded)
+    aggregate_rows: int | None = None
+    try:
+        agg_body = aggregate_body_from_decoded(decoded, source_election_id=election_id)
+        aggregate_rows = precompute_row_count(agg_body)
+    except ValueError:
+        aggregate_rows = None
     return D1Plan(
         statements=tuple((sql, counts[sql]) for sql in order),
         chunk_rows=chunk_rows,
@@ -619,6 +639,7 @@ def summarize_d1_plan(
         csv_columns=roster_summary.columns if roster_summary else None,
         dropped_columns=roster_summary.dropped_columns if roster_summary else None,
         voting_method_counts=roster_summary.voting_method_counts if roster_summary else None,
+        aggregate_rows=aggregate_rows,
     )
 
 
@@ -748,6 +769,8 @@ def format_sync_report(result: SyncResult) -> str:
             row_fields.append(f"voting_method_counts={rollups}")
         if plan.source_rows is not None:
             row_fields.append(f"source_rows={plan.source_rows}")
+        if plan.aggregate_rows is not None:
+            row_fields.append(f"d1_aggregate_rows={plan.aggregate_rows}")
         row_fields.append(f"d1_chunk_rows={plan.chunk_rows}")
         row_fields.append(f"d1_file_rows={plan.file_rows}")
         row_fields.append(f"d1_rows={plan.chunk_rows + plan.file_rows}")
@@ -968,7 +991,7 @@ class CloudflareEarlyVoteStore:
                 ev_date_iso,
                 plan,
                 digest,
-                len(decoded),
+                decoded,
                 update_pointer=update_pointer,
             )
             return
@@ -977,6 +1000,13 @@ class CloudflareEarlyVoteStore:
         self._delete_stale_files(database_id, election_id)
         self._insert_chunks(database_id, plan.chunk_inserts)
         self._statements(database_id, [_statement_lists(plan.file_insert)])
+        self._write_precomputed_aggregates(
+            database_id,
+            election_id,
+            plan.file_id,
+            decoded,
+            ev_date_iso=None,
+        )
         # One statement, after every chunk. A failed batch before this leaves
         # the previous pointer in place.
         self._statements(database_id, [_statement_lists(plan.pointer_update)])
@@ -995,7 +1025,7 @@ class CloudflareEarlyVoteStore:
         ev_date_iso: str,
         plan: PublishPlan,
         digest: str,
-        decoded_len: int,
+        decoded: bytes,
         *,
         update_pointer: bool = False,
     ) -> None:
@@ -1011,6 +1041,13 @@ class CloudflareEarlyVoteStore:
                 old_id = candidate
         self._insert_chunks(database_id, plan.chunk_inserts)
         self._statements(database_id, [_statement_lists(plan.file_insert)])
+        self._write_precomputed_aggregates(
+            database_id,
+            election_id,
+            plan.file_id,
+            decoded,
+            ev_date_iso=ev_date_iso,
+        )
         self._statements(
             database_id,
             [
@@ -1029,6 +1066,10 @@ class CloudflareEarlyVoteStore:
             self._statements(
                 database_id,
                 [
+                    *[
+                        _statement_lists(item)
+                        for item in delete_precompute_statements(election_id, old_id)
+                    ],
                     (_DELETE_CHUNK_SQL, [election_id, old_id]),
                     (_DELETE_FILE_SQL, [election_id, old_id]),
                 ],
@@ -1040,7 +1081,7 @@ class CloudflareEarlyVoteStore:
             ev_date_iso,
             database_name(election_id),
             len(plan.chunk_inserts),
-            decoded_len,
+            len(decoded),
         )
 
     def _delete_stale_files(self, database_id: str, election_id: str) -> None:
@@ -1061,6 +1102,8 @@ class CloudflareEarlyVoteStore:
             return
         rows: list[tuple[str, list[str]]] = []
         for file_id in stale:
+            for stmt in delete_precompute_statements(election_id, file_id):
+                rows.append(_statement_lists(stmt))
             rows.append((_DELETE_CHUNK_SQL, [election_id, file_id]))
             rows.append((_DELETE_FILE_SQL, [election_id, file_id]))
         for start in range(0, len(rows), _INSERT_BATCH):
@@ -1121,6 +1164,7 @@ class CloudflareEarlyVoteStore:
             database_id,
             [(_POINTER_UPSERT_SQL, [election_id, file_id])],
         )
+        self.backfill_precomputed_aggregates(election_id, dry_run=False)
         version = self.bump_version(election_id, content_digest)
         if manifest_sha256:
             self._kv_put(manifest_key(election_id), manifest_sha256)
@@ -1227,6 +1271,49 @@ class CloudflareEarlyVoteStore:
         rows = [_statement_lists(item) for item in inserts]
         for start in range(0, len(rows), _INSERT_BATCH):
             self._statements(database_id, rows[start : start + _INSERT_BATCH])
+
+    def backfill_precomputed_aggregates(
+        self,
+        election_id: str,
+        *,
+        dry_run: bool,
+    ) -> PrecomputeBackfillResult:
+        from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
+            run_precompute_backfill_on_store,
+        )
+
+        return run_precompute_backfill_on_store(self, election_id, dry_run=dry_run)
+
+    def _write_precomputed_aggregates(
+        self,
+        database_id: str,
+        election_id: str,
+        file_id: str,
+        decoded: bytes,
+        *,
+        ev_date_iso: str | None,
+    ) -> None:
+        body = aggregate_body_from_decoded(
+            decoded,
+            source_election_id=election_id,
+            ev_date_iso=ev_date_iso,
+        )
+        statements = [
+            _statement_lists(item)
+            for item in precompute_statements(
+                election_id,
+                file_id,
+                body,
+                ev_date_iso=ev_date_iso,
+            )
+        ]
+        self._statements(database_id, statements)
+        logger.info(
+            "early-vote D1 precomputed aggregates election_id=%s file_id=%s rows=%s",
+            election_id,
+            file_id,
+            precompute_row_count(body),
+        )
 
     def _query_rows(self, database_id: str, sql: str, params: list[str]) -> list[dict[str, Any]]:
         payload = self._api(
@@ -1439,6 +1526,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Hash and print the plan")
     parser.add_argument("--apply", action="store_true", help="Write D1, then bump KV")
     parser.add_argument(
+        "--defer-kv-bump",
+        action="store_true",
+        help="Write D1 and precompute only; skip KV bump (finalize after backfill)",
+    )
+    parser.add_argument(
         "--stored-hash",
         default="",
         help="Hash from an earlier run of this file, so a second dry run can skip",
@@ -1485,6 +1577,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 payload_kind=payload_kind,
                 http_backend=args.http_backend,
+                defer_kv_bump=args.defer_kv_bump,
             )
             sys.stdout.write(format_backfill_report(backfill) + "\n")
             return backfill.exit_code
@@ -1517,6 +1610,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             payload_kind=payload_kind,
             ev_date_iso=ev_date_iso,
+            defer_kv_bump=args.defer_kv_bump,
         )
     except (EarlyVoteCapError, EarlyVoteSyncError, ValueError) as exc:
         logger.error("%s", exc)

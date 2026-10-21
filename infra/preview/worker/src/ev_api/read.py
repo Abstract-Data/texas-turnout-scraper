@@ -1,10 +1,12 @@
 """Versioned KV cache in front of per-election D1 aggregate reads.
 
-Cold-cache stampede guard: a best-effort KV lock per election/version/endpoint
-(``single_flight_lock_key``) with a 60s TTL. KV ``get``/``put`` are not atomic,
-so concurrent misses may still overlap; the lock narrows the race. Holders that
-see an existing lock recheck the versioned cache once, then return 503 with
-``Retry-After`` instead of starting another D1 chunk walk.
+Aggregate bodies are read from loader-precomputed D1 rows (fast). The KV
+single-flight lock only coordinates populating the versioned JSON cache on a
+cold miss; it does not guard multi-minute chunk streaming.
+
+When precomputed rows are missing, the store raises
+:class:`~texas_turnout_scraper.early_vote_d1_precompute_read.AggregatesNotComputed`
+and this module returns HTTP 503 with ``Retry-After`` (backfill / loader catch-up).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from texas_turnout_scraper.civix.read_client import (
     single_flight_lock_key,
     version_key,
 )
+from texas_turnout_scraper.early_vote_d1_precompute_read import AggregatesNotComputed
 from texas_turnout_scraper.early_vote_sync import hash_key
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,8 @@ SINGLE_FLIGHT_LOCK_TTL_SECONDS = 60
 SINGLE_FLIGHT_RETRY_AFTER_SECONDS = 5
 
 _AGGREGATE_IN_PROGRESS_DETAIL = "aggregate_in_progress"
+_AGGREGATES_NOT_COMPUTED_DETAIL = "aggregates_not_yet_computed"
+_AGGREGATES_NOT_COMPUTED_RETRY_AFTER_SECONDS = 30
 
 
 class KvNamespace(Protocol):
@@ -102,6 +107,16 @@ def _contended_outcome(etag: str) -> ReadOutcome:
     )
 
 
+def _not_computed_outcome() -> ReadOutcome:
+    return ReadOutcome(
+        503,
+        None,
+        {"detail": _AGGREGATES_NOT_COMPUTED_DETAIL},
+        "not_computed",
+        retry_after=_AGGREGATES_NOT_COMPUTED_RETRY_AFTER_SECONDS,
+    )
+
+
 async def _cached_hit(
     kv: KvNamespace,
     key: str,
@@ -115,6 +130,34 @@ async def _cached_hit(
         logger.warning("cached payload was not an object key_suffix=%s", key.split(":")[-1])
         return None
     return ReadOutcome(200, etag, cached_body, "hit")
+
+
+async def _populate_versioned_cache(
+    kv: KvNamespace,
+    store: AggregateStore,
+    election_id: str,
+    query: ResourceQuery,
+    etag: str,
+    key: str,
+    *,
+    ttl_seconds: int | None,
+) -> ReadOutcome:
+    kv_sha256 = await kv.get(hash_key(election_id))
+    if kv_sha256 is None or kv_sha256 == "":
+        return ReadOutcome(404, etag, None, "miss")
+    try:
+        body = await store.build_body(
+            election_id,
+            query.segments,
+            kv_sha256=kv_sha256,
+        )
+    except AggregatesNotComputed:
+        return _not_computed_outcome()
+    if body is None:
+        return ReadOutcome(404, etag, None, "miss")
+    raw = json.dumps(body, separators=(",", ":"), sort_keys=True)
+    await kv.put(key, raw, expiration_ttl=ttl_seconds)
+    return ReadOutcome(200, etag, body, "miss")
 
 
 async def read_resource(
@@ -137,11 +180,11 @@ async def read_resource(
         matched = etag_matches(query.if_none_match, etag)
     except ValueError:
         return ReadOutcome(400, etag, None, "bad_etag")
-    if matched:
-        return ReadOutcome(304, etag, None, "not_modified")
-
     key = cache_key(election_id, version, *query.segments)
     cached = await kv.get(key)
+    if matched:
+        if cached is not None and _object_json(cached) is not None:
+            return ReadOutcome(304, etag, None, "not_modified")
     cached_body = _object_json(cached) if cached is not None else None
     if not queries_d1(cache_hit=cached_body is not None):
         return ReadOutcome(200, etag, cached_body, "hit")
@@ -161,20 +204,15 @@ async def read_resource(
         if recheck is not None:
             return recheck
 
-        kv_sha256 = await kv.get(hash_key(election_id))
-        if kv_sha256 is None or kv_sha256 == "":
-            return ReadOutcome(404, etag, None, "miss")
-
-        body = await store.build_body(
+        return await _populate_versioned_cache(
+            kv,
+            store,
             election_id,
-            query.segments,
-            kv_sha256=kv_sha256,
+            query,
+            etag,
+            key,
+            ttl_seconds=ttl_seconds,
         )
-        if body is None:
-            return ReadOutcome(404, etag, None, "miss")
-        raw = json.dumps(body, separators=(",", ":"), sort_keys=True)
-        await kv.put(key, raw, expiration_ttl=ttl_seconds)
-        return ReadOutcome(200, etag, body, "miss")
     finally:
         await kv.delete(lock_key)
 

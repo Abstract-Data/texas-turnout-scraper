@@ -183,7 +183,7 @@ jobs:
             exit 1
           fi
 
-      - name: Write D1 and bump KV
+      - name: Write D1 (defer KV until after precompute backfill)
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -199,9 +199,37 @@ jobs:
             --payload-kind "${PAYLOAD_KIND}"
             --http-backend cloudscraper
             --apply
+            --defer-kv-bump
           )
           if [[ -n "${ELECTION_DATE}" ]]; then
             args+=(--date "${ELECTION_DATE}")
           fi
+          sync_report="$(mktemp)"
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
-            uv run python -m texas_turnout_scraper.early_vote_sync "${args[@]}"
+            uv run python -m texas_turnout_scraper.early_vote_sync "${args[@]}" | tee "${sync_report}"
+          SYNC_SHA="$(awk -F= '/^sha256=/{print $2; exit}' "${sync_report}")"
+          if [[ -z "${SYNC_SHA}" ]]; then
+            echo "::error::sync report missing sha256= line"
+            exit 1
+          fi
+          SYNC_STATUS="$(awk -F= '/^status=/{print $2; exit}' "${sync_report}")"
+          echo "SYNC_SHA=${SYNC_SHA}" >> "${GITHUB_ENV}"
+          echo "SYNC_STATUS=${SYNC_STATUS}" >> "${GITHUB_ENV}"
+      - name: Backfill precomputed D1 aggregates (idempotent)
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+        run: |
+          set -euo pipefail
+          precompute_args=(
+            --election-id "${ELECTION_ID}"
+            --apply
+            --finalize-kv-digest "${SYNC_SHA}"
+          )
+          if [[ "${SYNC_STATUS}" == "wrote" ]]; then
+            precompute_args+=(--finalize-kv-after-sync)
+          fi
+          op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
+            uv run python -m texas_turnout_scraper.early_vote_d1_precompute_backfill \
+            "${precompute_args[@]}"
