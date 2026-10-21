@@ -100,8 +100,9 @@ _ = ZoneInfo("America/Chicago")
 import entry as _worker_entry  # noqa: F401
 
 from ev_api.app import ReadDeps, _ClosedKv, _ClosedStore, create_app
-from texas_turnout_scraper.civix.read_client import http_path
+from texas_turnout_scraper.civix.read_client import http_path, version_key
 from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
+from texas_turnout_scraper.early_vote_sync import hash_key
 
 assert create_app().title == "Early vote read API"
 _ = ArgsKwargs((), {})
@@ -109,10 +110,13 @@ print("pyodide startup import smoke: OK")
 
 class _SmokeKv:
     def __init__(self, values: dict[str, str]) -> None:
-        self._values = values
+        self._values = dict(values)
 
     async def get(self, key: str) -> str | None:
         return self._values.get(key)
+
+    async def put(self, key: str, value: str, *, expiration_ttl: int | None) -> None:
+        self._values[key] = value
 
 
 _consumer_plaintext = "pyodide-smoke-consumer-credential"
@@ -193,6 +197,92 @@ if health_bearer_valid_status != 200:
     sys.exit(1)
 if bearer_auth_wall_ms >= 2000.0:
     print("expected bearer-auth wall_ms < 2000", file=sys.stderr)
+    sys.exit(1)
+
+
+class _RecordingStore:
+    async def build_body(
+        self,
+        source_election_id: str,
+        segments: tuple[str, ...],
+        *,
+        kv_sha256: str,
+    ) -> dict[str, object] | None:
+        return {"statewide": {"total": 2, "in_person": 2, "mail_in": 0}}
+
+
+_AGG_ELECTION = "53815"
+_AGG_VERSION = 7
+_AGG_SHA = "smoke-sha256-not-a-voter-id"
+_agg_segments = ("aggregates", "totals")
+_agg_path = http_path(_AGG_ELECTION, *_agg_segments)
+
+agg_kv = _SmokeKv(
+    {
+        version_key(_AGG_ELECTION): str(_AGG_VERSION),
+        hash_key(_AGG_ELECTION): _AGG_SHA,
+    }
+)
+agg_app = create_app(
+    ReadDeps(
+        kv=agg_kv,
+        store=_RecordingStore(),
+        access_client_id=app.state.read_deps.access_client_id,
+        access_client_secret=app.state.read_deps.access_client_secret,
+    )
+)
+
+empty_kv = _SmokeKv({})
+empty_app = create_app(
+    ReadDeps(
+        kv=empty_kv,
+        store=_ClosedStore(),
+        access_client_id=app.state.read_deps.access_client_id,
+        access_client_secret=app.state.read_deps.access_client_secret,
+    )
+)
+
+
+async def _aggregate_smoke() -> tuple[int, bool, int, int]:
+    transport = ASGITransport(app=agg_app)
+    access_headers = {
+        "CF-Access-Client-Id": agg_app.state.read_deps.access_client_id,
+        "CF-Access-Client-Secret": agg_app.state.read_deps.access_client_secret,
+    }
+    async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
+        first = await client.get(_agg_path, headers=access_headers)
+        etag = first.headers.get("etag")
+        second = await client.get(
+            _agg_path,
+            headers={**access_headers, "If-None-Match": etag or ""},
+        )
+    empty_transport = ASGITransport(app=empty_app)
+    async with AsyncClient(transport=empty_transport, base_url="http://pyodide-smoke") as client:
+        missing = await client.get(
+            http_path("99999", "aggregates", "totals"),
+            headers=access_headers,
+        )
+    return first.status_code, bool(etag), second.status_code, missing.status_code
+
+
+agg_status, etag_present, inm_status, empty_status = asyncio.run(_aggregate_smoke())
+
+print(f"aggregate-authorized status={agg_status}")
+print(f"etag present={'yes' if etag_present else 'no'}")
+print(f"if-none-match status={inm_status}")
+print(f"empty-election status={empty_status}")
+
+if agg_status != 200:
+    print("expected aggregate-authorized status=200", file=sys.stderr)
+    sys.exit(1)
+if not etag_present:
+    print("expected etag on aggregate response", file=sys.stderr)
+    sys.exit(1)
+if inm_status != 304:
+    print("expected if-none-match status=304", file=sys.stderr)
+    sys.exit(1)
+if empty_status != 404:
+    print("expected empty-election status=404", file=sys.stderr)
     sys.exit(1)
 
 print("pyodide http startup smoke: OK")

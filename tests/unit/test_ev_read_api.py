@@ -172,6 +172,53 @@ async def test_if_none_match_returns_304_without_d1() -> None:
     assert store.calls == []
 
 
+def test_http_aggregate_totals_404_json_when_version_missing() -> None:
+    response = _client(MemoryKv(), RecordingStore()).get(_url(), headers=_AUTH)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "not_found"}
+
+
+def test_http_aggregate_totals_304_with_etag() -> None:
+    payload = {"statewide": {"total": 1, "in_person": 1, "mail_in": 0}}
+    key = cache_key(_ELECTION, _VERSION, *_segments())
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: json.dumps(payload)})
+    client = _client(kv, RecordingStore())
+    first = client.get(_url(), headers=_AUTH)
+    etag = first.headers.get("ETag")
+    assert etag
+    second = client.get(_url(), headers={**_AUTH, "If-None-Match": etag})
+    assert second.status_code == 304
+    assert second.headers.get("ETag") == etag
+
+
+def test_http_aggregate_totals_internal_error_json() -> None:
+    class BrokenStore:
+        async def build_body(
+            self,
+            source_election_id: str,
+            segments: tuple[str, ...],
+            *,
+            kv_sha256: str,
+        ) -> dict[str, object] | None:
+            raise RuntimeError("d1 unavailable")
+
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
+    client = TestClient(
+        create_app(
+            ReadDeps(
+                kv=kv,
+                store=BrokenStore(),
+                access_client_id=_ACCESS_ID,
+                access_client_secret=_ACCESS_SECRET,
+            )
+        ),
+        raise_server_exceptions=False,
+    )
+    response = client.get(_url(), headers=_AUTH)
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal_error"}
+
+
 def test_http_aggregate_totals_requires_access() -> None:
     kv = MemoryKv({version_key(_ELECTION): str(_VERSION)})
     response = _client(kv, RecordingStore()).get(_url())

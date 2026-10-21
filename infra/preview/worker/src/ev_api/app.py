@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from fastapi import FastAPI, Query, Request
@@ -19,6 +20,8 @@ from ev_api.read import (
     response_headers,
 )
 from texas_turnout_scraper.civix.read_client import http_path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -80,7 +83,17 @@ def outcome_response(outcome: ReadOutcome) -> Response:
         return Response(status_code=304, headers=headers)
     if outcome.status_code == 200 and outcome.body is not None:
         return JSONResponse(outcome.body, headers=headers)
+    if outcome.status_code == 404:
+        return JSONResponse({"detail": "not_found"}, status_code=404, headers=headers)
+    if outcome.status_code == 400:
+        return JSONResponse({"detail": "bad_request"}, status_code=400, headers=headers)
     return Response(status_code=outcome.status_code, headers=headers)
+
+
+def _route_template(request: Request) -> str:
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    return path if isinstance(path, str) and path else request.url.path
 
 
 def _segments(resource: str, ev_date: str | None) -> tuple[str, ...]:
@@ -92,6 +105,12 @@ def _segments(resource: str, ev_date: str | None) -> tuple[str, ...]:
 
 def create_app(deps: ReadDeps | None = None) -> FastAPI:
     app = FastAPI(title="Early vote read API", docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        logger.error("unhandled %s route=%s", type(exc).__name__, _route_template(request))
+        return JSONResponse({"detail": "internal_error"}, status_code=500)
+
     app.state.read_deps = deps or ReadDeps(
         kv=_ClosedKv(),
         store=_ClosedStore(),
