@@ -262,6 +262,7 @@ def run_backfill(
     dry_run: bool = False,
     payload_kind: EarlyVotePayloadKind = "statewide_roster",
     http_backend: str = "httpx",
+    defer_kv_bump: bool = False,
 ) -> BackfillResult:
     """Ingest each date in ``plan.load_dates``; bump KV once at the end when not dry-run."""
     election_id = require_election_id(election_id)
@@ -328,7 +329,7 @@ def run_backfill(
 
     manifest = backfill_manifest_digest(manifest_inputs) if manifest_inputs else ""
     kv_version: str | None = None
-    if not dry_run and wrote > 0 and day_results:
+    if not dry_run and not defer_kv_bump and wrote > 0 and day_results:
         latest_day = max(day_results, key=lambda item: item.ev_date_iso)
         kv_version = store.finalize_published_roster(
             election_id,
@@ -369,12 +370,23 @@ def run_backfill(
     )
 
 
+def _backfill_content_sha256(result: BackfillResult) -> str:
+    if not result.days:
+        return ""
+    latest = max(result.days, key=lambda item: item.ev_date_iso)
+    return latest.sha256
+
+
 def format_backfill_report(result: BackfillResult) -> str:
     """Operator report — day list shows ISO dates and statuses only."""
     plan = result.plan
+    content_sha256 = _backfill_content_sha256(result)
+    sync_status = "wrote" if result.days_wrote > 0 else "unchanged"
     lines = [
         f"election_id={result.election_id}",
         f"payload_kind={result.payload_kind}",
+        f"sha256={content_sha256}",
+        f"status={sync_status}",
         "sync_mode=backfill",
         f"calendar_ev_days_total={plan.calendar_ev_days_total}",
         f"calendar_range={plan.calendar_first_iso}..{plan.calendar_last_iso}",

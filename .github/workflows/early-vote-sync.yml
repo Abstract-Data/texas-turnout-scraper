@@ -212,7 +212,9 @@ jobs:
             echo "::error::sync report missing sha256= line"
             exit 1
           fi
+          SYNC_STATUS="$(awk -F= '/^status=/{print $2; exit}' "${sync_report}")"
           echo "SYNC_SHA=${SYNC_SHA}" >> "${GITHUB_ENV}"
+          echo "SYNC_STATUS=${SYNC_STATUS}" >> "${GITHUB_ENV}"
       - name: Backfill precomputed D1 aggregates (idempotent)
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
@@ -220,7 +222,16 @@ jobs:
           ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
         run: |
           set -euo pipefail
+          precompute_args=(
+            --election-id "${ELECTION_ID}"
+            --apply
+          )
+          if [[ "${SYNC_STATUS}" == "wrote" ]]; then
+            precompute_args+=(
+              --finalize-kv-digest "${SYNC_SHA}"
+              --finalize-kv-after-sync
+            )
+          fi
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
             uv run python -m texas_turnout_scraper.early_vote_d1_precompute_backfill \
-            --election-id "${ELECTION_ID}" --apply \
-            --finalize-kv-digest "${SYNC_SHA}"
+            "${precompute_args[@]}"

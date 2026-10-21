@@ -309,6 +309,14 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="After a successful apply, bump KV version with this file content digest",
     )
+    parser.add_argument(
+        "--finalize-kv-after-sync",
+        action="store_true",
+        help=(
+            "With --finalize-kv-digest: bump KV when sync wrote but precompute "
+            "skipped every file (defer-KV workflow)"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.dry_run == args.apply:
         parser.error("pass exactly one of --dry-run or --apply")
@@ -331,8 +339,11 @@ def main(argv: list[str] | None = None) -> int:
             args.election_id,
             dry_run=args.dry_run,
         )
-        if args.apply and args.finalize_kv_digest.strip():
-            version = store.bump_version(args.election_id, args.finalize_kv_digest.strip())
+        digest = args.finalize_kv_digest.strip()
+        if args.apply and digest and (
+            result.files_written > 0 or args.finalize_kv_after_sync
+        ):
+            version = store.bump_version(args.election_id, digest)
             logger.info(
                 "precompute backfill finalized KV election_id=%s version=%s",
                 args.election_id,

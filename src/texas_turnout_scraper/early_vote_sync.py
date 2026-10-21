@@ -1577,6 +1577,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 payload_kind=payload_kind,
                 http_backend=args.http_backend,
+                defer_kv_bump=args.defer_kv_bump,
             )
             sys.stdout.write(format_backfill_report(backfill) + "\n")
             return backfill.exit_code

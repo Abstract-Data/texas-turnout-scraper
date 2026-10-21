@@ -139,7 +139,15 @@ async def test_by_day_skips_missing_day_serves_others() -> None:
     conn = sqlite3.connect(":memory:")
     _bootstrap_db(conn)
     _insert_file(conn, "53815", "f-day", "sha-day", chunk_count=1)
-    _insert_file(conn, "53815", "f-miss", "sha-miss", chunk_count=1)
+    # Incomplete file for the second day — skip rollup (no published file), not 503.
+    conn.execute(
+        _FILE_INSERT_SQL,
+        ("53815", "f-miss", "sha-miss", "1", "2"),
+    )
+    conn.execute(
+        _CHUNK_INSERT_SQL,
+        ("53815", "f-miss", "0", "e30="),
+    )
     conn.execute(_POINTER_UPSERT_SQL, ("53815", "f-day"))
     conn.execute(
         _DAY_UPSERT_SQL,
@@ -169,3 +177,45 @@ async def test_by_day_skips_missing_day_serves_others() -> None:
     assert isinstance(rolled, list)
     assert len(rolled) == 1
     assert rolled[0].get("ev_date") == "2026-10-20"
+
+
+@pytest.mark.asyncio
+async def test_county_by_day_raises_when_published_day_lacks_precompute() -> None:
+    decoded = (
+        b'{"turnout_by_county":[{"name":"TRAVIS",'
+        b'"total_in_person_votes_for_election":1,"total_mail_votes_for_election":0}]}'
+    )
+    body = aggregate_body_from_decoded(
+        decoded,
+        source_election_id="53815",
+        ev_date_iso="2026-10-20",
+    )
+    conn = sqlite3.connect(":memory:")
+    _bootstrap_db(conn)
+    _insert_file(conn, "53815", "f-day", "sha-day", chunk_count=1)
+    _insert_file(conn, "53815", "f-gap", "sha-gap", chunk_count=1)
+    conn.execute(_POINTER_UPSERT_SQL, ("53815", "f-day"))
+    conn.execute(
+        _DAY_UPSERT_SQL,
+        ("53815", "2026-10-20", "sha-day", "f-day"),
+    )
+    conn.execute(
+        _DAY_UPSERT_SQL,
+        ("53815", "2026-10-21", "sha-gap", "f-gap"),
+    )
+    for sql, params in precompute_statements(
+        "53815",
+        "f-day",
+        body,
+        ev_date_iso="2026-10-20",
+    ):
+        conn.execute(sql, params)
+    conn.commit()
+    db = _SqliteD1(conn)
+    with pytest.raises(AggregatesNotComputed):
+        await build_precomputed_aggregate_resource(
+            db,
+            "53815",
+            "county-by-day",
+            kv_sha256="sha-day",
+        )

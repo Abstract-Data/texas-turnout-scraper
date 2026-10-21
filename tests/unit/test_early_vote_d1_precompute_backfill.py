@@ -143,7 +143,7 @@ def test_backfill_idempotent_skip_when_rows_complete() -> None:
     assert store.writes == 1
 
 
-def test_finalize_kv_digest_bumps_after_apply(monkeypatch) -> None:
+def test_finalize_kv_digest_bumps_when_files_written(monkeypatch) -> None:
     store = _BackfillStore("53815", "f1", b'{"turnout_by_county":[]}')
     bumped: list[str] = []
 
@@ -173,6 +173,97 @@ def test_finalize_kv_digest_bumps_after_apply(monkeypatch) -> None:
     )
     assert code == 0
     assert bumped == ["abc123"]
+
+
+def test_finalize_kv_digest_skipped_when_unchanged_sync(monkeypatch) -> None:
+    decoded = json.dumps(
+        {
+            "turnout_by_county": [
+                {
+                    "name": "TRAVIS",
+                    "total_in_person_votes_for_election": 1,
+                    "total_mail_votes_for_election": 0,
+                }
+            ]
+        }
+    ).encode()
+    store = _BackfillStore("53815", "f1", decoded)
+    store._agg_rows.add("f1")
+    store._county_rows["f1"] = 1
+    bumped: list[str] = []
+
+    def _bump(election_id: str, digest: str) -> str:
+        bumped.append(digest)
+        return "9"
+
+    store.bump_version = _bump  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "texas_turnout_scraper.early_vote_d1_precompute_backfill._cloudflare_config_from_env",
+        lambda: ("acct", "token", "ns"),
+    )
+    monkeypatch.setattr(
+        "texas_turnout_scraper.early_vote_d1_precompute_backfill.CloudflareEarlyVoteStore",
+        lambda **kwargs: store,
+    )
+    from texas_turnout_scraper.early_vote_d1_precompute_backfill import main
+
+    code = main(
+        [
+            "--election-id",
+            "53815",
+            "--apply",
+            "--finalize-kv-digest",
+            "abc123",
+        ]
+    )
+    assert code == 0
+    assert bumped == []
+
+
+def test_finalize_kv_after_sync_bumps_without_precompute_writes(monkeypatch) -> None:
+    decoded = json.dumps(
+        {
+            "turnout_by_county": [
+                {
+                    "name": "TRAVIS",
+                    "total_in_person_votes_for_election": 1,
+                    "total_mail_votes_for_election": 0,
+                }
+            ]
+        }
+    ).encode()
+    store = _BackfillStore("53815", "f1", decoded)
+    store._agg_rows.add("f1")
+    store._county_rows["f1"] = 1
+    bumped: list[str] = []
+
+    def _bump(election_id: str, digest: str) -> str:
+        bumped.append(digest)
+        return "9"
+
+    store.bump_version = _bump  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "texas_turnout_scraper.early_vote_d1_precompute_backfill._cloudflare_config_from_env",
+        lambda: ("acct", "token", "ns"),
+    )
+    monkeypatch.setattr(
+        "texas_turnout_scraper.early_vote_d1_precompute_backfill.CloudflareEarlyVoteStore",
+        lambda **kwargs: store,
+    )
+    from texas_turnout_scraper.early_vote_d1_precompute_backfill import main
+
+    code = main(
+        [
+            "--election-id",
+            "53815",
+            "--apply",
+            "--finalize-kv-digest",
+            "sync-digest",
+            "--finalize-kv-after-sync",
+        ]
+    )
+    assert code == 0
+    assert bumped == ["sync-digest"]
 
 
 def test_backfill_rewrites_when_county_set_incomplete() -> None:

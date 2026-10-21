@@ -98,17 +98,14 @@ async def _rollup_days(
     days = await load_day_rows(db, election_id)
     rolled: list[tuple[str, dict[str, object]]] = []
     for day in days:
-        try:
-            body = await _precomputed_for_published(
-                db,
-                election_id,
-                kv_sha256=kv_sha256,
-                file_id=day.file_id,
-                expected_sha256=day.sha256,
-                ev_date=day.ev_date,
-            )
-        except AggregatesNotComputed:
-            continue
+        body = await _precomputed_for_published(
+            db,
+            election_id,
+            kv_sha256=kv_sha256,
+            file_id=day.file_id,
+            expected_sha256=day.sha256,
+            ev_date=day.ev_date,
+        )
         if body is not None:
             rolled.append((day.ev_date, body))
     return rolled
