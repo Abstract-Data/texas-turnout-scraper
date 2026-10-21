@@ -1,13 +1,16 @@
 """Minted consumer API tokens for the preview early-vote read API.
 
-Plaintext tokens are shown once at mint time. Only scrypt digests are stored in
-D1 and KV. Validation accepts ``Authorization: Bearer`` or ``X-API-Key``.
+Plaintext tokens are shown once at mint time. Only digests are stored in D1 and
+KV (scheme ``v2`` = HMAC-SHA256). Validation accepts ``Authorization: Bearer`` or
+``X-API-Key``. Legacy scrypt digests (preview-only, pre-v2) no longer match and
+fail closed with 401 until tokens are re-minted.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import secrets
 from collections.abc import Mapping
 
@@ -17,8 +20,9 @@ BEARER_PREFIX = "bearer "
 
 KV_PREFIX = "consumer_token:"
 
-# Fixed deployment salt for scrypt (not derived from user secrets).
-_CONSUMER_TOKEN_PEPPER = b"tx-turnout-preview-consumer-v1-pepper!!"
+# Active digest scheme (fast on Pyodide; shared by CLI mint and Worker auth).
+DIGEST_SCHEME_V2 = "v2"
+_CONSUMER_TOKEN_PEPPER_V2 = b"tx-turnout-preview-consumer-v2-hmac-pepper!!"
 
 _SCHEMA_CREATES: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS consumer_api_token (
@@ -60,42 +64,14 @@ def new_token_id() -> str:
     return secrets.token_hex(16)
 
 
-_SCRYPT_N = 2**14
-_SCRYPT_R = 8
-_SCRYPT_P = 1
-_SCRYPT_DKLEN = 32
-
-
-def _scrypt_digest(password: bytes) -> bytes:
-    """RFC 7914 scrypt; OpenSSL on CPython, pure Python on Pyodide (no OpenSSL hashlib)."""
-    scrypt = getattr(hashlib, "scrypt", None)
-    if scrypt is not None:
-        try:
-            return scrypt(
-                password,
-                salt=_CONSUMER_TOKEN_PEPPER,
-                n=_SCRYPT_N,
-                r=_SCRYPT_R,
-                p=_SCRYPT_P,
-                dklen=_SCRYPT_DKLEN,
-            )
-        except (AttributeError, NotImplementedError, ValueError):
-            pass
-    from texas_turnout_scraper._vendor.pyscrypt.hash import hash as pyscrypt_hash
-
-    return pyscrypt_hash(
-        password,
-        _CONSUMER_TOKEN_PEPPER,
-        _SCRYPT_N,
-        _SCRYPT_R,
-        _SCRYPT_P,
-        _SCRYPT_DKLEN,
-    )
-
-
 def hash_token(api_token: str) -> str:
     """Stable digest stored in D1/KV; never log the minted token."""
-    return _scrypt_digest(api_token.encode("utf-8")).hex()
+    digest = hmac.new(
+        _CONSUMER_TOKEN_PEPPER_V2,
+        api_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{DIGEST_SCHEME_V2}:{digest}"
 
 
 def kv_key_for_hash(token_hash: str) -> str:
