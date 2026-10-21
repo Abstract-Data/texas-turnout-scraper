@@ -72,7 +72,10 @@ async def test_chunked_roster_aggregate_row_budget() -> None:
 
 @pytest.mark.asyncio
 async def test_turnout_sql_path_memory_bounded() -> None:
-    decoded = b'{"turnout_by_county":[{"name":"TRAVIS","total_in_person_votes_for_election":1,"total_mail_votes_for_election":0}]}'
+    decoded = (
+        b'{"turnout_by_county":[{"name":"TRAVIS",'
+        b'"total_in_person_votes_for_election":1,"total_mail_votes_for_election":0}]}'
+    )
     digest = sha256_decoded(decoded)
     db = _AggregateD1(
         pointer="f1",

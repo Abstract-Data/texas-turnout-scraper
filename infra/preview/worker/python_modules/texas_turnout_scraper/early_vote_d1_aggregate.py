@@ -521,32 +521,40 @@ def _slice_totals_resource(
     return None
 
 
-async def build_aggregate_resource(
+async def _build_by_day_resource(
     db: D1Database,
-    source_election_id: str,
-    resource: str,
+    election_id: str,
     *,
     kv_sha256: str,
-    ev_date: str | None = None,
 ) -> dict[str, object] | None:
-    election_id = require_election_id(source_election_id)
-    if resource == "by-day":
-        rolled = await _rollup_days(db, election_id, kv_sha256=kv_sha256)
-        if not rolled:
-            totals = await aggregate_for_published(
-                db, election_id, kv_sha256=kv_sha256
-            )
-            if totals is None:
-                return None
-            rolled = [("latest", totals)]
-        return build_by_day_series(source_election_id=election_id, days=tuple(rolled))
-
-    if resource == "county-by-day":
-        rolled = await _rollup_days(db, election_id, kv_sha256=kv_sha256)
-        if not rolled:
+    rolled = await _rollup_days(db, election_id, kv_sha256=kv_sha256)
+    if not rolled:
+        totals = await aggregate_for_published(db, election_id, kv_sha256=kv_sha256)
+        if totals is None:
             return None
-        return build_county_by_day_series(source_election_id=election_id, days=tuple(rolled))
+        rolled = [("latest", totals)]
+    return build_by_day_series(source_election_id=election_id, days=tuple(rolled))
 
+
+async def _build_county_by_day_resource(
+    db: D1Database,
+    election_id: str,
+    *,
+    kv_sha256: str,
+) -> dict[str, object] | None:
+    rolled = await _rollup_days(db, election_id, kv_sha256=kv_sha256)
+    if not rolled:
+        return None
+    return build_county_by_day_series(source_election_id=election_id, days=tuple(rolled))
+
+
+async def _totals_for_ev_date(
+    db: D1Database,
+    election_id: str,
+    *,
+    kv_sha256: str,
+    ev_date: str | None,
+) -> dict[str, object] | None:
     file_id = None
     expected_sha256 = None
     resolved_ev_date = ev_date
@@ -557,14 +565,31 @@ async def build_aggregate_resource(
         file_id = day.file_id
         expected_sha256 = day.sha256
         resolved_ev_date = day.ev_date
-
-    totals = await aggregate_for_published(
+    return await aggregate_for_published(
         db,
         election_id,
         kv_sha256=kv_sha256,
         file_id=file_id,
         expected_sha256=expected_sha256,
         ev_date=resolved_ev_date,
+    )
+
+
+async def build_aggregate_resource(
+    db: D1Database,
+    source_election_id: str,
+    resource: str,
+    *,
+    kv_sha256: str,
+    ev_date: str | None = None,
+) -> dict[str, object] | None:
+    election_id = require_election_id(source_election_id)
+    if resource == "by-day":
+        return await _build_by_day_resource(db, election_id, kv_sha256=kv_sha256)
+    if resource == "county-by-day":
+        return await _build_county_by_day_resource(db, election_id, kv_sha256=kv_sha256)
+    totals = await _totals_for_ev_date(
+        db, election_id, kv_sha256=kv_sha256, ev_date=ev_date
     )
     if totals is None:
         return None
