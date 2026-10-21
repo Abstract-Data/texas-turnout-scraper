@@ -29,8 +29,11 @@ resource "cloudflare_d1_database" "election_preview" {
 
     # Existing ~112MB database: never recreate for hint/replication drift.
     ignore_changes = [
+      name,
       primary_location_hint,
       read_replication,
     ]
+
+    prevent_destroy = true
   }
 }

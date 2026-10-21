@@ -343,6 +343,47 @@ agg_kv = _SmokeKv(
 )
 agg_app = _agg_app(agg_kv)
 
+
+class _EnvMissingBinding:
+    pass
+
+
+setattr(_EnvMissingBinding, "DB", _preview_db)
+
+miswired_kv = _SmokeKv(
+    {
+        version_key(_AGG_ELECTION): str(_AGG_VERSION),
+        hash_key(_AGG_ELECTION): _AGG_SHA,
+    }
+)
+miswired_app = create_app(
+    ReadDeps(
+        kv=miswired_kv,
+        store=WorkersAggregateStore(_EnvMissingBinding(), {_AGG_ELECTION: _AGG_BINDING}),
+        access_client_id=app.state.read_deps.access_client_id,
+        access_client_secret=app.state.read_deps.access_client_secret,
+    )
+)
+
+
+async def _miswired_binding_smoke() -> int:
+    transport = ASGITransport(app=miswired_app)
+    access_headers = {
+        "CF-Access-Client-Id": miswired_app.state.read_deps.access_client_id,
+        "CF-Access-Client-Secret": miswired_app.state.read_deps.access_client_secret,
+    }
+    path = http_path(_AGG_ELECTION, "aggregates", "totals")
+    async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
+        response = await client.get(path, headers=access_headers)
+    return response.status_code
+
+
+miswired_status = asyncio.run(_miswired_binding_smoke())
+print(f"aggregate miswired-binding status={miswired_status}")
+if miswired_status != 404:
+    print("expected miswired-binding aggregate status=404", file=sys.stderr)
+    sys.exit(1)
+
 _no_days_db = _PreviewD1(
     pointer="f53815",
     file_id="f53815",
@@ -455,41 +496,6 @@ for label, status, etag_ok, inm in agg_outcomes:
     if inm != 304:
         print(f"expected aggregate {label} if-none-match status=304", file=sys.stderr)
         sys.exit(1)
-
-
-class _EnvMissingBinding:
-    pass
-
-
-setattr(_EnvMissingBinding, "DB", _preview_db)
-
-miswired_app = create_app(
-    ReadDeps(
-        kv=agg_kv,
-        store=WorkersAggregateStore(_EnvMissingBinding(), {_AGG_ELECTION: _AGG_BINDING}),
-        access_client_id=app.state.read_deps.access_client_id,
-        access_client_secret=app.state.read_deps.access_client_secret,
-    )
-)
-
-
-async def _miswired_binding_smoke() -> int:
-    transport = ASGITransport(app=miswired_app)
-    access_headers = {
-        "CF-Access-Client-Id": miswired_app.state.read_deps.access_client_id,
-        "CF-Access-Client-Secret": miswired_app.state.read_deps.access_client_secret,
-    }
-    path = http_path(_AGG_ELECTION, "aggregates", "totals")
-    async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
-        response = await client.get(path, headers=access_headers)
-    return response.status_code
-
-
-miswired_status = asyncio.run(_miswired_binding_smoke())
-print(f"aggregate miswired-binding status={miswired_status}")
-if miswired_status != 404:
-    print("expected miswired-binding aggregate status=404", file=sys.stderr)
-    sys.exit(1)
 
 print(f"aggregate binding name from terraform={_AGG_BINDING}")
 print("pyodide http startup smoke: OK")
