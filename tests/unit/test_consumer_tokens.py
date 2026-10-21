@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-
-import pytest
+import hmac
 
 from texas_turnout_scraper import consumer_tokens as ct
 from texas_turnout_scraper.consumer_tokens import (
+    DIGEST_SCHEME_V2,
     extract_consumer_credential,
     hash_token,
     kv_key_for_hash,
@@ -15,10 +15,25 @@ from texas_turnout_scraper.consumer_tokens import (
 )
 
 
-def test_hash_token_is_stable_hex() -> None:
+def test_hash_token_v2_is_stable_hmac_sha256() -> None:
     digest = hash_token("example-secret")
-    assert len(digest) == 64
+    assert digest.startswith(f"{DIGEST_SCHEME_V2}:")
+    hex_part = digest.split(":", 1)[1]
+    assert len(hex_part) == 64
+    expected = hmac.new(
+        ct._CONSUMER_TOKEN_PEPPER_V2,
+        b"example-secret",
+        hashlib.sha256,
+    ).hexdigest()
+    assert hex_part == expected
     assert digest == hash_token("example-secret")
+
+
+def test_hash_token_v2_prefixed_not_legacy_scrypt_shape() -> None:
+    """Pre-v2 scrypt rows used bare 64-char hex; v2 digests are ``v2:<hex>``."""
+    digest = hash_token("legacy-check")
+    assert digest.startswith(f"{DIGEST_SCHEME_V2}:")
+    assert len(digest) > 64
 
 
 def test_extract_bearer_and_api_key() -> None:
@@ -38,25 +53,3 @@ def test_mint_plaintext_has_entropy() -> None:
     b = mint_plaintext_token()
     assert a != b
     assert len(a) >= 32
-
-
-def test_hash_token_pyscrypt_fallback_matches_hashlib() -> None:
-    """Pyodide lacks OpenSSL hashlib.scrypt; fallback must match CLI digests."""
-    reference = hashlib.scrypt(
-        b"example-secret",
-        salt=ct._CONSUMER_TOKEN_PEPPER,
-        n=ct._SCRYPT_N,
-        r=ct._SCRYPT_R,
-        p=ct._SCRYPT_P,
-        dklen=ct._SCRYPT_DKLEN,
-    ).hex()
-
-    def _no_scrypt(*_args: object, **_kwargs: object) -> bytes:
-        raise AttributeError("hashlib.scrypt unavailable")
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(ct.hashlib, "scrypt", _no_scrypt, raising=False)
-    try:
-        assert ct.hash_token("example-secret") == reference
-    finally:
-        monkeypatch.undo()
