@@ -124,6 +124,9 @@ class _SmokeKv:
     async def put(self, key: str, value: str, *, expiration_ttl: int | None) -> None:
         self._values[key] = value
 
+    async def delete(self, key: str) -> None:
+        self._values.pop(key, None)
+
 
 _consumer_plaintext = "pyodide-smoke-consumer-credential"
 _consumer_digest = hash_token(_consumer_plaintext)
