@@ -7,9 +7,11 @@
 
 locals {
   worker_name = "tx-turnout-ev-api-preview"
+  # Worker binding name for the imported election D1 (see election_d1.tf).
+  preview_election_d1_binding = "EV_${var.preview_source_election_id}"
   # Preview sync targets Nov 2026 general (see early-vote-sync workflow default).
   ev_d1_bindings = jsonencode({
-    (var.preview_source_election_id) = "DB"
+    (var.preview_source_election_id) = local.preview_election_d1_binding
   })
   preview_api_url = "https://${var.preview_api_hostname}"
   preview_zone_id = data.cloudflare_zones.preview.result[0].id
@@ -105,6 +107,11 @@ resource "cloudflare_worker_version" "preview" {
       type        = "d1"
       name        = "DB"
       database_id = cloudflare_d1_database.preview.id
+    },
+    {
+      type        = "d1"
+      name        = local.preview_election_d1_binding
+      database_id = cloudflare_d1_database.election_preview.id
     },
     {
       type         = "kv_namespace"

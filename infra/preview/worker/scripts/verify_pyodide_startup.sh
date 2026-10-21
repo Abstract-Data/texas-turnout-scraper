@@ -43,6 +43,10 @@ fi
 # shellcheck source=/dev/null
 source "${pyodide_venv}/bin/activate"
 export PYTHONPATH="${worker_dir}/python_modules:${worker_dir}/src:${worker_dir}"
+repo_root="$(cd "${worker_dir}/../.." && pwd)"
+export TX_TURNOUT_AGG_BINDING="$(
+  PYTHONPATH="${repo_root}" python3 -c "from tests.verify.preview_tf_bindings import preview_election_d1_binding_name; print(preview_election_d1_binding_name())"
+)"
 
 # Isolate from host OS: no zoneinfo DB, no home/cwd config, UTC clock, no sockets.
 smoke_root="$(mktemp -d)"
@@ -77,6 +81,7 @@ fi
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import sys
 import time
@@ -279,6 +284,10 @@ class _PreviewD1:
 
 
 _AGG_ELECTION = "53815"
+_AGG_BINDING = os.environ.get("TX_TURNOUT_AGG_BINDING", "")
+if not _AGG_BINDING:
+    print("TX_TURNOUT_AGG_BINDING is empty", file=sys.stderr)
+    sys.exit(1)
 _AGG_VERSION = 7
 _turnout_payload = (
     b'{"turnout_by_county":[{"name":"TRAVIS",'
@@ -300,7 +309,10 @@ _preview_db = _PreviewD1(
 
 
 class _Env:
-    DB = _preview_db
+    pass
+
+
+setattr(_Env, _AGG_BINDING, _preview_db)
 
 
 _agg_routes = (
@@ -316,7 +328,7 @@ def _agg_app(kv: _SmokeKv) -> object:
     return create_app(
         ReadDeps(
             kv=kv,
-            store=WorkersAggregateStore(_Env(), {_AGG_ELECTION: "DB"}),
+            store=WorkersAggregateStore(_Env(), {_AGG_ELECTION: _AGG_BINDING}),
             access_client_id=app.state.read_deps.access_client_id,
             access_client_secret=app.state.read_deps.access_client_secret,
         )
@@ -341,7 +353,10 @@ _no_days_db = _PreviewD1(
 
 
 class _EnvNoDays:
-    DB = _no_days_db
+    pass
+
+
+setattr(_EnvNoDays, _AGG_BINDING, _no_days_db)
 
 
 empty_days_kv = _SmokeKv(
@@ -353,7 +368,7 @@ empty_days_kv = _SmokeKv(
 county_by_day_empty_app = create_app(
     ReadDeps(
         kv=empty_days_kv,
-        store=WorkersAggregateStore(_EnvNoDays(), {_AGG_ELECTION: "DB"}),
+        store=WorkersAggregateStore(_EnvNoDays(), {_AGG_ELECTION: _AGG_BINDING}),
         access_client_id=app.state.read_deps.access_client_id,
         access_client_secret=app.state.read_deps.access_client_secret,
     )
@@ -441,5 +456,41 @@ for label, status, etag_ok, inm in agg_outcomes:
         print(f"expected aggregate {label} if-none-match status=304", file=sys.stderr)
         sys.exit(1)
 
+
+class _EnvMissingBinding:
+    pass
+
+
+setattr(_EnvMissingBinding, "DB", _preview_db)
+
+miswired_app = create_app(
+    ReadDeps(
+        kv=agg_kv,
+        store=WorkersAggregateStore(_EnvMissingBinding(), {_AGG_ELECTION: _AGG_BINDING}),
+        access_client_id=app.state.read_deps.access_client_id,
+        access_client_secret=app.state.read_deps.access_client_secret,
+    )
+)
+
+
+async def _miswired_binding_smoke() -> int:
+    transport = ASGITransport(app=miswired_app)
+    access_headers = {
+        "CF-Access-Client-Id": miswired_app.state.read_deps.access_client_id,
+        "CF-Access-Client-Secret": miswired_app.state.read_deps.access_client_secret,
+    }
+    path = http_path(_AGG_ELECTION, "aggregates", "totals")
+    async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
+        response = await client.get(path, headers=access_headers)
+    return response.status_code
+
+
+miswired_status = asyncio.run(_miswired_binding_smoke())
+print(f"aggregate miswired-binding status={miswired_status}")
+if miswired_status != 404:
+    print("expected miswired-binding aggregate status=404", file=sys.stderr)
+    sys.exit(1)
+
+print(f"aggregate binding name from terraform={_AGG_BINDING}")
 print("pyodide http startup smoke: OK")
 PY

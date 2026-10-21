@@ -106,7 +106,7 @@ endpoints = { s3 = "<TF_STATE_ENDPOINT>" }
 
 Send the id as `CF-Access-Client-Id` and the secret as `CF-Access-Client-Secret`. Do not log either value.
 
-The preview Worker version binds `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (from the Access service token above), and `EV_D1_BINDINGS` (JSON map from `preview_source_election_id` to the `DB` D1 binding). Rotating the service token requires `terraform apply` so the Worker bindings pick up the new values.
+The preview Worker version binds `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (from the Access service token above), shell D1 `DB` (consumer tokens), an imported election D1 (default `EV_53815` → `ev-53815`), and `EV_D1_BINDINGS` (JSON map from `preview_source_election_id` to that election binding name). Rotating the service token requires `terraform apply` so the Worker bindings pick up the new values.
 
 ## Consumer bearer tokens (minted)
 

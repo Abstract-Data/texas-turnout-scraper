@@ -22,7 +22,7 @@ variable "environment" {
 
 variable "preview_source_election_id" {
   type        = string
-  description = "source_election_id mapped to the preview D1 binding DB in EV_D1_BINDINGS."
+  description = "source_election_id mapped to the imported election D1 binding in EV_D1_BINDINGS."
   default     = "53815"
 
   validation {
