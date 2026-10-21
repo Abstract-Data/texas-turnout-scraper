@@ -144,11 +144,10 @@ async def _build_county_by_day_resource(
     election_id: str,
     *,
     kv_sha256: str,
-) -> dict[str, object]:
+) -> dict[str, object] | None:
     rolled = await _rollup_days(db, election_id, kv_sha256=kv_sha256)
     if not rolled:
-        msg = "no precomputed day rows"
-        raise AggregatesNotComputed(msg)
+        return None
     return build_county_by_day_series(source_election_id=election_id, days=tuple(rolled))
 
 
@@ -187,7 +186,7 @@ async def build_precomputed_aggregate_resource(
     *,
     kv_sha256: str,
     ev_date: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, object] | None:
     election_id = require_election_id(source_election_id)
     if resource == "by-day":
         return await _build_by_day_resource(db, election_id, kv_sha256=kv_sha256)
