@@ -50,8 +50,7 @@ _ONE_CHUNK_SQL = (
     "WHERE source_election_id = ? AND file_id = ? AND chunk_index = ?"
 )
 _FILE_BYTE_LENGTH_SQL = (
-    "SELECT byte_length FROM early_vote_file "
-    "WHERE source_election_id = ? AND file_id = ?"
+    "SELECT byte_length FROM early_vote_file WHERE source_election_id = ? AND file_id = ?"
 )
 
 _TURNOUT_COUNTY_SQL = """
@@ -203,9 +202,7 @@ async def _chunk_b64_at(
     file_id: str,
     chunk_index: int,
 ) -> str | None:
-    row = await _d1_fetch_first(
-        db.prepare(_ONE_CHUNK_SQL).bind(election_id, file_id, chunk_index)
-    )
+    row = await _d1_fetch_first(db.prepare(_ONE_CHUNK_SQL).bind(election_id, file_id, chunk_index))
     if row is None:
         return None
     payload = _row_value(row, "payload_b64")
@@ -448,9 +445,7 @@ async def aggregate_body_from_d1(
     election_id = require_election_id(source_election_id)
     kind = await detect_payload_kind_from_d1(db, election_id, file_id)
     if kind == "turnout":
-        return await aggregate_turnout_from_d1(
-            db, election_id, file_id, ev_date=ev_date
-        )
+        return await aggregate_turnout_from_d1(db, election_id, file_id, ev_date=ev_date)
     return await aggregate_roster_from_d1(db, election_id, file_id, ev_date=ev_date)
 
 
@@ -588,9 +583,7 @@ async def build_aggregate_resource(
         return await _build_by_day_resource(db, election_id, kv_sha256=kv_sha256)
     if resource == "county-by-day":
         return await _build_county_by_day_resource(db, election_id, kv_sha256=kv_sha256)
-    totals = await _totals_for_ev_date(
-        db, election_id, kv_sha256=kv_sha256, ev_date=ev_date
-    )
+    totals = await _totals_for_ev_date(db, election_id, kv_sha256=kv_sha256, ev_date=ev_date)
     if totals is None:
         return None
     return _slice_totals_resource(totals, resource)

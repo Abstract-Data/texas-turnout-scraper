@@ -95,9 +95,7 @@ class _AggregateD1:
             }
         if "chunk_index FROM early_vote_chunk" in sql.replace("\n", " "):
             return {
-                "results": [
-                    {"chunk_index": index} for index in sorted(self._chunks.keys())
-                ],
+                "results": [{"chunk_index": index} for index in sorted(self._chunks.keys())],
                 "success": True,
             }
         if "FROM early_vote_day" in sql and "ORDER BY" in sql:
@@ -182,9 +180,7 @@ def roster_db() -> _AggregateD1:
 async def test_sql_totals_matches_python_turnout(turnout_db: _AggregateD1) -> None:
     digest = turnout_db._sha256
     expected = aggregates_from_decoded(turnout_db._decoded, source_election_id="53815")
-    actual = await build_aggregate_resource(
-        turnout_db, "53815", "totals", kv_sha256=digest
-    )
+    actual = await build_aggregate_resource(turnout_db, "53815", "totals", kv_sha256=digest)
     assert actual == expected
 
 
@@ -192,9 +188,7 @@ async def test_sql_totals_matches_python_turnout(turnout_db: _AggregateD1) -> No
 async def test_sql_county_matches_python_turnout(turnout_db: _AggregateD1) -> None:
     digest = turnout_db._sha256
     expected = aggregates_from_decoded(turnout_db._decoded, source_election_id="53815")
-    actual = await build_aggregate_resource(
-        turnout_db, "53815", "county", kv_sha256=digest
-    )
+    actual = await build_aggregate_resource(turnout_db, "53815", "county", kv_sha256=digest)
     assert actual["by_county"] == expected["by_county"]
 
 
@@ -202,9 +196,7 @@ async def test_sql_county_matches_python_turnout(turnout_db: _AggregateD1) -> No
 async def test_sql_by_method_matches_python_turnout(turnout_db: _AggregateD1) -> None:
     digest = turnout_db._sha256
     expected = aggregates_from_decoded(turnout_db._decoded, source_election_id="53815")
-    actual = await build_aggregate_resource(
-        turnout_db, "53815", "by-method", kv_sha256=digest
-    )
+    actual = await build_aggregate_resource(turnout_db, "53815", "by-method", kv_sha256=digest)
     assert actual is not None
     assert actual["statewide"] == {
         "in_person": expected["statewide"]["in_person"],
@@ -216,9 +208,7 @@ async def test_sql_by_method_matches_python_turnout(turnout_db: _AggregateD1) ->
 async def test_sql_by_day_matches_python_turnout(turnout_db: _AggregateD1) -> None:
     digest = turnout_db._sha256
     expected = aggregates_from_decoded(turnout_db._decoded, source_election_id="53815")
-    actual = await build_aggregate_resource(
-        turnout_db, "53815", "by-day", kv_sha256=digest
-    )
+    actual = await build_aggregate_resource(turnout_db, "53815", "by-day", kv_sha256=digest)
     assert actual is not None
     assert actual["series"][0]["total"] == expected["statewide"]["total"]
 
@@ -227,9 +217,7 @@ async def test_sql_by_day_matches_python_turnout(turnout_db: _AggregateD1) -> No
 async def test_sql_county_by_day_matches_python_turnout(turnout_db: _AggregateD1) -> None:
     digest = turnout_db._sha256
     expected = aggregates_from_decoded(turnout_db._decoded, source_election_id="53815")
-    actual = await build_aggregate_resource(
-        turnout_db, "53815", "county-by-day", kv_sha256=digest
-    )
+    actual = await build_aggregate_resource(turnout_db, "53815", "county-by-day", kv_sha256=digest)
     assert actual is not None
     assert actual["series"][0]["by_county"] == expected["by_county"]
 
@@ -238,9 +226,7 @@ async def test_sql_county_by_day_matches_python_turnout(turnout_db: _AggregateD1
 async def test_sql_totals_matches_python_roster(roster_db: _AggregateD1) -> None:
     digest = roster_db._sha256
     expected = aggregates_from_decoded(roster_db._decoded, source_election_id="53815")
-    actual = await build_aggregate_resource(
-        roster_db, "53815", "totals", kv_sha256=digest
-    )
+    actual = await build_aggregate_resource(roster_db, "53815", "totals", kv_sha256=digest)
     assert actual == expected
 
 
