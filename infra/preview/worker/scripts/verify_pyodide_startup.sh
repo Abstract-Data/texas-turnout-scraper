@@ -344,9 +344,15 @@ class _EnvNoDays:
     DB = _no_days_db
 
 
+empty_days_kv = _SmokeKv(
+    {
+        version_key(_AGG_ELECTION): str(_AGG_VERSION),
+        hash_key(_AGG_ELECTION): _AGG_SHA,
+    }
+)
 county_by_day_empty_app = create_app(
     ReadDeps(
-        kv=agg_kv,
+        kv=empty_days_kv,
         store=WorkersAggregateStore(_EnvNoDays(), {_AGG_ELECTION: "DB"}),
         access_client_id=app.state.read_deps.access_client_id,
         access_client_secret=app.state.read_deps.access_client_secret,

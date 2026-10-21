@@ -49,10 +49,15 @@ resource "cloudflare_worker" "ev_api" {
   logpush    = false
   tags       = ["preview"]
 
-  # Preview-only: full head sampling so aggregate 500s are visible in Workers Logs.
+  # Preview-only: Workers Logs (see infra/preview/README.md). Provider may require
+  # a follow-up plan after first apply (cloudflare/terraform-provider-cloudflare#7155).
   observability = {
-    enabled            = true
-    head_sampling_rate = 1
+    enabled = true
+    logs = {
+      enabled            = true
+      invocation_logs    = true
+      head_sampling_rate = 1
+    }
   }
 
   # workers.dev stays off (no *.workers.dev route). Traffic uses the custom
