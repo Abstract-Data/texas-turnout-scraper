@@ -49,13 +49,13 @@ resource "cloudflare_worker" "ev_api" {
   logpush    = false
   tags       = ["preview"]
 
-  # Preview-only: Workers Logs (see infra/preview/README.md). Provider may require
-  # a follow-up plan after first apply (cloudflare/terraform-provider-cloudflare#7155).
+  # Preview-only: Workers Logs for app console/structured output (see README).
+  # invocation_logs stays false — this API accepts Access + bearer/API-key headers.
   observability = {
     enabled = true
     logs = {
       enabled            = true
-      invocation_logs    = true
+      invocation_logs    = false
       head_sampling_rate = 1
     }
   }
