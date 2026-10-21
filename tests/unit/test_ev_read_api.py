@@ -226,3 +226,36 @@ def test_http_paths_for_aggregate_surface() -> None:
         http_path("53815", "aggregates", "county-by-day")
         == "/elections/53815/aggregates/county-by-day"
     )
+
+
+def test_http_health_requires_credentials() -> None:
+    response = _client(MemoryKv(), RecordingStore()).get("/health")
+    assert response.status_code == 401
+
+
+def test_http_health_access_service_token_200() -> None:
+    response = _client(MemoryKv(), RecordingStore()).get("/health", headers=_AUTH)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_http_health_consumer_bearer_kv_200() -> None:
+    secret = "consumer-health-bearer-secret"
+    digest = hash_token(secret)
+    kv = MemoryKv({kv_key_for_hash(digest): "1"})
+    response = _client(kv, RecordingStore()).get(
+        "/health",
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_http_health_invalid_consumer_token_401() -> None:
+    secret = "consumer-health-revoked-secret"
+    response = _client(
+        MemoryKv(),
+        RecordingStore(),
+        token_db=_TokenDb(set()),
+    ).get("/health", headers={"Authorization": f"Bearer {secret}"})
+    assert response.status_code == 401
