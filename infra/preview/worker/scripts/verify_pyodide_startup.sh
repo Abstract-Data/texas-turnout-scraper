@@ -34,6 +34,18 @@ fi
 source "${pyodide_venv}/bin/activate"
 export PYTHONPATH="${worker_dir}/python_modules:${worker_dir}/src"
 
+# Workers/Pyodide have no OS zoneinfo tree; zoneinfo uses the bundled tzdata package.
+# Host CI often has /usr/share/zoneinfo — hide it so this smoke matches production.
+empty_tzdir="$(mktemp -d)"
+export PYTHONTZPATH="${empty_tzdir}"
+export TZDIR="${empty_tzdir}"
+trap 'rm -rf "${empty_tzdir}"' EXIT
+
+if [[ ! -d "${worker_dir}/python_modules/tzdata" ]]; then
+  echo "Missing bundled tzdata under python_modules/ (add tzdata to worker pyproject.toml and pywrangler sync)."
+  exit 1
+fi
+
 python - <<'PY'
 from __future__ import annotations
 
@@ -42,6 +54,11 @@ import sys
 
 from httpx import ASGITransport, AsyncClient
 from pydantic_core import ArgsKwargs
+
+from zoneinfo import ZoneInfo
+
+# Prove tzdata is bundled (not the host zoneinfo DB).
+_ = ZoneInfo("America/Chicago")
 
 from ev_api.app import ReadDeps, _ClosedKv, _ClosedStore, create_app
 from texas_turnout_scraper.civix.read_client import http_path
