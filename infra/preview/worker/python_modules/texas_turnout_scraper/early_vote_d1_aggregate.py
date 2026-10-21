@@ -341,9 +341,7 @@ def _lines_from_carry(carry: str, fragment: str) -> tuple[str, list[str]]:
     return carry_out, parts
 
 
-def _decode_chunk_text(
-    decoder: codecs.IncrementalDecoder, piece_b64: str
-) -> str | None:
+def _decode_chunk_text(decoder: codecs.IncrementalDecoder, piece_b64: str) -> str | None:
     try:
         return decoder.decode(base64.b64decode(piece_b64))
     except (ValueError, TypeError, UnicodeDecodeError):
@@ -432,15 +430,11 @@ def _roster_body_from_rollup(
     return body
 
 
-async def aggregate_roster_from_d1(
+async def _scan_roster_chunks_to_rollup(
     db: D1Database,
-    source_election_id: str,
+    election_id: str,
     file_id: str,
-    *,
-    ev_date: str | None = None,
-) -> dict[str, object] | None:
-    """Scan roster chunks; SQL aggregates each batch of county/method pairs."""
-    election_id = require_election_id(source_election_id)
+) -> _RosterRollup | None:
     rollup = _RosterRollup()
     carry = ""
     header_line: str | None = None
@@ -463,6 +457,21 @@ async def aggregate_roster_from_d1(
             county, method = parsed
             sql_rows = await _roster_sql_batch(db, [{"county": county, "method": method}])
             _merge_roster_sql_rows(rollup, sql_rows)
+    return rollup
+
+
+async def aggregate_roster_from_d1(
+    db: D1Database,
+    source_election_id: str,
+    file_id: str,
+    *,
+    ev_date: str | None = None,
+) -> dict[str, object] | None:
+    """Scan roster chunks; SQL aggregates each batch of county/method pairs."""
+    election_id = require_election_id(source_election_id)
+    rollup = await _scan_roster_chunks_to_rollup(db, election_id, file_id)
+    if rollup is None:
+        return None
     return _roster_body_from_rollup(rollup, source_election_id=election_id, ev_date=ev_date)
 
 

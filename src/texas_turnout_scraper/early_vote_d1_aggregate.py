@@ -341,9 +341,7 @@ def _lines_from_carry(carry: str, fragment: str) -> tuple[str, list[str]]:
     return carry_out, parts
 
 
-def _decode_chunk_text(
-    decoder: codecs.IncrementalDecoder, piece_b64: str
-) -> str | None:
+def _decode_chunk_text(decoder: codecs.IncrementalDecoder, piece_b64: str) -> str | None:
     try:
         return decoder.decode(base64.b64decode(piece_b64))
     except (ValueError, TypeError, UnicodeDecodeError):
