@@ -12,7 +12,7 @@ locals {
     (var.preview_source_election_id) = "DB"
   })
   preview_api_url = "https://${var.preview_api_hostname}"
-  preview_zone_id   = data.cloudflare_zones.preview.result[0].id
+  preview_zone_id = data.cloudflare_zones.preview.result[0].id
 }
 
 data "cloudflare_zones" "preview" {
