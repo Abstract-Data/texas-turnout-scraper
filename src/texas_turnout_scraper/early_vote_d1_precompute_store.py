@@ -128,18 +128,6 @@ def precompute_statements(
     statements: list[Statement] = [
         (_FILE_AGG_DELETE_SQL, (election_id, file_id)),
         (_COUNTY_AGG_DELETE_SQL, (election_id, file_id)),
-        (
-            _FILE_AGG_INSERT_SQL,
-            (
-                election_id,
-                file_id,
-                payload_kind,
-                resolved_ev or "",
-                str(total),
-                str(in_person),
-                str(mail_in),
-            ),
-        ),
     ]
     by_county = body.get("by_county")
     if isinstance(by_county, list):
@@ -165,6 +153,20 @@ def precompute_statements(
                     ),
                 )
             )
+    statements.append(
+        (
+            _FILE_AGG_INSERT_SQL,
+            (
+                election_id,
+                file_id,
+                payload_kind,
+                resolved_ev or "",
+                str(total),
+                str(in_person),
+                str(mail_in),
+            ),
+        )
+    )
     return tuple(statements)
 
 

@@ -59,7 +59,12 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
+
+if TYPE_CHECKING:
+    from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
+        PrecomputeBackfillResult,
+    )
 from urllib.parse import quote
 
 import httpx
@@ -1271,7 +1276,7 @@ class CloudflareEarlyVoteStore:
         election_id: str,
         *,
         dry_run: bool,
-    ) -> object:
+    ) -> PrecomputeBackfillResult:
         from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
             run_precompute_backfill_on_store,
         )

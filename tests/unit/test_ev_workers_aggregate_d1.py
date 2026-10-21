@@ -100,13 +100,6 @@ async def test_workers_aggregate_store_uses_precomputed_rows_when_present(
 
 
 @pytest.mark.asyncio
-async def test_workers_aggregate_store_totals_from_precomputed(
-    store_env: tuple[object, str],
-) -> None:
-    await test_workers_aggregate_store_uses_precomputed_rows_when_present(store_env)
-
-
-@pytest.mark.asyncio
 async def test_workers_aggregate_store_by_method_slice(store_env: tuple[object, str]) -> None:
     env, digest = store_env
     decoded = _turnout_bytes()

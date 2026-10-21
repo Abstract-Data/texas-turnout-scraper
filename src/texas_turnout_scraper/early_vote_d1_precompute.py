@@ -103,6 +103,4 @@ async def load_precomputed_body(
     county_rows = await _d1_fetch_all(
         db.prepare(_COUNTY_AGG_SELECT_SQL).bind(election_id, file_id),
     )
-    if not county_rows:
-        return None
     return _body_from_rows(election_id, file_row, county_rows, ev_date=ev_date)
