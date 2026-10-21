@@ -340,9 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
         digest = args.finalize_kv_digest.strip()
-        if args.apply and digest and (
-            result.files_written > 0 or args.finalize_kv_after_sync
-        ):
+        if args.apply and digest and (result.files_written > 0 or args.finalize_kv_after_sync):
             version = store.bump_version(args.election_id, digest)
             logger.info(
                 "precompute backfill finalized KV election_id=%s version=%s",
