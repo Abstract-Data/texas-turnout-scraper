@@ -53,11 +53,7 @@ def _sum_turnout_rows(rows: list[dict[str, Any]]) -> tuple[MethodTotals, list[Co
         if not isinstance(row, dict):
             continue
         county = str(
-            row.get("county")
-            or row.get("COUNTY")
-            or row.get("name")
-            or row.get("NAME")
-            or ""
+            row.get("county") or row.get("COUNTY") or row.get("name") or row.get("NAME") or ""
         ).strip()
         if not county:
             continue
