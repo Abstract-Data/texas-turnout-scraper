@@ -100,7 +100,9 @@ async def test_workers_aggregate_store_uses_precomputed_rows_when_present(
 
 
 @pytest.mark.asyncio
-async def test_workers_aggregate_store_totals_from_precomputed(store_env: tuple[object, str]) -> None:
+async def test_workers_aggregate_store_totals_from_precomputed(
+    store_env: tuple[object, str],
+) -> None:
     await test_workers_aggregate_store_uses_precomputed_rows_when_present(store_env)
 
 

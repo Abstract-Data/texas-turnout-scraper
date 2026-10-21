@@ -52,7 +52,10 @@ class _BackfillStore:
 
 
 def test_backfill_idempotent_skip_when_rows_exist() -> None:
-    decoded = b'{"turnout_by_county":[{"name":"TRAVIS","total_in_person_votes_for_election":1,"total_mail_votes_for_election":0}]}'
+    decoded = (
+        b'{"turnout_by_county":[{"name":"TRAVIS",'
+        b'"total_in_person_votes_for_election":1,"total_mail_votes_for_election":0}]}'
+    )
     store = _BackfillStore("53815", "f1", decoded)
     first = run_precompute_backfill_on_store(store, "53815", dry_run=False)
     assert first.files_written == 1

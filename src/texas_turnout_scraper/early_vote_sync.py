@@ -1273,7 +1273,6 @@ class CloudflareEarlyVoteStore:
         dry_run: bool,
     ) -> object:
         from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
-            PrecomputeBackfillResult,
             run_precompute_backfill_on_store,
         )
 
