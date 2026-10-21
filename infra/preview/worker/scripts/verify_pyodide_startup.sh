@@ -185,8 +185,8 @@ if protected_status not in {401, 403}:
 if health_authorized_status != 200:
     print("expected authorized GET /health status=200", file=sys.stderr)
     sys.exit(1)
-if health_bearer_unknown_status not in {401, 403}:
-    print("expected bearer-unknown GET /health status=401 or 403", file=sys.stderr)
+if health_bearer_unknown_status != 401:
+    print("expected bearer-unknown GET /health status=401", file=sys.stderr)
     sys.exit(1)
 if health_bearer_valid_status != 200:
     print("expected bearer-valid GET /health status=200", file=sys.stderr)
