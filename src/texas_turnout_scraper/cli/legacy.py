@@ -208,7 +208,7 @@ def legacy_fetch_all(
     if county_ids:
         filter_ids = {part.strip() for part in county_ids.split(",") if part.strip()}
 
-    elections = legacy_api.list_elections(pace=pace)
+    elections = legacy_api.list_elections(pace_seconds=pace)
     election = next(
         (e for e in elections if e.source_election_id == source_election_id),
         None,
@@ -406,7 +406,7 @@ def legacy_refresh_all(
     """Refresh legacy elections that already have on-disk roster files."""
     from .. import legacy_api
 
-    elections = legacy_api.list_elections(pace=pace)
+    elections = legacy_api.list_elections(pace_seconds=pace)
     typer.echo(f"Legacy elections on portal: {len(elections)}")
 
     attempted = 0

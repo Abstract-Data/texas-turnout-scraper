@@ -135,6 +135,10 @@ jobs:
             fi
           fi
 
+      - name: Keep files over the GitHub push limit out of the commit
+        # One oversize statewide roster used to fail the whole push (GH001, 100 MiB).
+        run: python3 .github/scripts/skip_oversize_data.py data/elections
+
       - name: Commit data changes
         uses: stefanzweifel/git-auto-commit-action@d0b01107b5db882071f96de5dd4b54961ea93f4c # v7
         with:
