@@ -180,3 +180,106 @@ async def test_etag_changes_when_any_day_changes(db: _Db) -> None:
     assert roster_etag(days[:1]) != full
     assert roster_etag(days[:1]) != day_etag(days[0])
     assert day_etag(days[0]) == days[0].sha256
+
+
+class _LoggingPrepared(_Prepared):
+    def __init__(self, conn, sql, events):
+        super().__init__(conn, sql)
+        self._events = events
+
+    async def all(self):
+        import asyncio
+
+        if self._sql.startswith("SELECT chunk_index"):
+            self._events.append(("query", self._args[2]))
+            await asyncio.sleep(0)
+        return await super().all()
+
+
+class _LoggingDb(_Db):
+    def __init__(self, conn):
+        super().__init__(conn)
+        self.events: list[tuple[str, int]] = []
+
+    def prepare(self, sql):
+        self.queries += 1
+        return _LoggingPrepared(self.conn, sql, self.events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("start", "stop"),
+    [(0, 1), (0, 16), (15, 17), (16, 32), (20, 70), (len(DAY1) - 5, len(DAY1)), (0, len(DAY1))],
+)
+async def test_stream_day_serves_an_exact_byte_range(db: _Db, start: int, stop: int) -> None:
+    day = await find_day(db, "53815", "2026-10-19")
+    assert day is not None
+    body = await _collect(stream_day(db, "53815", day, batch_chunks=2, start=start, stop=stop))
+    assert body == DAY1[start:stop]
+
+
+@pytest.mark.asyncio
+async def test_a_ranged_read_fetches_only_the_chunks_it_needs(db: _Db) -> None:
+    day = await find_day(db, "53815", "2026-10-19")
+    assert day is not None
+    before = db.queries
+    await _collect(stream_day(db, "53815", day, batch_chunks=1, start=48, stop=50))
+    assert db.queries - before == 1
+
+
+@pytest.mark.asyncio
+async def test_range_support_needs_consistent_chunking(db: _Db) -> None:
+    from dataclasses import replace
+
+    from texas_turnout_scraper.early_vote_d1_roster import range_supported
+
+    day = await find_day(db, "53815", "2026-10-19")
+    assert day is not None
+    assert range_supported(day)
+    assert not range_supported(replace(day, byte_length=day.byte_length + 1000))
+
+
+@pytest.mark.asyncio
+async def test_next_batch_is_requested_while_the_current_one_is_streamed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    monkeypatch.setattr(early_vote_sync, "CHUNK_RAW_BYTES", 16)
+    conn = sqlite3.connect(":memory:")
+    for sql in (*_SCHEMA_CREATES, *PRECOMPUTE_SCHEMA_CREATES):
+        conn.execute(sql)
+    _store_day(conn, "2026-10-19", DAY1)
+    db = _LoggingDb(conn)
+    day = await find_day(db, "53815", "2026-10-19")
+    assert day is not None
+    stream = stream_day(db, "53815", day, batch_chunks=2)
+    first = await stream.__anext__()
+    assert first
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    starts = [start for kind, start in db.events if kind == "query"]
+    assert starts[:2] == [0, 2]
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_closing_a_stream_early_leaves_no_pending_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    monkeypatch.setattr(early_vote_sync, "CHUNK_RAW_BYTES", 16)
+    conn = sqlite3.connect(":memory:")
+    for sql in (*_SCHEMA_CREATES, *PRECOMPUTE_SCHEMA_CREATES):
+        conn.execute(sql)
+    _store_day(conn, "2026-10-19", DAY1)
+    db = _LoggingDb(conn)
+    day = await find_day(db, "53815", "2026-10-19")
+    assert day is not None
+    before = len(asyncio.all_tasks())
+    stream = stream_day(db, "53815", day, batch_chunks=1)
+    await stream.__anext__()
+    await stream.aclose()
+    await asyncio.sleep(0)
+    assert len(asyncio.all_tasks()) == before
