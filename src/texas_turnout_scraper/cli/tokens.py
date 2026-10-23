@@ -25,11 +25,21 @@ def tokens_mint(
         str,
         typer.Option("--label", "-l", help="Human-readable label for this consumer"),
     ] = "",
+    scope: Annotated[
+        str,
+        typer.Option(
+            "--scope",
+            help="aggregates (counts only, default) or roster (voter rows, names and VUIDs)",
+        ),
+    ] = "aggregates",
 ) -> None:
     """Mint a consumer token (plaintext shown once on stdout)."""
     admin = _admin()
     try:
-        token_id, plaintext = admin.mint(label)
+        token_id, plaintext = admin.mint(label, scope=scope)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     except EarlyVoteSyncError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -37,6 +47,7 @@ def tokens_mint(
         admin.close()
     typer.echo(f"token_id={token_id}")
     typer.echo(f"label={label}")
+    typer.echo(f"scope={scope}")
     typer.echo(plaintext)
 
 
@@ -57,7 +68,7 @@ def tokens_list() -> None:
     for row in rows:
         status = "revoked" if row.revoked_at else "active"
         typer.echo(
-            f"{row.token_id}\t{status}\t{row.created_at}\t{row.label}",
+            f"{row.token_id}\t{status}\t{row.scope}\t{row.created_at}\t{row.label}",
         )
 
 

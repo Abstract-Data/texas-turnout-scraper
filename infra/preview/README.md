@@ -165,3 +165,15 @@ bash scripts/install-git-hooks.sh
 - **pre-commit** (plain `git commit`; GitButler's wrapper runs it as `pre-commit-user`) and **pre-push** (also run by `but push`) call `scripts/githooks/terraform-proof.sh`. It does nothing unless a `.tf`, `.tfvars`, `.terraform.lock.hcl` or `.tflint.hcl` file changed. The pre-push run also looks at everything committed since `origin/main`.
 - Validation runs in a temporary directory of symlinks, so `terraform init` never rewrites the lock file or creates `.terraform/` in the repo. Provider downloads are cached in `~/.terraform.d/plugin-cache`; the first run can take a couple of minutes.
 - GitButler's `but commit` does not run git hooks, so a commit made that way is only checked when you push (`but push --no-hooks` skips it) and again in CI. Run `bash scripts/githooks/terraform-proof.sh` by hand any time.
+
+## Token scopes
+
+Every minted consumer token has a scope. `aggregates` (the default, and every token minted before scopes existed) reads counts only. `roster` is the only scope that can read voter rows (names and VUIDs, see the roster routes). The shared Cloudflare Access service credential never grants roster access.
+
+```bash
+tx-turnout tokens mint --label "analyst" --scope roster   # prints the secret once
+tx-turnout tokens list                                    # id, status, scope, created, label
+tx-turnout tokens revoke <token_id>
+```
+
+The first `mint` or `list` after this release adds the `scope` column to the token table (default `aggregates`); run `tx-turnout tokens list` once before deploying a Worker that reads it.
