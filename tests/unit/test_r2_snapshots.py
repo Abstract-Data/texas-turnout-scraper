@@ -107,6 +107,8 @@ def test_from_env_requires_every_variable_or_returns_none(monkeypatch: pytest.Mo
         "EV_SNAPSHOT_BUCKET",
         "EV_SNAPSHOT_R2_ACCESS_KEY_ID",
         "EV_SNAPSHOT_R2_SECRET_ACCESS_KEY",
+        "R2_ACCESS_KEY_ID",
+        "R2_SECRET_ACCESS_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
     assert snapshot_store_from_env() is None
