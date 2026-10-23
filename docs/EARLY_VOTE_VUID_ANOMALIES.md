@@ -2,14 +2,26 @@
 
 ## Purpose
 
-Civix publishes cumulative statewide early-vote rosters per calendar day. When a
-new file replaces an older one for the same `ev_date`, we want durable, queryable
+Civix publishes one statewide early-vote roster per calendar day, and each file holds
+only that day's voters (consecutive days share no VUIDs). When a new file replaces an
+older one for the same `ev_date`, we want durable, queryable
 records of VUID-level anomalies: duplicate rows inside one file, voters who
 disappear on a later publish, and county or voting-method changes for the same
 VUID.
 
 This design supports **read-only analysis and future persistence** — not live
 election-night serving.
+
+## Relation to `early_vote_day_change`
+
+The loader already writes `early_vote_day_change` (see `early_vote_day_changes.py` and the
+RUNBOOK). It records only the VUIDs **added** and **removed** when a day's file changes, and it
+runs on every changed load. This design is the broader, still unwired analysis: duplicates inside
+one file and `method_changed` / `county_changed` for a VUID present in both versions. Those
+cases are not in `early_vote_day_change`. If this is ever wired in, read the prior version from
+the R2 snapshots (`elections/<id>/<ev_date>/<sha256>.csv.gz`) rather than from D1, because D1
+keeps only the current file for a day, and treat `dropped_from_later` as the same fact as
+`removed` instead of storing it twice.
 
 ## Not applied live
 
