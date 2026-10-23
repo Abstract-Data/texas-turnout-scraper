@@ -111,3 +111,20 @@ class WorkersAggregateStore:
             )
         except AggregatesNotComputed:
             raise
+
+
+class WorkersRosterStore:
+    """Per-election D1 bindings for the elections list and roster routes."""
+
+    def __init__(self, env: Any, binding_map: dict[str, str]) -> None:
+        self._env = env
+        self._binding_map = binding_map
+
+    def election_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._binding_map))
+
+    def database(self, election_id: str) -> Any | None:
+        binding_name = self._binding_map.get(require_election_id(election_id))
+        if binding_name is None:
+            return None
+        return _database(self._env, binding_name)
