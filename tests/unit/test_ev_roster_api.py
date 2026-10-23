@@ -151,3 +151,90 @@ def test_elections_search_and_detail(client: TestClient) -> None:
     assert detail.json()["source_election_id"] == "53815"
     assert client.get("/elections/99999", headers=AGGREGATES).status_code == 404
     assert client.get("/elections/abc", headers=AGGREGATES).status_code == 400
+
+
+def _get(client: TestClient, headers: dict[str, str], **extra: str):
+    return client.get("/elections/53815/roster/2026-10-19", headers={**ROSTER, **headers, **extra})
+
+
+def test_a_day_advertises_range_support(client: TestClient) -> None:
+    assert _get(client, {}).headers["accept-ranges"] == "bytes"
+    assert "accept-ranges" not in client.get("/elections/53815/roster", headers=ROSTER).headers
+
+
+def test_range_returns_206_with_the_exact_bytes(client: TestClient) -> None:
+    size = len(DAY1)
+    cases = {
+        "bytes=10-29": (10, 29),
+        "bytes=20-": (20, size - 1),
+        "bytes=-15": (size - 15, size - 1),
+        "bytes=0-0": (0, 0),
+        f"bytes=5-{size + 500}": (5, size - 1),
+    }
+    for header, (first, last) in cases.items():
+        response = _get(client, {"Range": header})
+        assert response.status_code == 206, header
+        assert response.content == DAY1[first : last + 1], header
+        assert response.headers["content-range"] == f"bytes {first}-{last}/{size}", header
+
+
+def test_unsatisfiable_range_is_416(client: TestClient) -> None:
+    size = len(DAY1)
+    for header in (f"bytes={size}-", f"bytes={size + 10}-{size + 20}", "bytes=-0"):
+        response = _get(client, {"Range": header})
+        assert response.status_code == 416, header
+        assert response.headers["content-range"] == f"bytes */{size}"
+
+
+def test_ranges_we_do_not_serve_fall_back_to_the_whole_file(client: TestClient) -> None:
+    for header in ("bytes=0-4,10-14", "items=0-4", "bytes=9-3", "bytes=abc-"):
+        response = _get(client, {"Range": header})
+        assert response.status_code == 200, header
+        assert response.content == DAY1, header
+
+
+def test_if_range_must_match_the_etag(client: TestClient) -> None:
+    etag = _get(client, {}).headers["etag"]
+    stale = _get(client, {"Range": "bytes=0-9", "If-Range": '"old"'})
+    assert stale.status_code == 200
+    assert stale.content == DAY1
+    fresh = _get(client, {"Range": "bytes=0-9", "If-Range": etag})
+    assert fresh.status_code == 206
+    assert fresh.content == DAY1[:10]
+
+
+def test_not_modified_beats_range(client: TestClient) -> None:
+    etag = _get(client, {}).headers["etag"]
+    assert _get(client, {"Range": "bytes=0-9", "If-None-Match": etag}).status_code == 304
+
+
+def test_all_days_ignores_range(client: TestClient) -> None:
+    response = client.get("/elections/53815/roster", headers={**ROSTER, "Range": "bytes=0-9"})
+    assert response.status_code == 200
+
+
+def test_huge_digit_runs_in_range_are_not_a_server_error(client: TestClient) -> None:
+    digits = "9" * 5000
+    assert _get(client, {"Range": f"bytes={digits}-"}).status_code == 416
+    open_ended = _get(client, {"Range": f"bytes=0-{digits}"})
+    assert open_ended.status_code == 206
+    assert open_ended.content == DAY1
+    assert _get(client, {"Range": f"bytes=-{digits}"}).content == DAY1
+
+
+def test_if_range_needs_a_strong_validator(client: TestClient) -> None:
+    etag = _get(client, {}).headers["etag"]
+    weak = _get(client, {"Range": "bytes=0-9", "If-Range": f"W/{etag}"})
+    assert weak.status_code == 200
+    assert weak.content == DAY1
+
+
+def test_ranges_ending_on_a_chunk_boundary_and_open_from_zero(client: TestClient) -> None:
+    size = len(DAY1)
+    boundary = _get(client, {"Range": "bytes=0-15"})
+    assert (boundary.status_code, boundary.content) == (206, DAY1[:16])
+    assert _get(client, {"Range": "bytes=16-31"}).content == DAY1[16:32]
+    whole = _get(client, {"Range": "bytes=0-"})
+    assert whole.status_code == 206
+    assert whole.content == DAY1
+    assert whole.headers["content-range"] == f"bytes 0-{size - 1}/{size}"
