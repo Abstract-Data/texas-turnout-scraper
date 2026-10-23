@@ -554,8 +554,18 @@ class _CountingStore(_BackfillStore):
             return [{"expected": self.meta_count, "actual": self._county_rows.get("f1", 0)}]
         return super()._query_rows(database_id, sql, params)
 
-    def _write_precomputed_aggregates(self, *args: object, **kwargs: object) -> None:
-        super()._write_precomputed_aggregates(*args, **kwargs)  # type: ignore[arg-type]
+    def _write_precomputed_aggregates(
+        self,
+        database_id: str,
+        election_id: str,
+        file_id: str,
+        decoded: bytes,
+        *,
+        ev_date_iso: str | None,
+    ) -> None:
+        super()._write_precomputed_aggregates(
+            database_id, election_id, file_id, decoded, ev_date_iso=ev_date_iso
+        )
         self.meta_count = self._county_rows["f1"]
 
 
@@ -638,7 +648,8 @@ def test_probe_sql_against_real_sqlite_rows() -> None:
         conn.execute(sql, params)
 
     def probe() -> list[tuple[int, int]]:
-        return conn.execute(_COMPLETE_PROBE_SQL, ("53815", "f1")).fetchall()
+        rows = conn.execute(_COMPLETE_PROBE_SQL, ("53815", "f1")).fetchall()
+        return [(int(a), int(b)) for a, b in rows]
 
     assert probe() == [(40, 40)]
     conn.execute("DELETE FROM early_vote_county_aggregate WHERE county = 'COUNTY000'")
