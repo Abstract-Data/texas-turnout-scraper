@@ -16,6 +16,18 @@ PYPI_URL = "https://pypi.org/pypi/tzdata/json"
 _VERSION = re.compile(r"^\d{4}\.\d+$")
 _DIST_INFO = re.compile(r"^tzdata-(\d{4}\.\d+)\.dist-info$")
 
+_WORKER = "infra/preview/worker/"
+# Paths a tzdata refresh is allowed to change. Everything else under the worker is drift.
+_ALLOWED_DRIFT = (
+    re.compile(rf"^{_WORKER}(uv\.lock|pylock\.toml)$"),
+    re.compile(rf"^{_WORKER}python_modules/tzdata/"),
+    re.compile(rf"^{_WORKER}python_modules/tzdata-\d{{4}}\.\d+\.dist-info/"),
+    # Not reproducible across machines; terraform-preview.yml ignores them too.
+    re.compile(
+        rf"^{_WORKER}python_modules/[^/]+\.dist-info/(RECORD|direct_url\.json|uv_cache\.json)$"
+    ),
+)
+
 
 def vendored_version(worker_dir: Path) -> str:
     found = sorted(
@@ -40,6 +52,18 @@ def is_newer(latest: str, current: str) -> bool:
     return version_key(latest) > version_key(current)
 
 
+def unexpected_drift(porcelain: str) -> list[str]:
+    """Paths in ``git status --porcelain`` output that a tzdata refresh must not touch."""
+    unexpected: list[str] = []
+    for line in porcelain.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].split(" -> ")[-1].strip().strip('"')
+        if not any(pattern.match(path) for pattern in _ALLOWED_DRIFT):
+            unexpected.append(path)
+    return unexpected
+
+
 def latest_from_pypi(payload: dict[str, object]) -> str:
     info = payload.get("info")
     version = info.get("version") if isinstance(info, dict) else None
@@ -50,6 +74,11 @@ def latest_from_pypi(payload: dict[str, object]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if args[:1] == ["--check-drift"]:
+        bad = unexpected_drift(sys.stdin.read())
+        for path in bad:
+            sys.stdout.write(f"::error::unexpected change after pywrangler sync: {path}\n")
+        return 1 if bad else 0
     worker_dir = Path(args[0]) if args else Path(__file__).resolve().parents[1]
     with urllib.request.urlopen(PYPI_URL, timeout=30) as response:
         latest = latest_from_pypi(json.load(response))

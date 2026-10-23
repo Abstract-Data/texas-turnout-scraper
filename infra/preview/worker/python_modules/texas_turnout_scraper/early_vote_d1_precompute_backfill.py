@@ -84,6 +84,14 @@ class PrecomputeBackfillStore(Protocol):
         ev_date_iso: str | None,
     ) -> None: ...
 
+    def _record_aggregate_meta(
+        self,
+        database_id: str,
+        election_id: str,
+        file_id: str,
+        county_count: int,
+    ) -> None: ...
+
     def bump_version(self, election_id: str, digest: str) -> str: ...
 
     def stored_hash(self, election_id: str) -> str | None: ...
@@ -298,10 +306,11 @@ def published_precompute_state(
 ) -> PrecomputeState:
     """Aggregate state of pointer and digest-matched files.
 
-    ``unknown`` wins over ``pending``: a target whose file row is missing, or whose
-    aggregates are not confirmed by the probe and whose chunks cannot be read, is
-    never treated as complete, so callers must not finalize on it. A probe-confirmed
-    target is complete by its aggregate rows even if its chunks are unreadable.
+    ``unknown`` wins over ``pending``: a target whose aggregates are not confirmed by
+    the probe and whose chunks cannot be read is never treated as complete, so callers
+    must not finalize on it. A probe-confirmed target is complete by its aggregate
+    rows even if its chunks are unreadable. A pointer whose file row is gone is
+    ignored, since the Worker cannot serve it.
     """
     digest = published_digest.strip()
     if not digest:
@@ -322,15 +331,25 @@ def published_precompute_state(
     pending = False
     for file_id in targets:
         row = by_id.get(file_id)
-        needs = (
-            None
-            if row is None
-            else _file_needs_precompute_work(store, database_id, election_id, row)
-        )
+        if row is None:
+            # A pointer to a deleted file is not servable: the Worker only reads the
+            # pointer when its sha matches the KV hash, and otherwise falls back to a
+            # digest-matched file. Digest-matched targets always have a row.
+            continue
+        needs = _file_needs_precompute_work(store, database_id, election_id, row)
         if needs is None:
             return "unknown"
         pending = pending or needs
     return "pending" if pending else "complete"
+
+
+def unreadable_state_error(election_id: str) -> EarlyVoteSyncError:
+    """Non-PII failure for an unreadable precompute target. Names the election only."""
+    return EarlyVoteSyncError(
+        f"precompute state unreadable for election_id={election_id}; "
+        "KV version not bumped. Check early_vote_chunk and early_vote_file "
+        "rows for the digest-matched files, then re-run."
+    )
 
 
 def should_finalize_kv_version(
@@ -355,6 +374,22 @@ def should_finalize_kv_version(
     if kv_stored_hash != digest and not pending_after:
         return True
     return False
+
+
+def _record_meta_unless_dry_run(
+    store: PrecomputeBackfillStore,
+    database_id: str,
+    election_id: str,
+    file_id: str,
+    county_count: int,
+    *,
+    dry_run: bool,
+) -> None:
+    """Give an already-complete file its meta row so later runs take the probe path."""
+    if not dry_run:
+        store._record_aggregate_meta(  # noqa: SLF001
+            database_id, election_id, file_id, county_count
+        )
 
 
 def run_precompute_backfill_on_store(
@@ -415,6 +450,9 @@ def run_precompute_backfill_on_store(
             file_id,
             expected_county_rows=expected_counties,
         ):
+            _record_meta_unless_dry_run(
+                store, database_id, election_id, file_id, expected_counties, dry_run=dry_run
+            )
             skipped += 1
             continue
         if dry_run:
@@ -526,11 +564,7 @@ def main(argv: list[str] | None = None) -> int:
             else "complete"
         )
         if args.apply and state_after == "unknown":
-            raise EarlyVoteSyncError(
-                f"precompute state unreadable for election_id={args.election_id}; "
-                "KV version not bumped. Check early_vote_chunk and early_vote_file "
-                "rows for the pointer and digest-matched files, then re-run."
-            )
+            raise unreadable_state_error(args.election_id)
         pending_before = state_before == "pending"
         pending_after = state_after == "pending"
         kv_stored = store.stored_hash(args.election_id)

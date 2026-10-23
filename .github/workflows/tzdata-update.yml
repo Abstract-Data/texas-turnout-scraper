@@ -67,6 +67,13 @@ jobs:
         working-directory: infra/preview/worker
         run: bash scripts/verify_pyodide_startup.sh
 
+      - name: Fail if the refresh changed anything besides tzdata
+        if: steps.check.outputs.update == 'true' && steps.existing.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          git status --porcelain -- infra/preview/worker \
+            | python3 infra/preview/worker/scripts/check_tzdata_update.py --check-drift
+
       - name: Open PR with only the tzdata refresh
         if: steps.check.outputs.update == 'true' && steps.existing.outputs.exists == 'false'
         env:
@@ -83,7 +90,7 @@ jobs:
             infra/preview/worker/uv.lock \
             infra/preview/worker/pylock.toml \
             infra/preview/worker/python_modules/tzdata \
-            'infra/preview/worker/python_modules/tzdata-*.dist-info'
+            'infra/preview/worker/python_modules/tzdata-*.dist-info/*'
           if git diff --cached --quiet; then
             echo "::error::tzdata ${LATEST} is newer but the refresh produced no tracked change"
             exit 1

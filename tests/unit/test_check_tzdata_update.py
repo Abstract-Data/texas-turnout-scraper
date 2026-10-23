@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -51,3 +52,72 @@ def test_latest_from_pypi_requires_version_string() -> None:
     assert check.latest_from_pypi({"info": {"version": "2026.5"}}) == "2026.5"
     with pytest.raises(SystemExit):
         check.latest_from_pypi({"info": {}})
+
+
+_W = "infra/preview/worker"
+
+
+def test_unexpected_drift_allows_only_tzdata_lock_and_noise() -> None:
+    porcelain = "\n".join(
+        [
+            f" M {_W}/uv.lock",
+            f" M {_W}/pylock.toml",
+            f" M {_W}/python_modules/tzdata/zoneinfo/America/Chicago",
+            f" D {_W}/python_modules/tzdata-2026.5.dist-info/METADATA",
+            f"?? {_W}/python_modules/tzdata-2026.6.dist-info/",
+            f" M {_W}/python_modules/fastapi-0.156.1.dist-info/RECORD",
+            f" M {_W}/python_modules/texas_turnout_scraper-0.2.7.dist-info/direct_url.json",
+        ]
+    )
+    assert check.unexpected_drift(porcelain) == []
+
+
+def test_unexpected_drift_flags_other_vendored_changes() -> None:
+    porcelain = "\n".join(
+        [
+            f" M {_W}/python_modules/texas_turnout_scraper/cli/voterfile.py",
+            f" M {_W}/python_modules/fastapi-0.156.1.dist-info/METADATA",
+            f" M {_W}/uv.lock",
+        ]
+    )
+    assert check.unexpected_drift(porcelain) == [
+        f"{_W}/python_modules/texas_turnout_scraper/cli/voterfile.py",
+        f"{_W}/python_modules/fastapi-0.156.1.dist-info/METADATA",
+    ]
+
+
+def test_staging_pathspec_stages_new_and_deleted_dist_info(tmp_path: Path) -> None:
+    """The workflow's `git add` must stage the old dist-info deletion and the new one."""
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github/workflows/tzdata-update.yml"
+    ).read_text()
+    pathspec = "infra/preview/worker/python_modules/tzdata-*.dist-info/*"
+    assert f"'{pathspec}'" in workflow
+
+    def git(*args: str) -> str:
+        done = subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return done.stdout
+
+    git("init", "-q")
+    modules = tmp_path / "infra/preview/worker/python_modules"
+    (modules / "tzdata-2026.5.dist-info").mkdir(parents=True)
+    (modules / "tzdata-2026.5.dist-info/METADATA").write_text("old")
+    (modules / "tzdata").mkdir()
+    (modules / "tzdata/zones").write_text("old")
+    git("add", "-A")
+    git("commit", "-qm", "seed")
+    for child in (modules / "tzdata-2026.5.dist-info").iterdir():
+        child.unlink()
+    (modules / "tzdata-2026.5.dist-info").rmdir()
+    (modules / "tzdata-2026.6.dist-info").mkdir()
+    (modules / "tzdata-2026.6.dist-info/METADATA").write_text("new")
+    (modules / "tzdata/zones").write_text("new")
+    git("add", "-A", "--", "infra/preview/worker/python_modules/tzdata", pathspec)
+    staged = git("diff", "--cached", "--name-status")
+    assert "D\tinfra/preview/worker/python_modules/tzdata-2026.5.dist-info/METADATA" in staged
+    assert "A\tinfra/preview/worker/python_modules/tzdata-2026.6.dist-info/METADATA" in staged

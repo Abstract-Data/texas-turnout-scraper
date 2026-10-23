@@ -41,6 +41,7 @@ class _BackfillStore:
         self._agg_rows: set[str] = set()
         self._county_rows: dict[str, int] = {}
         self.writes = 0
+        self.meta_records: list[tuple[str, int]] = []
         self.batches: list[int] = []
         self.kv_stored_hash: str | None = None
 
@@ -96,6 +97,15 @@ class _BackfillStore:
         payload = json.loads(decoded)
         counties = payload.get("turnout_by_county", [])
         self._county_rows[file_id] = len(counties) if isinstance(counties, list) else 0
+
+    def _record_aggregate_meta(
+        self,
+        database_id: str,
+        election_id: str,
+        file_id: str,
+        county_count: int,
+    ) -> None:
+        self.meta_records.append((file_id, county_count))
 
     def bump_version(self, election_id: str, digest: str) -> str:
         self.kv_stored_hash = digest
@@ -568,6 +578,16 @@ class _CountingStore(_BackfillStore):
         )
         self.meta_count = self._county_rows["f1"]
 
+    def _record_aggregate_meta(
+        self,
+        database_id: str,
+        election_id: str,
+        file_id: str,
+        county_count: int,
+    ) -> None:
+        super()._record_aggregate_meta(database_id, election_id, file_id, county_count)
+        self.meta_count = county_count
+
 
 def test_complete_file_is_confirmed_without_paging_payloads() -> None:
     store = _CountingStore(120, complete=True)
@@ -591,12 +611,40 @@ def test_incomplete_file_still_reads_every_page_and_writes_same_rows() -> None:
     assert store.writes == 1
 
 
-def test_complete_rows_without_meta_take_full_path_and_are_not_rewritten() -> None:
+def test_complete_rows_without_meta_take_full_path_once_then_get_meta() -> None:
     store = _CountingStore(120, complete=True, meta=False)
-    result = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    first = run_precompute_backfill_on_store(store, "53815", dry_run=False)
     assert store.reads["payload"] == 120
-    assert result.files_skipped == 1
+    assert first.files_skipped == 1
     assert store.writes == 0
+    assert store.meta_records == [("f1", 40)]
+    store.reads.clear()
+    second = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    assert second.files_skipped == 1
+    assert store.reads == {"other": 1, "probe": 1}
+
+
+def test_dry_run_does_not_record_meta() -> None:
+    store = _CountingStore(3, complete=True, meta=False)
+    run_precompute_backfill_on_store(store, "53815", dry_run=True)
+    assert store.meta_records == []
+
+
+def test_dangling_pointer_is_not_an_unknown_target(monkeypatch) -> None:
+    class _Dangling(_CountingStore):
+        def _query_rows(
+            self, database_id: str, sql: str, params: list[str]
+        ) -> list[dict[str, object]]:
+            if "early_vote_pointer" in sql:
+                return [{"file_id": "ghost"}]
+            return super()._query_rows(database_id, sql, params)
+
+    store = _Dangling(3, complete=True)
+    assert published_precompute_state(store, "53815", published_digest=store._digest) == "complete"
+    store.kv_stored_hash = "stale-kv"
+    bumped: list[str] = []
+    assert _run_finalize(monkeypatch, store, store._digest, bumped) == 0
+    assert bumped == [store._digest]
 
 
 def test_meta_count_mismatch_falls_back_and_rewrites() -> None:

@@ -50,6 +50,10 @@ _COUNTY_AGG_DELETE_SQL = (
 _META_DELETE_SQL = (
     "DELETE FROM early_vote_aggregate_meta WHERE source_election_id = ? AND file_id = ?"
 )
+_META_UPSERT_SQL = (
+    "INSERT OR REPLACE INTO early_vote_aggregate_meta "
+    "(source_election_id, file_id, county_count) VALUES (?, ?, ?)"
+)
 _META_INSERT_SQL = (
     "INSERT INTO early_vote_aggregate_meta (source_election_id, file_id, county_count) "
     "VALUES (?, ?, ?)"
@@ -190,6 +194,11 @@ def precompute_statements(
         )
     )
     return tuple(statements)
+
+
+def meta_upsert_statement(election_id: str, file_id: str, county_count: int) -> Statement:
+    """Record the expected county count for a file whose aggregates are already complete."""
+    return (_META_UPSERT_SQL, (require_election_id(election_id), file_id, str(county_count)))
 
 
 def delete_precompute_statements(election_id: str, file_id: str) -> tuple[Statement, ...]:
