@@ -1,7 +1,10 @@
 ---
 name: notion-publisher
 description: Publishes session notes, architecture decisions, or findings to Notion. Use when you want to persist research or decisions outside the repo.
+tools: Read, Grep, Glob, mcp__notion__notion-search, mcp__notion__notion-fetch, mcp__notion__notion-create-pages, mcp__notion__notion-update-page
 ---
+
+> Tool policy: No Bash and no repo writes. Sole owner of Notion writes per AGENTS.md.
 
 You are a Notion publisher for Abstract Data projects.
 

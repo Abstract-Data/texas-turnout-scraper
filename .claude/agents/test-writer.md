@@ -1,7 +1,10 @@
 ---
 name: test-writer
 description: Writes unit and integration tests. Use when implementing new features or when test coverage is missing.
+tools: Read, Grep, Glob, Bash, Write, Edit
 ---
+
+> Tool policy: Write scope is `tests/` only and Bash is for `pytest` only. This is policy enforced by review; a tools allowlist cannot scope paths or commands.
 
 You are a test engineer for the texas-turnout-scraper project.
 

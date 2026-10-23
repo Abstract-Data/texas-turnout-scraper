@@ -1,10 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/.mcp.schema.json",
-  "_comment": "Project-scoped MCP server registrations. Context7 is strongly recommended — it eliminates hallucinated library APIs (see AGENTS.md ## Documentation Priority, item 1). Install with: claude mcp add context7 -- npx -y @upstash/context7-mcp",
+  "_comment": "Project-scoped MCP server registrations. Context7 is strongly recommended — it eliminates hallucinated library APIs (see AGENTS.md ## Documentation Priority, item 1). Pinned to an exact version (supply-chain hardening); the pin is bumped manually because the repo has no package.json for Dependabot npm to track. Check with `npm view @upstash/context7-mcp version`. Install with: claude mcp add context7 -- npx -y @upstash/context7-mcp@4.4.4",
   "mcpServers": {
     "context7": {
       "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"]
+      "args": ["-y", "@upstash/context7-mcp@4.4.4"]
     }
   }
 }
