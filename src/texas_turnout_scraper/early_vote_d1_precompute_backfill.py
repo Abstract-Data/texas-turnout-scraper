@@ -49,6 +49,7 @@ _DAY_BY_FILE_SQL = (
 )
 
 BackfillStatus = Literal["dry_run", "wrote", "unchanged"]
+PrecomputeState = Literal["complete", "pending", "unknown"]
 
 
 class PrecomputeBackfillStore(Protocol):
@@ -251,37 +252,45 @@ def _file_needs_precompute_work(
     return True
 
 
-def published_files_pending_precompute(
+def published_precompute_state(
     store: PrecomputeBackfillStore,
     election_id: str,
     *,
     published_digest: str,
-) -> bool:
-    """True when pointer or digest-matched files lack complete aggregate rows."""
+) -> PrecomputeState:
+    """Aggregate state of pointer and digest-matched files.
+
+    ``unknown`` wins over ``pending``: a target whose chunks or file row cannot
+    be read is never confirmed complete, so callers must not finalize on it.
+    """
     digest = published_digest.strip()
     if not digest:
-        return False
+        return "complete"
     database_id = store._database_uuid_if_exists(election_id)  # noqa: SLF001
     if database_id is None:
-        return False
+        return "complete"
     store._ensure_schema(database_id)  # noqa: SLF001
     targets = _target_file_ids_for_finalize(store, database_id, election_id, digest)
     if not targets:
-        return False
+        return "complete"
     file_rows = store._query_rows(database_id, _FILES_SQL, [election_id])  # noqa: SLF001
     by_id: dict[str, dict[str, object]] = {}
     for row in file_rows:
         file_id = row.get("file_id")
         if isinstance(file_id, str) and file_id:
             by_id[file_id] = row
+    pending = False
     for file_id in targets:
         row = by_id.get(file_id)
-        if row is None:
-            continue
-        needs = _file_needs_precompute_work(store, database_id, election_id, row)
-        if needs is True:
-            return True
-    return False
+        needs = (
+            None
+            if row is None
+            else _file_needs_precompute_work(store, database_id, election_id, row)
+        )
+        if needs is None:
+            return "unknown"
+        pending = pending or needs
+    return "pending" if pending else "complete"
 
 
 def should_finalize_kv_version(
@@ -458,29 +467,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         digest = args.finalize_kv_digest.strip()
-        pending_before = (
-            published_files_pending_precompute(
-                store,
-                args.election_id,
-                published_digest=digest,
-            )
+        state_before = (
+            published_precompute_state(store, args.election_id, published_digest=digest)
             if digest
-            else False
+            else "complete"
         )
         result = run_precompute_backfill_on_store(
             store,
             args.election_id,
             dry_run=args.dry_run,
         )
-        pending_after = (
-            published_files_pending_precompute(
-                store,
-                args.election_id,
-                published_digest=digest,
-            )
+        state_after = (
+            published_precompute_state(store, args.election_id, published_digest=digest)
             if digest
-            else False
+            else "complete"
         )
+        if args.apply and state_after == "unknown":
+            raise EarlyVoteSyncError(
+                f"precompute state unreadable for election_id={args.election_id}; "
+                "KV version not bumped. Check early_vote_chunk and early_vote_file "
+                "rows for the pointer and digest-matched files, then re-run."
+            )
+        pending_before = state_before == "pending"
+        pending_after = state_after == "pending"
         kv_stored = store.stored_hash(args.election_id)
         if args.apply and should_finalize_kv_version(
             published_digest=digest,
