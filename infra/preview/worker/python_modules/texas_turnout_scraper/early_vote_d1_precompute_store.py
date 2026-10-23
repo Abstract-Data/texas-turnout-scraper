@@ -32,11 +32,31 @@ CREATE TABLE IF NOT EXISTS early_vote_county_aggregate (
 )
 """.strip()
 
+_META_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS early_vote_aggregate_meta (
+    source_election_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    county_count INTEGER NOT NULL,
+    PRIMARY KEY (source_election_id, file_id)
+)
+""".strip()
+
 _FILE_AGG_DELETE_SQL = (
     "DELETE FROM early_vote_file_aggregate WHERE source_election_id = ? AND file_id = ?"
 )
 _COUNTY_AGG_DELETE_SQL = (
     "DELETE FROM early_vote_county_aggregate WHERE source_election_id = ? AND file_id = ?"
+)
+_META_DELETE_SQL = (
+    "DELETE FROM early_vote_aggregate_meta WHERE source_election_id = ? AND file_id = ?"
+)
+_META_UPSERT_SQL = (
+    "INSERT OR REPLACE INTO early_vote_aggregate_meta "
+    "(source_election_id, file_id, county_count) VALUES (?, ?, ?)"
+)
+_META_INSERT_SQL = (
+    "INSERT INTO early_vote_aggregate_meta (source_election_id, file_id, county_count) "
+    "VALUES (?, ?, ?)"
 )
 _FILE_AGG_INSERT_SQL = (
     "INSERT INTO early_vote_file_aggregate "
@@ -53,6 +73,7 @@ _COUNTY_AGG_INSERT_SQL = (
 PRECOMPUTE_SCHEMA_CREATES: tuple[str, ...] = (
     _FILE_AGG_TABLE_SQL,
     _COUNTY_AGG_TABLE_SQL,
+    _META_TABLE_SQL,
 )
 
 
@@ -128,8 +149,10 @@ def precompute_statements(
     statements: list[Statement] = [
         (_FILE_AGG_DELETE_SQL, (election_id, file_id)),
         (_COUNTY_AGG_DELETE_SQL, (election_id, file_id)),
+        (_META_DELETE_SQL, (election_id, file_id)),
     ]
     by_county = body.get("by_county")
+    expected_counties = 0
     if isinstance(by_county, list):
         for row in by_county:
             if not isinstance(row, dict):
@@ -137,6 +160,8 @@ def precompute_statements(
             county = row.get("county")
             if not isinstance(county, str) or not county:
                 continue
+            if county.strip():
+                expected_counties += 1
             row_total = _coerce_int(row.get("total")) or 0
             row_ip = _coerce_int(row.get("in_person")) or 0
             row_mail = _coerce_int(row.get("mail_in")) or 0
@@ -153,6 +178,7 @@ def precompute_statements(
                     ),
                 )
             )
+    statements.append((_META_INSERT_SQL, (election_id, file_id, str(expected_counties))))
     statements.append(
         (
             _FILE_AGG_INSERT_SQL,
@@ -170,9 +196,15 @@ def precompute_statements(
     return tuple(statements)
 
 
+def meta_upsert_statement(election_id: str, file_id: str, county_count: int) -> Statement:
+    """Record the expected county count for a file whose aggregates are already complete."""
+    return (_META_UPSERT_SQL, (require_election_id(election_id), file_id, str(county_count)))
+
+
 def delete_precompute_statements(election_id: str, file_id: str) -> tuple[Statement, ...]:
     election_id = require_election_id(election_id)
     return (
         (_COUNTY_AGG_DELETE_SQL, (election_id, file_id)),
+        (_META_DELETE_SQL, (election_id, file_id)),
         (_FILE_AGG_DELETE_SQL, (election_id, file_id)),
     )

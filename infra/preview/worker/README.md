@@ -28,6 +28,16 @@ PyEmscripten native modules (`*.cpython-*-wasm32-emscripten.so` under `python_mo
 
 CI runs `scripts/verify_pyodide_startup.sh` after `pywrangler sync` to catch missing extensions and import failures before Terraform apply.
 
+## Keep vendored tzdata current
+
+Pyodide has no host time zone database, so the Worker ships the pure-Python `tzdata` wheel in `python_modules/`. The copy is static, so DST and zone-rule changes only reach the Worker when it is bumped.
+
+`.github/workflows/tzdata-update.yml` runs weekly (and on demand). `scripts/check_tzdata_update.py` compares the vendored version with the latest stable PyPI release. When PyPI is newer, the job runs `uv lock --upgrade-package tzdata` and `pywrangler sync --force`, then `scripts/verify_pyodide_startup.sh` as a required gate, and only then opens a PR containing `uv.lock`, `pylock.toml`, and the vendored `tzdata` files. It never merges and never deploys. A PR opened with `GITHUB_TOKEN` does not start other workflows, so close and reopen it to run the Terraform preview checks.
+
+Dependabot is deliberately not enabled for this directory. It can bump `uv.lock` but cannot refresh `pylock.toml` or `python_modules/`, so its PRs would fail the pywrangler drift check in `terraform-preview.yml`.
+
+Manual bump: `cd infra/preview/worker && uv lock --upgrade-package tzdata && uv sync --frozen && uv run pywrangler sync --force && bash scripts/verify_pyodide_startup.sh`.
+
 ## HTTP surface (Access service token or consumer bearer/API key)
 
 - `GET /elections/{source_election_id}/aggregates/totals?ev_date=`

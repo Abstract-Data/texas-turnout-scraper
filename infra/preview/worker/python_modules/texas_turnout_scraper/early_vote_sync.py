@@ -76,6 +76,7 @@ from texas_turnout_scraper.early_vote_d1_precompute_store import (
     PRECOMPUTE_SCHEMA_CREATES,
     aggregate_body_from_decoded,
     delete_precompute_statements,
+    meta_upsert_statement,
     precompute_row_count,
     precompute_statements,
 )
@@ -1165,6 +1166,16 @@ class CloudflareEarlyVoteStore:
             [(_POINTER_UPSERT_SQL, [election_id, file_id])],
         )
         self.backfill_precomputed_aggregates(election_id, dry_run=False)
+        from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
+            published_precompute_state,
+            unreadable_state_error,
+        )
+
+        if (
+            published_precompute_state(self, election_id, published_digest=content_digest)
+            == "unknown"
+        ):
+            raise unreadable_state_error(election_id)
         version = self.bump_version(election_id, content_digest)
         if manifest_sha256:
             self._kv_put(manifest_key(election_id), manifest_sha256)
@@ -1313,6 +1324,18 @@ class CloudflareEarlyVoteStore:
             election_id,
             file_id,
             precompute_row_count(body),
+        )
+
+    def _record_aggregate_meta(
+        self,
+        database_id: str,
+        election_id: str,
+        file_id: str,
+        county_count: int,
+    ) -> None:
+        self._statements(
+            database_id,
+            [_statement_lists(meta_upsert_statement(election_id, file_id, county_count))],
         )
 
     def _query_rows(self, database_id: str, sql: str, params: list[str]) -> list[dict[str, Any]]:

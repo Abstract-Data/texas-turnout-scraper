@@ -48,7 +48,25 @@ _DAY_BY_FILE_SQL = (
     "WHERE source_election_id = ? AND file_id = ? ORDER BY ev_date ASC LIMIT 1"
 )
 
+_COMPLETE_PROBE_SQL = (
+    "SELECT m.county_count AS expected, "
+    "(SELECT COUNT(*) FROM early_vote_county_aggregate c "
+    "WHERE c.source_election_id = m.source_election_id AND c.file_id = m.file_id) AS actual, "
+    "fl.chunk_count AS chunk_count, "
+    "(SELECT COUNT(*) FROM early_vote_chunk ch "
+    "WHERE ch.source_election_id = m.source_election_id AND ch.file_id = m.file_id "
+    "AND ch.chunk_index < fl.chunk_count AND ch.payload_b64 <> '') "
+    "AS chunks_present "
+    "FROM early_vote_aggregate_meta m "
+    "JOIN early_vote_file_aggregate f "
+    "ON f.source_election_id = m.source_election_id AND f.file_id = m.file_id "
+    "JOIN early_vote_file fl "
+    "ON fl.source_election_id = m.source_election_id AND fl.file_id = m.file_id "
+    "WHERE m.source_election_id = ? AND m.file_id = ? LIMIT 1"
+)
+
 BackfillStatus = Literal["dry_run", "wrote", "unchanged"]
+PrecomputeState = Literal["complete", "pending", "unknown"]
 
 
 class PrecomputeBackfillStore(Protocol):
@@ -71,6 +89,14 @@ class PrecomputeBackfillStore(Protocol):
         decoded: bytes,
         *,
         ev_date_iso: str | None,
+    ) -> None: ...
+
+    def _record_aggregate_meta(
+        self,
+        database_id: str,
+        election_id: str,
+        file_id: str,
+        county_count: int,
     ) -> None: ...
 
     def bump_version(self, election_id: str, digest: str) -> str: ...
@@ -188,6 +214,39 @@ def _precompute_complete(
     return actual is not None and actual == expected_county_rows
 
 
+def _aggregate_confirmed_complete(
+    store: PrecomputeBackfillStore,
+    database_id: str,
+    election_id: str,
+    file_id: str,
+) -> bool:
+    """One-statement probe: aggregates match the recorded count and every chunk exists.
+
+    Two checks that match what the Worker serves: the recorded county count equals the
+    live county rows, and the chunk rows present equal the file's ``chunk_count``. Only a
+    positive answer skips payload reads. A missing meta row (files written before the
+    meta table existed), any mismatch, or an unparseable value falls through to the full
+    decode path, so the probe can never turn unknown into complete. A single SELECT reads
+    one snapshot, so the rows cannot disagree because a writer interleaved between
+    queries. Chunk payloads are counted, never read.
+    """
+    rows = store._query_rows(  # noqa: SLF001
+        database_id,
+        _COMPLETE_PROBE_SQL,
+        [election_id, file_id],
+    )
+    if not rows:
+        return False
+    row = rows[0]
+    expected = _coerce_int(row.get("expected"))
+    actual = _coerce_int(row.get("actual"))
+    chunk_count = _coerce_int(row.get("chunk_count"))
+    present = _coerce_int(row.get("chunks_present"))
+    if None in (expected, actual, chunk_count, present):
+        return False
+    return expected == actual and chunk_count == present
+
+
 def _target_file_ids_for_finalize(
     store: PrecomputeBackfillStore,
     database_id: str,
@@ -225,6 +284,8 @@ def _file_needs_precompute_work(
     chunk_count = _coerce_int(row.get("chunk_count"))
     if chunk_count is None or chunk_count < 1:
         return None
+    if _aggregate_confirmed_complete(store, database_id, election_id, file_id):
+        return False
     chunks = _load_chunks_b64_paged(
         store,
         database_id,
@@ -251,37 +312,61 @@ def _file_needs_precompute_work(
     return True
 
 
-def published_files_pending_precompute(
+def published_precompute_state(
     store: PrecomputeBackfillStore,
     election_id: str,
     *,
     published_digest: str,
-) -> bool:
-    """True when pointer or digest-matched files lack complete aggregate rows."""
+) -> PrecomputeState:
+    """Aggregate state of pointer and digest-matched files.
+
+    ``unknown`` wins over ``pending``: a target whose aggregates are not confirmed by
+    the probe and whose chunks cannot be read is never treated as complete, so callers
+    must not finalize on it. The probe confirms aggregate rows, chunk presence (indices
+    in range, payloads non-empty), and the recorded county count, the same completeness
+    the Worker serves. A pointer whose file row is gone is ignored, since the Worker
+    cannot serve it. With a digest, at least one existing file must carry that digest
+    (and the database must exist); otherwise there is nothing the Worker could serve for
+    it and the state is ``unknown``. An empty digest means no finalize is requested.
+    """
     digest = published_digest.strip()
     if not digest:
-        return False
+        return "complete"
     database_id = store._database_uuid_if_exists(election_id)  # noqa: SLF001
     if database_id is None:
-        return False
+        return "unknown"
     store._ensure_schema(database_id)  # noqa: SLF001
     targets = _target_file_ids_for_finalize(store, database_id, election_id, digest)
-    if not targets:
-        return False
     file_rows = store._query_rows(database_id, _FILES_SQL, [election_id])  # noqa: SLF001
     by_id: dict[str, dict[str, object]] = {}
     for row in file_rows:
         file_id = row.get("file_id")
         if isinstance(file_id, str) and file_id:
             by_id[file_id] = row
+    if not any(row.get("sha256") == digest for row in by_id.values()):
+        return "unknown"
+    pending = False
     for file_id in targets:
         row = by_id.get(file_id)
         if row is None:
+            # A pointer to a deleted file is not servable: the Worker only reads the
+            # pointer when its sha matches the KV hash, and otherwise falls back to a
+            # digest-matched file. Digest-matched targets always have a row.
             continue
         needs = _file_needs_precompute_work(store, database_id, election_id, row)
-        if needs is True:
-            return True
-    return False
+        if needs is None:
+            return "unknown"
+        pending = pending or needs
+    return "pending" if pending else "complete"
+
+
+def unreadable_state_error(election_id: str) -> EarlyVoteSyncError:
+    """Non-PII failure for an unreadable precompute target. Names the election only."""
+    return EarlyVoteSyncError(
+        f"precompute state unreadable for election_id={election_id}; "
+        "KV version not bumped. Check early_vote_chunk and early_vote_file "
+        "rows for the digest-matched files, then re-run."
+    )
 
 
 def should_finalize_kv_version(
@@ -306,6 +391,22 @@ def should_finalize_kv_version(
     if kv_stored_hash != digest and not pending_after:
         return True
     return False
+
+
+def _record_meta_unless_dry_run(
+    store: PrecomputeBackfillStore,
+    database_id: str,
+    election_id: str,
+    file_id: str,
+    county_count: int,
+    *,
+    dry_run: bool,
+) -> None:
+    """Give an already-complete file its meta row so later runs take the probe path."""
+    if not dry_run:
+        store._record_aggregate_meta(  # noqa: SLF001
+            database_id, election_id, file_id, county_count
+        )
 
 
 def run_precompute_backfill_on_store(
@@ -339,6 +440,9 @@ def run_precompute_backfill_on_store(
             skipped += 1
             continue
         considered += 1
+        if _aggregate_confirmed_complete(store, database_id, election_id, file_id):
+            skipped += 1
+            continue
         chunks = _load_chunks_b64_paged(
             store,
             database_id,
@@ -363,6 +467,9 @@ def run_precompute_backfill_on_store(
             file_id,
             expected_county_rows=expected_counties,
         ):
+            _record_meta_unless_dry_run(
+                store, database_id, election_id, file_id, expected_counties, dry_run=dry_run
+            )
             skipped += 1
             continue
         if dry_run:
@@ -458,29 +565,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         digest = args.finalize_kv_digest.strip()
-        pending_before = (
-            published_files_pending_precompute(
-                store,
-                args.election_id,
-                published_digest=digest,
-            )
+        state_before = (
+            published_precompute_state(store, args.election_id, published_digest=digest)
             if digest
-            else False
+            else "complete"
         )
         result = run_precompute_backfill_on_store(
             store,
             args.election_id,
             dry_run=args.dry_run,
         )
-        pending_after = (
-            published_files_pending_precompute(
-                store,
-                args.election_id,
-                published_digest=digest,
-            )
+        state_after = (
+            published_precompute_state(store, args.election_id, published_digest=digest)
             if digest
-            else False
+            else "complete"
         )
+        if args.apply and state_after == "unknown":
+            raise unreadable_state_error(args.election_id)
+        pending_before = state_before == "pending"
+        pending_after = state_after == "pending"
         kv_stored = store.stored_hash(args.election_id)
         if args.apply and should_finalize_kv_version(
             published_digest=digest,
