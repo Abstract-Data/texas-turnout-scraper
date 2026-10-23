@@ -270,3 +270,71 @@ async def test_httpx_error_omits_body_and_access_secret() -> None:
     assert "0000000000" not in message
     assert "cf-secret-value" not in message
     assert "cf-id" not in message
+
+
+async def test_httpx_transport_sends_bearer_token_alongside_access_headers() -> None:
+    seen: dict[str, str | None] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["authorization"] = request.headers.get("Authorization")
+        seen["access_id"] = request.headers.get("CF-Access-Client-Id")
+        return httpx.Response(200, headers={"ETag": '"v2"'}, json={"statewide": {"total": 1}})
+
+    mock = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=mock) as http:
+        client = EarlyVoteReadClient(
+            HttpxReadTransport(
+                base_url="https://preview.example.test",
+                client=http,
+                access_client_id="cf-id",
+                access_client_secret="cf-secret-value",
+                bearer_token="consumer-token-value",
+            )
+        )
+        result = await client.get("53815", "aggregates", "totals")
+
+    assert seen["authorization"] == "Bearer consumer-token-value"
+    assert seen["access_id"] == "cf-id"
+    assert result.status_code == 200
+
+
+async def test_httpx_transport_without_bearer_sends_no_authorization_header() -> None:
+    seen: dict[str, str | None] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(200, json={})
+
+    mock = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=mock) as http:
+        client = EarlyVoteReadClient(
+            HttpxReadTransport(base_url="https://preview.example.test", client=http)
+        )
+        await client.get("53815", "aggregates", "totals")
+
+    assert seen["authorization"] is None
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "line1\nline2", "tab\there"])
+def test_bearer_token_must_be_a_non_empty_single_token(bad: str) -> None:
+    with pytest.raises(ValueError, match="bearer"):
+        HttpxReadTransport(base_url="https://preview.example.test", bearer_token=bad)
+
+
+async def test_httpx_error_omits_bearer_token() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="nope")
+
+    mock = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=mock) as http:
+        client = EarlyVoteReadClient(
+            HttpxReadTransport(
+                base_url="https://preview.example.test",
+                client=http,
+                bearer_token="consumer-token-value",
+            )
+        )
+        with pytest.raises(ReadClientError) as excinfo:
+            await client.get("53815", "aggregates", "totals")
+
+    assert "consumer-token-value" not in str(excinfo.value)
