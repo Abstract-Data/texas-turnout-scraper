@@ -445,7 +445,7 @@ wheels = [
 
 [[package]]
 name = "texas-turnout-scraper"
-version = "0.2.6"
+version = "0.2.7"
 source = { directory = "../../../" }
 dependencies = [
     { name = "anyio" },
