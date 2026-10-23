@@ -111,6 +111,17 @@ def _segments(resource: str, ev_date: str | None) -> tuple[str, ...]:
     return base
 
 
+def _is_valid_request(source_election_id: str, resource: str, ev_date: str | None) -> bool:
+    """False for an ev_date, election id, or path segment the API would never serve (400)."""
+    if ev_date is not None and _EV_DATE_RE.fullmatch(ev_date) is None:
+        return False
+    try:
+        http_path(source_election_id, *_segments(resource, ev_date))
+    except ValueError:
+        return False
+    return True
+
+
 def create_app(deps: ReadDeps | None = None) -> FastAPI:
     app = FastAPI(title="Early vote read API", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -141,10 +152,9 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
             token_db=active.token_db,
         ):
             return Response(status_code=401)
-        if ev_date is not None and _EV_DATE_RE.fullmatch(ev_date) is None:
+        if not _is_valid_request(source_election_id, resource, ev_date):
             return JSONResponse({"detail": "bad_request"}, status_code=400)
         segments = _segments(resource, ev_date)
-        http_path(source_election_id, *segments)
         outcome = await read_resource(
             ResourceQuery(
                 source_election_id=source_election_id,

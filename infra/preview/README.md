@@ -36,12 +36,15 @@ Terraform attaches `cloudflare_workers_custom_domain` and keeps the existing Acc
 
 | Caller | Edge (Cloudflare Access) | Worker (`/health`, aggregate routes) |
 | --- | --- | --- |
-| No Access credentials | **403** or block (no public read) | Not reached |
-| Access pass, no Worker credential (no service headers, no consumer token) | Allow | **401** |
-| Access service token headers (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) | Allow | **200** on `/health` and data routes |
-| Access pass + minted consumer bearer or `X-API-Key` | Allow | **200** on `/health` and data routes |
+| No Access credentials | **401** or **403**, an Access block page (no public read) | Not reached |
+| Access service token headers only (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) | Allow | **401** (observed 2026-10-23) |
+| Access service token headers + minted consumer bearer or `X-API-Key` | Allow | **200** on `/health` and data routes |
+| Minted consumer bearer, no Access headers | **401**, blocked at the edge | Not reached |
+| Invalid election id (for example `00000`) with valid credentials | Allow | **400** `bad_request` |
 
-Internal automation should send the Terraform-managed Access service token headers. External consumers must pass Access and send a minted consumer token on each request (see below). Do not log token values.
+Every caller sends the Access service token headers to get past the edge and a minted consumer token to get past the Worker. Verified on the preview route on 2026-10-23 with a short-lived minted token: `/health` and all five aggregate routes returned 200, and `If-None-Match` returned 304.
+
+The Worker's own service-token comparison (`ACCESS_CLIENT_ID` / `ACCESS_CLIENT_SECRET` bindings) did not accept the correct, current service token even though Access did. The likely cause is that Access does not forward the `CF-Access-Client-*` headers to the Worker, but that is unconfirmed. Do not rely on service-token headers alone. Do not log token values.
 
 ## Bootstrap
 
