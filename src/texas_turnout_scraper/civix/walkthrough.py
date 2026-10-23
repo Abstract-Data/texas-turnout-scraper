@@ -21,8 +21,8 @@ Playwright is not a dependency of this package. Run from the repo root:
       --headless --channel "" --download-county GALVESTON
 
 Recordings go to ``./.recordings/`` (gitignored). They can contain voter data when
-``--keep-download`` is used (the trace is then kept too), so do not commit or share them. Live runs are manual
-and never part of CI.
+``--keep-download`` is used (the trace is then kept too), so do not commit or share
+them. Live runs are manual and never part of CI.
 
 PII: ``VOTER_NAME`` and ``ID_VOTER`` values are never logged, printed, or written
 to the summary file.
