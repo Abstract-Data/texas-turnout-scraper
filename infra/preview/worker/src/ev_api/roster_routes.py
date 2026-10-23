@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -18,6 +19,7 @@ from texas_turnout_scraper.early_vote_d1_roster import (
     day_etag,
     find_day,
     list_days,
+    range_supported,
     roster_etag,
     stream_all_days,
     stream_day,
@@ -64,13 +66,60 @@ def _election_summary(election_id: str, days: tuple[RosterDay, ...]) -> dict[str
     }
 
 
+_UNSATISFIABLE = "unsatisfiable"
+_RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+
+
+def _parse_range(header: str | None, size: int) -> tuple[int, int] | str | None:
+    """Inclusive ``(first, last)`` for one satisfiable byte range, ``"unsatisfiable"``, or None.
+
+    None means serve the whole file: no header, another unit, several ranges, or a malformed one.
+    """
+    if not header:
+        return None
+    match = _RANGE_RE.fullmatch(header.strip())
+    if match is None:
+        return None
+    first_text, last_text = match.groups()
+    if not first_text and not last_text:
+        return None
+    if not first_text:
+        suffix = int(last_text)
+        return _UNSATISFIABLE if suffix == 0 else (max(size - suffix, 0), size - 1)
+    first = int(first_text)
+    last = int(last_text) if last_text else size - 1
+    if last_text and last < first:
+        return None
+    if first >= size:
+        return _UNSATISFIABLE
+    return first, min(last, size - 1)
+
+
+def _range_applies(request: Request, tag: str) -> bool:
+    """A Range header is honored unless If-Range names a different version."""
+    if_range = request.headers.get("if-range")
+    if not if_range:
+        return True
+    return if_range.strip().removeprefix("W/").strip('"') == tag
+
+
 async def _logged_stream(source: AsyncIterator[bytes], route: str) -> AsyncIterator[bytes]:
+    started = time.perf_counter()
+    sent = 0
     try:
         async for piece in source:
+            sent += len(piece)
             yield piece
     except Exception as exc:
         logger.error("roster stream failed %s route=%s", type(exc).__name__, route)
         raise
+    finally:
+        logger.info(
+            "roster stream route=%s bytes=%s ms=%s",
+            route,
+            sent,
+            int((time.perf_counter() - started) * 1000),
+        )
 
 
 class _RosterApi:
@@ -115,16 +164,22 @@ class _RosterApi:
         filename: str,
         route: str,
         length: int | None,
+        status_code: int = 200,
+        extra_headers: dict[str, str] | None = None,
     ) -> Response:
         headers = {
             "ETag": _quoted(tag),
             "Cache-Control": _ROSTER_CACHE_CONTROL,
             "Content-Disposition": f'attachment; filename="{filename}"',
+            **(extra_headers or {}),
         }
         if length is not None:
             headers["Content-Length"] = str(length)
         return StreamingResponse(
-            _logged_stream(stream, route), media_type=_ROSTER_MEDIA_TYPE, headers=headers
+            _logged_stream(stream, route),
+            status_code=status_code,
+            media_type=_ROSTER_MEDIA_TYPE,
+            headers=headers,
         )
 
     async def elections_index(self, request: Request, q: str | None = Query(default=None)):
@@ -180,18 +235,46 @@ class _RosterApi:
         if _EV_DATE_RE.fullmatch(ev_date) is None:
             return JSONResponse({"detail": "bad_request"}, status_code=400)
         election_id = require_election_id(source_election_id)
+        looked_up = time.perf_counter()
         day = await find_day(db, election_id, ev_date)
+        lookup_ms = int((time.perf_counter() - looked_up) * 1000)
         if day is None:
             return JSONResponse({"detail": "not_found"}, status_code=404)
         tag = day_etag(day)
         if _etag_matches(request.headers.get("if-none-match"), tag):
             return Response(status_code=304, headers={"ETag": _quoted(tag)})
+        ranged = range_supported(day)
+        extra = {"Server-Timing": f"lookup;dur={lookup_ms}"}
+        if ranged:
+            extra["Accept-Ranges"] = "bytes"
+            wanted = (
+                _parse_range(request.headers.get("range"), day.byte_length)
+                if _range_applies(request, tag)
+                else None
+            )
+            if wanted == _UNSATISFIABLE:
+                return Response(
+                    status_code=416, headers={"Content-Range": f"bytes */{day.byte_length}"}
+                )
+            if isinstance(wanted, tuple):
+                first, last = wanted
+                extra["Content-Range"] = f"bytes {first}-{last}/{day.byte_length}"
+                return self._stream_response(
+                    stream_day(db, election_id, day, start=first, stop=last + 1),
+                    tag=tag,
+                    filename=f"roster_{election_id}_{ev_date}.csv",
+                    route="roster_one_day_range",
+                    length=last - first + 1,
+                    status_code=206,
+                    extra_headers=extra,
+                )
         return self._stream_response(
             stream_day(db, election_id, day),
             tag=tag,
             filename=f"roster_{election_id}_{ev_date}.csv",
             route="roster_one_day",
             length=day.byte_length,
+            extra_headers=extra,
         )
 
 

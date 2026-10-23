@@ -7,11 +7,14 @@ its hash matches the day row, the same trust rule the aggregate reads use.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import hashlib
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
+from texas_turnout_scraper import early_vote_sync
 from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.early_vote_d1_read import (
     D1Database,
@@ -100,26 +103,79 @@ def roster_etag(days: Sequence[RosterDay]) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
+def _chunk_size() -> int:
+    return early_vote_sync.CHUNK_RAW_BYTES
+
+
+def range_supported(day: RosterDay) -> bool:
+    """True when the stored chunk count matches fixed-size chunks, so offsets map to chunks."""
+    size = _chunk_size()
+    return day.byte_length > 0 and day.chunk_count == -(-day.byte_length // size)
+
+
+async def _fetch_batch(
+    db: D1Database, election_id: str, day: RosterDay, start: int, stop: int
+) -> list[bytes]:
+    rows = await _d1_fetch_all(db.prepare(_CHUNKS_SQL).bind(election_id, day.file_id, start, stop))
+    if len(rows) != stop - start:
+        msg = "stored roster file is missing chunks"
+        raise RuntimeError(msg)
+    decoded: list[bytes] = []
+    for row in rows:
+        payload = _row_value(row, "payload_b64")
+        if not isinstance(payload, str):
+            msg = "stored roster chunk is not text"
+            raise RuntimeError(msg)
+        decoded.append(base64.b64decode(payload))
+    return decoded
+
+
 async def _decoded_pieces(
     db: D1Database,
     election_id: str,
     day: RosterDay,
     batch_chunks: int,
+    first_chunk: int = 0,
+    stop_chunk: int | None = None,
 ) -> AsyncIterator[bytes]:
-    for start in range(0, day.chunk_count, batch_chunks):
-        stop = min(start + batch_chunks, day.chunk_count)
-        rows = await _d1_fetch_all(
-            db.prepare(_CHUNKS_SQL).bind(election_id, day.file_id, start, stop)
-        )
-        if len(rows) != stop - start:
-            msg = "stored roster file is missing chunks"
-            raise RuntimeError(msg)
-        for row in rows:
-            payload = _row_value(row, "payload_b64")
-            if not isinstance(payload, str):
-                msg = "stored roster chunk is not text"
-                raise RuntimeError(msg)
-            yield base64.b64decode(payload)
+    """Yield decoded chunks, asking D1 for the next batch while the current one is sent."""
+    end = day.chunk_count if stop_chunk is None else min(stop_chunk, day.chunk_count)
+    spans = [
+        (start, min(start + batch_chunks, end)) for start in range(first_chunk, end, batch_chunks)
+    ]
+    pending: asyncio.Future[list[bytes]] | None = None
+    try:
+        if spans:
+            pending = asyncio.ensure_future(_fetch_batch(db, election_id, day, *spans[0]))
+        for index in range(len(spans)):
+            assert pending is not None
+            batch = await pending
+            pending = (
+                asyncio.ensure_future(_fetch_batch(db, election_id, day, *spans[index + 1]))
+                if index + 1 < len(spans)
+                else None
+            )
+            for piece in batch:
+                yield piece
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
+
+
+async def _slice(pieces: AsyncIterator[bytes], skip: int, take: int) -> AsyncIterator[bytes]:
+    async with contextlib.aclosing(pieces) as source:  # type: ignore[type-var]
+        async for piece in source:
+            if take <= 0:
+                break
+            if skip >= len(piece):
+                skip -= len(piece)
+                continue
+            part = piece[skip : skip + take]
+            skip = 0
+            take -= len(part)
+            yield part
 
 
 async def stream_day(
@@ -128,11 +184,29 @@ async def stream_day(
     day: RosterDay,
     *,
     batch_chunks: int = DEFAULT_BATCH_CHUNKS,
+    start: int = 0,
+    stop: int | None = None,
 ) -> AsyncIterator[bytes]:
-    """Yield the stored file's bytes unchanged."""
+    """Yield the stored file's bytes unchanged, or bytes ``[start, stop)`` of it."""
     election_id = require_election_id(source_election_id)
-    async for piece in _decoded_pieces(db, election_id, day, batch_chunks):
-        yield piece
+    if start == 0 and (stop is None or stop >= day.byte_length):
+        whole = _decoded_pieces(db, election_id, day, batch_chunks)
+        async with contextlib.aclosing(whole) as source:  # type: ignore[type-var]
+            async for piece in source:
+                yield piece
+        return
+    if not range_supported(day):
+        msg = "byte ranges need fixed-size chunks"
+        raise ValueError(msg)
+    end = day.byte_length if stop is None else min(stop, day.byte_length)
+    if start < 0 or start >= end:
+        return
+    size = _chunk_size()
+    pieces = _decoded_pieces(db, election_id, day, batch_chunks, start // size, -(-end // size))
+    sliced = _slice(pieces, start % size, end - start)
+    async with contextlib.aclosing(sliced) as source:  # type: ignore[type-var]
+        async for part in source:
+            yield part
 
 
 async def stream_all_days(
@@ -154,22 +228,24 @@ async def stream_all_days(
         glue = b"\n" + prefix
         pending = b""
         header_pending = True
-        async for piece in _decoded_pieces(db, election_id, day, batch_chunks):
-            pending += piece
-            if header_pending:
-                newline = pending.find(b"\n")
-                if newline < 0:
+        stored = _decoded_pieces(db, election_id, day, batch_chunks)
+        async with contextlib.aclosing(stored) as source:  # type: ignore[type-var]
+            async for piece in source:
+                pending += piece
+                if header_pending:
+                    newline = pending.find(b"\n")
+                    if newline < 0:
+                        continue
+                    header_pending = False
+                    header, pending = pending[:newline], pending[newline + 1 :]
+                    if not header_written:
+                        header_written = True
+                        yield b"EV_DATE," + header.removeprefix(_BOM) + b"\n"
+                cut = pending.rfind(b"\n")
+                if cut < 0:
                     continue
-                header_pending = False
-                header, pending = pending[:newline], pending[newline + 1 :]
-                if not header_written:
-                    header_written = True
-                    yield b"EV_DATE," + header.removeprefix(_BOM) + b"\n"
-            cut = pending.rfind(b"\n")
-            if cut < 0:
-                continue
-            body, pending = pending[: cut + 1], pending[cut + 1 :]
-            yield (prefix + body.replace(b"\n", glue))[: -len(prefix)]
+                body, pending = pending[: cut + 1], pending[cut + 1 :]
+                yield (prefix + body.replace(b"\n", glue))[: -len(prefix)]
         if header_pending and pending.strip(b"\r"):
             if not header_written:
                 header_written = True

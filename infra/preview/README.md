@@ -194,3 +194,11 @@ All routes need `Authorization: Bearer <token>` (or `X-API-Key`). The roster rou
 - **Only complete, hash-verified days are served.** A day still loading is absent from the list and returns 404.
 - **PII.** Responses carry names and VUIDs, are `Cache-Control: private, no-cache`, and are never stored in KV. Rows are not logged. A leaked roster token is revoked with `tx-turnout tokens revoke <id>`.
 - The Worker reads each file in batches of 64 chunks (about 21 D1 queries for a 44 MB day).
+
+### Resuming and large downloads
+
+- **Per-day downloads accept `Range`.** Responses carry `Accept-Ranges: bytes`. `Range: bytes=START-END`, `bytes=START-` and `bytes=-N` return `206` with `Content-Range`; a start past the end returns `416`. Several ranges, another unit, or a malformed header get the whole file. Send `If-Range: "<etag>"` so a resumed download is refused if the day changed in between (you get the full new file). `If-None-Match` still wins and returns `304`. Only the chunks covering the range are read.
+- **To resume a stalled day:** note how many bytes you have, then request `Range: bytes=<have>-` with `If-Range` set to the ETag you started with, and append.
+- **The all-days route does not support `Range`.** Pull days one at a time if you need resumable or parallel downloads.
+- **Pipelined reads.** The Worker asks D1 for the next batch of chunks while it sends the current one, so one slow query no longer pauses the stream.
+- **Timing.** A day response has `Server-Timing: lookup;dur=<ms>`, and the Worker logs the bytes and total milliseconds of each stream (counts only).
