@@ -190,11 +190,11 @@ def test_finalize_kv_digest_bumps_when_files_written(monkeypatch) -> None:
             "53815",
             "--apply",
             "--finalize-kv-digest",
-            "abc123",
+            store._digest,
         ]
     )
     assert code == 0
-    assert bumped == ["abc123"]
+    assert bumped == [store._digest]
 
 
 def test_finalize_kv_digest_skipped_when_unchanged_sync(monkeypatch) -> None:
@@ -229,14 +229,14 @@ def test_finalize_kv_digest_skipped_when_unchanged_sync(monkeypatch) -> None:
     )
     from texas_turnout_scraper.early_vote_d1_precompute_backfill import main
 
-    store.kv_stored_hash = "abc123"
+    store.kv_stored_hash = store._digest
     code = main(
         [
             "--election-id",
             "53815",
             "--apply",
             "--finalize-kv-digest",
-            "abc123",
+            store._digest,
         ]
     )
     assert code == 0
@@ -369,12 +369,12 @@ def test_finalize_kv_after_sync_bumps_without_precompute_writes(monkeypatch) -> 
             "53815",
             "--apply",
             "--finalize-kv-digest",
-            "sync-digest",
+            store._digest,
             "--finalize-kv-after-sync",
         ]
     )
     assert code == 0
-    assert bumped == ["sync-digest"]
+    assert bumped == [store._digest]
 
 
 def test_backfill_rewrites_when_county_set_incomplete() -> None:
@@ -726,3 +726,54 @@ def test_probe_sql_against_real_sqlite_rows() -> None:
     assert probe() == [(40, 39, 2, 2)]
     conn.execute("DELETE FROM early_vote_aggregate_meta")
     assert probe() == []
+
+
+def test_digest_with_no_matching_file_is_unknown_and_blocks_the_bump(monkeypatch) -> None:
+    class _DanglingPointer(_CountingStore):
+        def _query_rows(
+            self, database_id: str, sql: str, params: list[str]
+        ) -> list[dict[str, object]]:
+            if "early_vote_pointer" in sql:
+                return [{"file_id": "ghost"}]
+            return super()._query_rows(database_id, sql, params)
+
+    store = _DanglingPointer(3, complete=True)
+    assert published_precompute_state(store, "53815", published_digest="not-a-real-digest") == (
+        "unknown"
+    )
+    store.kv_stored_hash = "stale-kv"
+    bumped: list[str] = []
+    with pytest.raises(EarlyVoteSyncError, match="unreadable"):
+        _run_finalize(monkeypatch, store, "not-a-real-digest", bumped)
+    assert bumped == []
+
+
+def test_missing_database_with_a_digest_is_unknown() -> None:
+    store = _CountingStore(3, complete=True)
+    assert published_precompute_state(store, "99999", published_digest=store._digest) == "unknown"
+
+
+def test_probe_ignores_empty_payload_and_out_of_range_chunk_rows() -> None:
+    import sqlite3
+
+    from texas_turnout_scraper.early_vote_d1_precompute_backfill import _COMPLETE_PROBE_SQL
+    from texas_turnout_scraper.early_vote_d1_precompute_store import (
+        aggregate_body_from_decoded,
+        precompute_statements,
+    )
+    from texas_turnout_scraper.early_vote_sync import _CHUNK_TABLE_SQL, _FILE_TABLE_SQL
+
+    conn = sqlite3.connect(":memory:")
+    for ddl in (*PRECOMPUTE_SCHEMA_CREATES, _FILE_TABLE_SQL, _CHUNK_TABLE_SQL):
+        conn.execute(ddl)
+    body = aggregate_body_from_decoded(_MANY_COUNTIES, source_election_id="53815")
+    for sql, params in precompute_statements("53815", "f1", body):
+        conn.execute(sql, params)
+    conn.execute("INSERT INTO early_vote_file VALUES ('53815', 'f1', 'sha', 10, 2)")
+    conn.execute("INSERT INTO early_vote_chunk VALUES ('53815', 'f1', 0, 'x')")
+    conn.execute("INSERT INTO early_vote_chunk VALUES ('53815', 'f1', 5, 'x')")  # out of range
+    row = conn.execute(_COMPLETE_PROBE_SQL, ("53815", "f1")).fetchone()
+    assert (row[2], row[3]) == (2, 1)
+    conn.execute("INSERT INTO early_vote_chunk VALUES ('53815', 'f1', 1, '')")  # empty payload
+    row = conn.execute(_COMPLETE_PROBE_SQL, ("53815", "f1")).fetchone()
+    assert (row[2], row[3]) == (2, 1)

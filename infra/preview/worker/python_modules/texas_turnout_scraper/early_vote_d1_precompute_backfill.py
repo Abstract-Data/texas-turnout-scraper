@@ -54,7 +54,8 @@ _COMPLETE_PROBE_SQL = (
     "WHERE c.source_election_id = m.source_election_id AND c.file_id = m.file_id) AS actual, "
     "fl.chunk_count AS chunk_count, "
     "(SELECT COUNT(*) FROM early_vote_chunk ch "
-    "WHERE ch.source_election_id = m.source_election_id AND ch.file_id = m.file_id) "
+    "WHERE ch.source_election_id = m.source_election_id AND ch.file_id = m.file_id "
+    "AND ch.chunk_index < fl.chunk_count AND ch.payload_b64 <> '') "
     "AS chunks_present "
     "FROM early_vote_aggregate_meta m "
     "JOIN early_vote_file_aggregate f "
@@ -321,26 +322,29 @@ def published_precompute_state(
 
     ``unknown`` wins over ``pending``: a target whose aggregates are not confirmed by
     the probe and whose chunks cannot be read is never treated as complete, so callers
-    must not finalize on it. The probe confirms aggregate rows and chunk presence, the
-    same completeness the Worker serves. A pointer whose file row is gone is ignored,
-    since the Worker cannot serve it.
+    must not finalize on it. The probe confirms aggregate rows, chunk presence (indices
+    in range, payloads non-empty), and the recorded county count, the same completeness
+    the Worker serves. A pointer whose file row is gone is ignored, since the Worker
+    cannot serve it. With a digest, at least one existing file must carry that digest
+    (and the database must exist); otherwise there is nothing the Worker could serve for
+    it and the state is ``unknown``. An empty digest means no finalize is requested.
     """
     digest = published_digest.strip()
     if not digest:
         return "complete"
     database_id = store._database_uuid_if_exists(election_id)  # noqa: SLF001
     if database_id is None:
-        return "complete"
+        return "unknown"
     store._ensure_schema(database_id)  # noqa: SLF001
     targets = _target_file_ids_for_finalize(store, database_id, election_id, digest)
-    if not targets:
-        return "complete"
     file_rows = store._query_rows(database_id, _FILES_SQL, [election_id])  # noqa: SLF001
     by_id: dict[str, dict[str, object]] = {}
     for row in file_rows:
         file_id = row.get("file_id")
         if isinstance(file_id, str) and file_id:
             by_id[file_id] = row
+    if not any(row.get("sha256") == digest for row in by_id.values()):
+        return "unknown"
     pending = False
     for file_id in targets:
         row = by_id.get(file_id)
