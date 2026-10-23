@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import Any
 
 from fastapi import FastAPI, Query, Request
@@ -67,7 +68,17 @@ def _election_summary(election_id: str, days: tuple[RosterDay, ...]) -> dict[str
 
 
 _UNSATISFIABLE = "unsatisfiable"
-_RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+_RANGE_RE = re.compile(r"bytes=([0-9]*)-([0-9]*)")
+_MAX_RANGE_DIGITS = 18
+
+
+def _range_int(digits: str) -> int:
+    """Value of an ASCII digit run; a run longer than any file counts as 10**18.
+
+    Python 3.11+ raises ValueError converting more than 4300 digits, which would be a 500.
+    """
+    significant = digits.lstrip("0") or "0"
+    return int(significant) if len(significant) <= _MAX_RANGE_DIGITS else 10**_MAX_RANGE_DIGITS
 
 
 def _parse_range(header: str | None, size: int) -> tuple[int, int] | str | None:
@@ -84,10 +95,10 @@ def _parse_range(header: str | None, size: int) -> tuple[int, int] | str | None:
     if not first_text and not last_text:
         return None
     if not first_text:
-        suffix = int(last_text)
+        suffix = _range_int(last_text)
         return _UNSATISFIABLE if suffix == 0 else (max(size - suffix, 0), size - 1)
-    first = int(first_text)
-    last = int(last_text) if last_text else size - 1
+    first = _range_int(first_text)
+    last = _range_int(last_text) if last_text else size - 1
     if last_text and last < first:
         return None
     if first >= size:
@@ -96,20 +107,25 @@ def _parse_range(header: str | None, size: int) -> tuple[int, int] | str | None:
 
 
 def _range_applies(request: Request, tag: str) -> bool:
-    """A Range header is honored unless If-Range names a different version."""
+    """A Range header is honored unless If-Range names a different or weak version.
+
+    RFC 9110 compares If-Range strongly, so a ``W/`` validator never matches.
+    """
     if_range = request.headers.get("if-range")
     if not if_range:
         return True
-    return if_range.strip().removeprefix("W/").strip('"') == tag
+    value = if_range.strip()
+    return not value.startswith("W/") and value.strip('"') == tag
 
 
-async def _logged_stream(source: AsyncIterator[bytes], route: str) -> AsyncIterator[bytes]:
+async def _logged_stream(source: AsyncGenerator[bytes, None], route: str) -> AsyncIterator[bytes]:
     started = time.perf_counter()
     sent = 0
     try:
-        async for piece in source:
-            sent += len(piece)
-            yield piece
+        async with contextlib.aclosing(source) as closing:
+            async for piece in closing:
+                sent += len(piece)
+                yield piece
     except Exception as exc:
         logger.error("roster stream failed %s route=%s", type(exc).__name__, route)
         raise
@@ -158,7 +174,7 @@ class _RosterApi:
 
     @staticmethod
     def _stream_response(
-        stream: AsyncIterator[bytes],
+        stream: AsyncGenerator[bytes, None],
         *,
         tag: str,
         filename: str,

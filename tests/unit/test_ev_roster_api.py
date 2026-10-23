@@ -211,3 +211,30 @@ def test_not_modified_beats_range(client: TestClient) -> None:
 def test_all_days_ignores_range(client: TestClient) -> None:
     response = client.get("/elections/53815/roster", headers={**ROSTER, "Range": "bytes=0-9"})
     assert response.status_code == 200
+
+
+def test_huge_digit_runs_in_range_are_not_a_server_error(client: TestClient) -> None:
+    digits = "9" * 5000
+    assert _get(client, {"Range": f"bytes={digits}-"}).status_code == 416
+    open_ended = _get(client, {"Range": f"bytes=0-{digits}"})
+    assert open_ended.status_code == 206
+    assert open_ended.content == DAY1
+    assert _get(client, {"Range": f"bytes=-{digits}"}).content == DAY1
+
+
+def test_if_range_needs_a_strong_validator(client: TestClient) -> None:
+    etag = _get(client, {}).headers["etag"]
+    weak = _get(client, {"Range": "bytes=0-9", "If-Range": f"W/{etag}"})
+    assert weak.status_code == 200
+    assert weak.content == DAY1
+
+
+def test_ranges_ending_on_a_chunk_boundary_and_open_from_zero(client: TestClient) -> None:
+    size = len(DAY1)
+    boundary = _get(client, {"Range": "bytes=0-15"})
+    assert (boundary.status_code, boundary.content) == (206, DAY1[:16])
+    assert _get(client, {"Range": "bytes=16-31"}).content == DAY1[16:32]
+    whole = _get(client, {"Range": "bytes=0-"})
+    assert whole.status_code == 206
+    assert whole.content == DAY1
+    assert whole.headers["content-range"] == f"bytes 0-{size - 1}/{size}"

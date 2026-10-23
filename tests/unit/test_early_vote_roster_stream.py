@@ -283,3 +283,66 @@ async def test_closing_a_stream_early_leaves_no_pending_fetch(
     await stream.aclose()
     await asyncio.sleep(0)
     assert len(asyncio.all_tasks()) == before
+
+
+@pytest.mark.asyncio
+async def test_the_logged_stream_closes_its_source_when_the_client_leaves() -> None:
+    from ev_api.roster_routes import _logged_stream
+
+    closed: list[str] = []
+
+    async def source():
+        try:
+            yield b"a"
+            yield b"b"
+        finally:
+            closed.append("source")
+
+    stream = _logged_stream(source(), "test")
+    assert await stream.__anext__() == b"a"
+    await stream.aclose()
+    assert closed == ["source"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_prefetch_is_retrieved_when_the_stream_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import gc
+
+    monkeypatch.setattr(early_vote_sync, "CHUNK_RAW_BYTES", 16)
+    conn = sqlite3.connect(":memory:")
+    for sql in (*_SCHEMA_CREATES, *PRECOMPUTE_SCHEMA_CREATES):
+        conn.execute(sql)
+    _store_day(conn, "2026-10-19", DAY1)
+
+    class _FailsSecondQuery(_Db):
+        def prepare(self, sql: str):
+            if self.queries >= 1 and "early_vote_chunk" in sql and "chunk_index >=" in sql:
+                self.queries += 1
+                raise RuntimeError("d1 unavailable")
+            return super().prepare(sql)
+
+    db = _FailsSecondQuery(conn)
+    day = await find_day(db, "53815", "2026-10-19")
+    assert day is not None
+    unretrieved: list[object] = []
+    asyncio.get_running_loop().set_exception_handler(lambda _loop, ctx: unretrieved.append(ctx))
+    db.queries = 0
+    stream = stream_day(db, "53815", day, batch_chunks=1)
+    await stream.__anext__()
+    await asyncio.sleep(0.01)
+    await stream.aclose()
+    gc.collect()
+    await asyncio.sleep(0)
+    assert unretrieved == []
+
+
+@pytest.mark.asyncio
+async def test_ranges_on_chunk_boundaries_and_open_from_zero(db: _Db) -> None:
+    day = await find_day(db, "53815", "2026-10-19")
+    assert day is not None
+    assert await _collect(stream_day(db, "53815", day, start=0, stop=16)) == DAY1[:16]
+    assert await _collect(stream_day(db, "53815", day, start=16, stop=32)) == DAY1[16:32]
+    assert await _collect(stream_day(db, "53815", day, start=0)) == DAY1

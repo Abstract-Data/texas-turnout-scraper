@@ -11,7 +11,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 
 from texas_turnout_scraper import early_vote_sync
@@ -137,7 +137,7 @@ async def _decoded_pieces(
     batch_chunks: int,
     first_chunk: int = 0,
     stop_chunk: int | None = None,
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes, None]:
     """Yield decoded chunks, asking D1 for the next batch while the current one is sent."""
     end = day.chunk_count if stop_chunk is None else min(stop_chunk, day.chunk_count)
     spans = [
@@ -147,8 +147,10 @@ async def _decoded_pieces(
     try:
         if spans:
             pending = asyncio.ensure_future(_fetch_batch(db, election_id, day, *spans[0]))
-        for index in range(len(spans)):
-            assert pending is not None
+        for index, current in enumerate(spans):
+            if pending is None:
+                msg = f"no fetch scheduled for span {current}"
+                raise RuntimeError(msg)
             batch = await pending
             pending = (
                 asyncio.ensure_future(_fetch_batch(db, election_id, day, *spans[index + 1]))
@@ -158,14 +160,15 @@ async def _decoded_pieces(
             for piece in batch:
                 yield piece
     finally:
-        if pending is not None and not pending.done():
+        if pending is not None:
             pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pending
+            await asyncio.gather(pending, return_exceptions=True)
 
 
-async def _slice(pieces: AsyncIterator[bytes], skip: int, take: int) -> AsyncIterator[bytes]:
-    async with contextlib.aclosing(pieces) as source:  # type: ignore[type-var]
+async def _slice(
+    pieces: AsyncGenerator[bytes, None], skip: int, take: int
+) -> AsyncGenerator[bytes, None]:
+    async with contextlib.aclosing(pieces) as source:
         async for piece in source:
             if take <= 0:
                 break
@@ -186,12 +189,12 @@ async def stream_day(
     batch_chunks: int = DEFAULT_BATCH_CHUNKS,
     start: int = 0,
     stop: int | None = None,
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes, None]:
     """Yield the stored file's bytes unchanged, or bytes ``[start, stop)`` of it."""
     election_id = require_election_id(source_election_id)
     if start == 0 and (stop is None or stop >= day.byte_length):
         whole = _decoded_pieces(db, election_id, day, batch_chunks)
-        async with contextlib.aclosing(whole) as source:  # type: ignore[type-var]
+        async with contextlib.aclosing(whole) as source:
             async for piece in source:
                 yield piece
         return
@@ -204,7 +207,7 @@ async def stream_day(
     size = _chunk_size()
     pieces = _decoded_pieces(db, election_id, day, batch_chunks, start // size, -(-end // size))
     sliced = _slice(pieces, start % size, end - start)
-    async with contextlib.aclosing(sliced) as source:  # type: ignore[type-var]
+    async with contextlib.aclosing(sliced) as source:
         async for part in source:
             yield part
 
@@ -215,7 +218,7 @@ async def stream_all_days(
     days: Sequence[RosterDay],
     *,
     batch_chunks: int = DEFAULT_BATCH_CHUNKS,
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes, None]:
     """Yield every day as one CSV: a single header with ``EV_DATE`` first, each row dated.
 
     Rows are dated with one bulk ``bytes.replace`` per batch, not a Python call per line,
@@ -229,7 +232,7 @@ async def stream_all_days(
         pending = b""
         header_pending = True
         stored = _decoded_pieces(db, election_id, day, batch_chunks)
-        async with contextlib.aclosing(stored) as source:  # type: ignore[type-var]
+        async with contextlib.aclosing(stored) as source:
             async for piece in source:
                 pending += piece
                 if header_pending:
