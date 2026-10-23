@@ -109,3 +109,9 @@ def test_scheduled_runs_refetch_every_day_not_just_the_latest() -> None:
     text = WORKFLOW.read_text()
     assert text.count("github.event_name == 'schedule' && 'backfill' || inputs.sync_mode") == 4
     assert "github.event_name == 'schedule' && 'latest'" not in text
+
+
+def test_apply_step_names_the_snapshot_bucket() -> None:
+    """The S3 keys come from 1Password; the bucket name is not secret and lives here."""
+    text = WORKFLOW.read_text()
+    assert text.count("EV_SNAPSHOT_BUCKET: tx-turnout-ev-snapshots-preview") == 1
