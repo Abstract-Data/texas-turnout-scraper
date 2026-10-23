@@ -99,7 +99,9 @@ def test_terraform_drift_gate_exempts_only_reproducible_dist_info_files() -> Non
 
 
 def test_scheduled_runs_refetch_every_day_not_just_the_latest() -> None:
-    """Portal day files are daily and can gain late records, so each scheduled run re-hashes all days.
+    """Portal day files are daily and can gain late records.
+
+    So each scheduled run re-hashes every day.
 
     backfill is hash-gated per day: an unchanged day writes nothing, a changed day is rewritten
     and the KV version bumps. `latest` would only ever look at today's file.
