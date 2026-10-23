@@ -90,6 +90,10 @@ gh workflow run release-please.yml
 | Integration tests always skipped | Pass `--live` to pytest |
 | Live tests fail with 403 | WAF — confirm cloudscraper backend, not raw httpx |
 
+### Early-vote day versions and change log
+
+When a day's file changes on reload, the loader first writes both the old and new versions to the private R2 bucket `tx-turnout-ev-snapshots-preview` (`elections/<id>/<ev_date>/<sha256>.csv.gz`, plus a `manifest.json` per day), then logs the voters added and removed in the D1 table `early_vote_day_change` (VUID, county and voting method only, never names). R2 expires snapshots after 90 days. If the R2 write fails the load fails before D1 is touched, so no version is lost. The loader needs `EV_SNAPSHOT_R2_ACCESS_KEY_ID` and `EV_SNAPSHOT_R2_SECRET_ACCESS_KEY` (R2 object read and write, this bucket only) in the 1Password environment; without them it skips R2 and still logs the diff. Versions from before this feature, such as the 10-14 file replaced on 10-23, were not kept.
+
 ### Early-vote loader: why scheduled runs use `backfill`
 
 The Civix portal's per-date files for an election are **daily** (consecutive days share no voter IDs) and a day's file can gain late records after it is first published. The scheduled `early-vote-sync.yml` therefore runs `sync_mode=backfill`: it re-fetches every day, hashes each file, skips days whose hash matches what is stored, rewrites days that changed, and bumps the KV version only when something changed. `sync_mode=latest` (dispatch only) looks at today's file alone and will not repair earlier days. If a day is missing from the API, check that the scheduled runs were approved and not cancelled; a dry-run `backfill` dispatch shows what the portal serves.

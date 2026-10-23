@@ -193,6 +193,7 @@ jobs:
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EV_SNAPSHOT_BUCKET: tx-turnout-ev-snapshots-preview
           SYNC_MODE: ${{ github.event_name == 'schedule' && 'backfill' || inputs.sync_mode }}
           ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
           ELECTION_DATE: ${{ github.event_name == 'schedule' && '' || inputs.election_date }}
