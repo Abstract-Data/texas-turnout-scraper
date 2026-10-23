@@ -48,6 +48,16 @@ _DAY_BY_FILE_SQL = (
     "WHERE source_election_id = ? AND file_id = ? ORDER BY ev_date ASC LIMIT 1"
 )
 
+_COMPLETE_PROBE_SQL = (
+    "SELECT m.county_count AS expected, "
+    "(SELECT COUNT(*) FROM early_vote_county_aggregate c "
+    "WHERE c.source_election_id = m.source_election_id AND c.file_id = m.file_id) AS actual "
+    "FROM early_vote_aggregate_meta m "
+    "JOIN early_vote_file_aggregate f "
+    "ON f.source_election_id = m.source_election_id AND f.file_id = m.file_id "
+    "WHERE m.source_election_id = ? AND m.file_id = ? LIMIT 1"
+)
+
 BackfillStatus = Literal["dry_run", "wrote", "unchanged"]
 PrecomputeState = Literal["complete", "pending", "unknown"]
 
@@ -189,6 +199,32 @@ def _precompute_complete(
     return actual is not None and actual == expected_county_rows
 
 
+def _aggregate_confirmed_complete(
+    store: PrecomputeBackfillStore,
+    database_id: str,
+    election_id: str,
+    file_id: str,
+) -> bool:
+    """One-statement probe: recorded county count equals live county rows.
+
+    Only a positive answer skips payload reads. A missing meta row (files written
+    before the meta table existed), a mismatch, or an unparseable value all fall
+    through to the full decode path, so the probe can never turn unknown into
+    complete. A single SELECT reads one snapshot, so the file, meta, and county
+    rows cannot disagree because a writer interleaved between queries.
+    """
+    rows = store._query_rows(  # noqa: SLF001
+        database_id,
+        _COMPLETE_PROBE_SQL,
+        [election_id, file_id],
+    )
+    if not rows:
+        return False
+    expected = _coerce_int(rows[0].get("expected"))
+    actual = _coerce_int(rows[0].get("actual"))
+    return expected is not None and actual is not None and expected == actual
+
+
 def _target_file_ids_for_finalize(
     store: PrecomputeBackfillStore,
     database_id: str,
@@ -226,6 +262,8 @@ def _file_needs_precompute_work(
     chunk_count = _coerce_int(row.get("chunk_count"))
     if chunk_count is None or chunk_count < 1:
         return None
+    if _aggregate_confirmed_complete(store, database_id, election_id, file_id):
+        return False
     chunks = _load_chunks_b64_paged(
         store,
         database_id,
@@ -348,6 +386,9 @@ def run_precompute_backfill_on_store(
             skipped += 1
             continue
         considered += 1
+        if _aggregate_confirmed_complete(store, database_id, election_id, file_id):
+            skipped += 1
+            continue
         chunks = _load_chunks_b64_paged(
             store,
             database_id,

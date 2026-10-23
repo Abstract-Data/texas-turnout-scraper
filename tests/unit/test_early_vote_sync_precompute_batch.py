@@ -26,4 +26,5 @@ def test_write_precomputed_aggregates_uses_single_d1_batch() -> None:
             decoded,
             ev_date_iso="2026-10-20",
         )
-    assert batch_sizes == [4]
+    # 3 deletes + 1 county + meta + file aggregate row, still one batch
+    assert batch_sizes == [6]

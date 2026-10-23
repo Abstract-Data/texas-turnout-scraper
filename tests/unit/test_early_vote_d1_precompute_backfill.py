@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import itertools
 import json
 
 import pytest
 
 from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
     _load_chunks_b64_paged,
+    published_precompute_state,
     run_precompute_backfill_on_store,
     should_finalize_kv_version,
 )
@@ -408,9 +410,7 @@ class _TwoFileStore(_BackfillStore):
     def _query_rows(self, database_id: str, sql: str, params: list[str]) -> list[dict[str, object]]:
         flat = sql.replace("\n", " ")
         if "chunk_count" in sql and "early_vote_file" in sql:
-            return [
-                {"file_id": f, "sha256": self._digest, "chunk_count": 1} for f in ("f1", "f2")
-            ]
+            return [{"file_id": f, "sha256": self._digest, "chunk_count": 1} for f in ("f1", "f2")]
         if "early_vote_pointer" in sql:
             return [{"file_id": "f1"}]
         if params and len(params) > 1 and params[1] == "f2":
@@ -502,3 +502,146 @@ def test_retry_after_target_becomes_readable_bumps_exactly_once(monkeypatch) -> 
     assert bumped == [store._digest]
     assert _run_finalize(monkeypatch, store, store._digest, bumped) == 0
     assert bumped == [store._digest]
+
+
+_MANY_COUNTIES = json.dumps(
+    {
+        "turnout_by_county": [
+            {
+                "name": f"COUNTY{i:03d}",
+                "total_in_person_votes_for_election": i,
+                "total_mail_votes_for_election": 1,
+            }
+            for i in range(40)
+        ]
+    }
+).encode()
+
+
+class _CountingStore(_BackfillStore):
+    """Real multi-chunk payloads plus a tally of D1 reads by kind."""
+
+    def __init__(self, chunk_count: int, *, complete: bool, meta: bool = True) -> None:
+        super().__init__("53815", "f1", _MANY_COUNTIES)
+        size = len(_MANY_COUNTIES)
+        bounds = [i * size // chunk_count for i in range(chunk_count + 1)]
+        parts = [_MANY_COUNTIES[a:b] for a, b in itertools.pairwise(bounds)]
+        assert all(parts)
+        self._chunk_count = chunk_count
+        self._chunks = {i: base64.b64encode(p).decode() for i, p in enumerate(parts)}
+        self.reads: dict[str, int] = {}
+        self.meta_count: int | None = None
+        if complete:
+            self._agg_rows.add("f1")
+            self._county_rows["f1"] = 40
+            if meta:
+                self.meta_count = 40
+
+    def _query_rows(self, database_id: str, sql: str, params: list[str]) -> list[dict[str, object]]:
+        flat = sql.replace("\n", " ")
+        if "early_vote_aggregate_meta" in flat:
+            kind = "probe"
+        elif "payload_b64" in flat:
+            kind = "payload"
+        elif "chunk_index FROM" in flat:
+            kind = "chunk_index"
+        else:
+            kind = "other"
+        self.reads[kind] = self.reads.get(kind, 0) + 1
+        if kind == "probe":
+            if self.meta_count is None or "f1" not in self._agg_rows:
+                return []
+            return [{"expected": self.meta_count, "actual": self._county_rows.get("f1", 0)}]
+        return super()._query_rows(database_id, sql, params)
+
+    def _write_precomputed_aggregates(self, *args: object, **kwargs: object) -> None:
+        super()._write_precomputed_aggregates(*args, **kwargs)  # type: ignore[arg-type]
+        self.meta_count = self._county_rows["f1"]
+
+
+def test_complete_file_is_confirmed_without_paging_payloads() -> None:
+    store = _CountingStore(120, complete=True)
+    result = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    # before the probe: {'other': 3, 'chunk_index': 3, 'payload': 120} (126 reads)
+    assert store.reads == {"other": 1, "probe": 1}
+    assert result.files_skipped == 1
+    assert result.files_written == 0
+    assert store.writes == 0
+
+
+def test_incomplete_file_still_reads_every_page_and_writes_same_rows() -> None:
+    store = _CountingStore(120, complete=False)
+    result = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    assert store.reads["payload"] == 120
+    assert store.reads["chunk_index"] == 3
+    assert result.files_written == 1
+    assert store._county_rows["f1"] == 40
+    second = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    assert second.files_skipped == 1
+    assert store.writes == 1
+
+
+def test_complete_rows_without_meta_take_full_path_and_are_not_rewritten() -> None:
+    store = _CountingStore(120, complete=True, meta=False)
+    result = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    assert store.reads["payload"] == 120
+    assert result.files_skipped == 1
+    assert store.writes == 0
+
+
+def test_meta_count_mismatch_falls_back_and_rewrites() -> None:
+    store = _CountingStore(120, complete=True)
+    store._county_rows["f1"] = 39
+    result = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    assert store.reads["payload"] == 120
+    assert result.files_written == 1
+    assert store._county_rows["f1"] == 40
+
+
+@pytest.mark.parametrize("chunk_count", [1, 49, 50, 51])
+def test_page_boundaries_unchanged_when_payloads_are_needed(chunk_count: int) -> None:
+    store = _CountingStore(chunk_count, complete=False)
+    result = run_precompute_backfill_on_store(store, "53815", dry_run=False)
+    assert store.reads["payload"] == chunk_count
+    assert store.reads["chunk_index"] == (chunk_count // 50) + 1
+    assert result.files_written == 1
+
+
+def test_probe_complete_state_does_not_page_payloads() -> None:
+    store = _CountingStore(120, complete=True)
+    state = published_precompute_state(store, "53815", published_digest=store._digest)
+    assert state == "complete"
+    assert "payload" not in store.reads
+
+
+def test_probe_miss_with_unreadable_chunks_is_unknown_not_complete() -> None:
+    store = _CountingStore(120, complete=True, meta=False)
+    del store._chunks[7]
+    state = published_precompute_state(store, "53815", published_digest=store._digest)
+    assert state == "unknown"
+
+
+def test_probe_sql_against_real_sqlite_rows() -> None:
+    import sqlite3
+
+    from texas_turnout_scraper.early_vote_d1_precompute_backfill import _COMPLETE_PROBE_SQL
+    from texas_turnout_scraper.early_vote_d1_precompute_store import (
+        aggregate_body_from_decoded,
+        precompute_statements,
+    )
+
+    conn = sqlite3.connect(":memory:")
+    for ddl in PRECOMPUTE_SCHEMA_CREATES:
+        conn.execute(ddl)
+    body = aggregate_body_from_decoded(_MANY_COUNTIES, source_election_id="53815")
+    for sql, params in precompute_statements("53815", "f1", body):
+        conn.execute(sql, params)
+
+    def probe() -> list[tuple[int, int]]:
+        return conn.execute(_COMPLETE_PROBE_SQL, ("53815", "f1")).fetchall()
+
+    assert probe() == [(40, 40)]
+    conn.execute("DELETE FROM early_vote_county_aggregate WHERE county = 'COUNTY000'")
+    assert probe() == [(40, 39)]
+    conn.execute("DELETE FROM early_vote_aggregate_meta")
+    assert probe() == []

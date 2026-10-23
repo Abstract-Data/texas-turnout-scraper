@@ -903,7 +903,11 @@ class _MemoryD1:
             self.files[(params[0], params[1])] = params[2]
             self.order.append("file")
             return {"success": True, "results": []}
-        if "early_vote_file_aggregate" in sql or "early_vote_county_aggregate" in sql:
+        if (
+            "early_vote_file_aggregate" in sql
+            or "early_vote_county_aggregate" in sql
+            or "early_vote_aggregate_meta" in sql
+        ):
             self.order.append("precompute")
             return {"success": True, "results": []}
         if sql == _POINTER_UPSERT_SQL:
