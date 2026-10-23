@@ -18,6 +18,11 @@ jobs:
     #   github.event.pull_request.user.login == 'new-developer' ||
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
 
+    # Release Please PRs are generated (version bump and changelog) and come from the
+    # github-actions bot, which the review action rejects ("non-human actor"). Skip them
+    # so they do not show a failed check on every release PR.
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+
     runs-on: ubuntu-latest
     permissions:
       contents: read
