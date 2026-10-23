@@ -194,3 +194,6 @@ infra/preview/override.tf.json
 # Snyk Code local analysis cache (if generated)
 .dccache/
 snyk-code*.json
+
+# Local Civix EVR walkthrough recordings (may hold voter data when --keep-download is used)
+.recordings/
