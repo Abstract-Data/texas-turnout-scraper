@@ -30,7 +30,13 @@ class _FakeSnapshots:
         self.recorded.append((sha256, decoded))
 
 
-def _store(snapshots: _FakeSnapshots | None, monkeypatch: pytest.MonkeyPatch, *, old: bool = True):
+def _store(
+    snapshots: _FakeSnapshots | None,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    old: bool = True,
+    pointer: str | None = None,
+):
     store = CloudflareEarlyVoteStore(
         account_id="a",
         api_token="t",
@@ -41,6 +47,8 @@ def _store(snapshots: _FakeSnapshots | None, monkeypatch: pytest.MonkeyPatch, *,
     statements: list[tuple[str, list[str]]] = []
 
     def query_rows(self: Any, database_id: str, sql: str, params: list[str]) -> list[dict]:
+        if "FROM early_vote_pointer" in sql:
+            return [{"file_id": pointer}] if pointer else []
         if "FROM early_vote_day" in sql and old:
             return [{"file_id": "old-file", "sha256": "oldsha"}]
         return []
@@ -106,3 +114,28 @@ def test_without_r2_the_diff_is_still_logged(monkeypatch: pytest.MonkeyPatch) ->
     store, statements = _store(None, monkeypatch)
     _write(store)
     assert any("early_vote_day_change" in s[0] for s in statements)
+
+
+def _pointer_upserts(statements: list[tuple[str, list[str]]]) -> list[list[str]]:
+    return [p for sql, p in statements if sql.startswith("INSERT INTO early_vote_pointer")]
+
+
+def test_pointer_follows_a_replaced_file_instead_of_dangling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, statements = _store(_FakeSnapshots(), monkeypatch, pointer="old-file")
+    _write(store)
+    assert _pointer_upserts(statements) == [["53815", "new-file"]]
+    pointer_index = next(
+        i for i, s in enumerate(statements) if s[0].startswith("INSERT INTO early_vote_pointer")
+    )
+    delete_index = next(
+        i for i, s in enumerate(statements) if s[0].startswith("DELETE FROM early_vote_file ")
+    )
+    assert pointer_index < delete_index
+
+
+def test_pointer_to_another_file_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, statements = _store(_FakeSnapshots(), monkeypatch, pointer="some-other-file")
+    _write(store)
+    assert _pointer_upserts(statements) == []
