@@ -140,3 +140,16 @@ tx-turnout tokens revoke <token_id>
 ```
 
 No Terraform apply is required for the token table; DDL is idempotent via the CLI. Do not commit or log plaintext tokens.
+
+## Aggregate semantics
+
+The portal publishes one file per early-vote date, and each file holds only that day's voters. The aggregate routes say which view they return in a `semantics` field.
+
+| Route | `semantics` | Meaning |
+|---|---|---|
+| `totals`, `county`, `by-method` (no `ev_date`) | `cumulative` | Every stored day added together. `through_ev_date` is the latest day and `days` lists the days included. |
+| `totals`, `county`, `by-method` with `?ev_date=YYYY-MM-DD` | `daily` | That day's voters only. |
+| `by-day` | `daily_with_cumulative` | One entry per day with its own counts plus `cumulative_total`, `cumulative_in_person` and `cumulative_mail_in`. |
+| `county-by-day` | `daily` | Per-county counts for each day. |
+
+A day whose file is still being written is left out until it is complete, and `days` shows what was included. A complete day with no computed aggregates returns 503 instead of an undercount.
