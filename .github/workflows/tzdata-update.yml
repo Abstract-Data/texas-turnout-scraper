@@ -4,6 +4,10 @@ name: Worker tzdata update
 # pylock.toml or the committed python_modules/ bundle. This job does the full
 # refresh, runs the no-host-tz smoke, and opens a PR for human review.
 # It never merges and never deploys.
+#
+# Needs the repo setting "Allow GitHub Actions to create and approve pull requests"
+# (Settings > Actions > General). Without it, the push succeeds but `gh pr create`
+# fails; the next run then reuses the pushed branch and only retries the PR.
 
 on:
   schedule:
@@ -50,8 +54,14 @@ jobs:
           set -euo pipefail
           branch="chore/worker-tzdata-${LATEST}"
           count="$(gh pr list --head "${branch}" --state all --json number --jq length)"
+          if gh api "repos/${GITHUB_REPOSITORY}/branches/${branch}" --silent 2>/dev/null; then
+            branch_pushed=true
+          else
+            branch_pushed=false
+          fi
           echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
           echo "exists=$([ "${count}" -gt 0 ] && echo true || echo false)" >> "${GITHUB_OUTPUT}"
+          echo "pushed=${branch_pushed}" >> "${GITHUB_OUTPUT}"
 
       - name: Refresh lock, pylock, and vendored bundle
         if: steps.check.outputs.update == 'true' && steps.existing.outputs.exists == 'false'
@@ -81,22 +91,27 @@ jobs:
           LATEST: ${{ steps.check.outputs.latest }}
           CURRENT: ${{ steps.check.outputs.current }}
           BRANCH: ${{ steps.existing.outputs.branch }}
+          PUSHED: ${{ steps.existing.outputs.pushed }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "${BRANCH}"
-          git add -A -- \
-            infra/preview/worker/uv.lock \
-            infra/preview/worker/pylock.toml \
-            infra/preview/worker/python_modules/tzdata \
-            'infra/preview/worker/python_modules/tzdata-*.dist-info/*'
-          if git diff --cached --quiet; then
-            echo "::error::tzdata ${LATEST} is newer but the refresh produced no tracked change"
-            exit 1
+          if [ "${PUSHED}" != "true" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git switch -c "${BRANCH}"
+            git add -A -- \
+              infra/preview/worker/uv.lock \
+              infra/preview/worker/pylock.toml \
+              infra/preview/worker/python_modules/tzdata \
+              'infra/preview/worker/python_modules/tzdata-*.dist-info/*'
+            if git diff --cached --quiet; then
+              echo "::error::tzdata ${LATEST} is newer but the refresh produced no tracked change"
+              exit 1
+            fi
+            git commit -m "chore(deps): bump Worker vendored tzdata ${CURRENT} to ${LATEST}"
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${BRANCH}"
+          else
+            echo "Branch ${BRANCH} is already pushed without a PR; opening the PR from it."
           fi
-          git commit -m "chore(deps): bump Worker vendored tzdata ${CURRENT} to ${LATEST}"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${BRANCH}"
           gh pr create --base main --head "${BRANCH}" \
             --title "chore(deps): bump Worker vendored tzdata ${CURRENT} to ${LATEST}" \
             --body "Automated tzdata refresh (#42). The lock upgrade, pywrangler sync, and infra/preview/worker/scripts/verify_pyodide_startup.sh (no host tz database) passed in this job before the PR was opened. Review the diff and merge by hand. Nothing is merged or deployed automatically. Pull requests opened with GITHUB_TOKEN do not start other workflows, so close and reopen this PR to run the Terraform preview checks."

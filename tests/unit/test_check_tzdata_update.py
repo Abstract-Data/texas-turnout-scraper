@@ -121,3 +121,13 @@ def test_staging_pathspec_stages_new_and_deleted_dist_info(tmp_path: Path) -> No
     staged = git("diff", "--cached", "--name-status")
     assert "D\tinfra/preview/worker/python_modules/tzdata-2026.5.dist-info/METADATA" in staged
     assert "A\tinfra/preview/worker/python_modules/tzdata-2026.6.dist-info/METADATA" in staged
+
+
+def test_workflow_reuses_a_pushed_branch_instead_of_pushing_again() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github/workflows/tzdata-update.yml"
+    ).read_text()
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/branches/${branch}"' in workflow
+    assert 'if [ "${PUSHED}" != "true" ]; then' in workflow
+    assert "Allow GitHub Actions to create and approve pull requests" in workflow
+    assert "push --force" not in workflow and "force-with-lease" not in workflow

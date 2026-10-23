@@ -51,10 +51,16 @@ _DAY_BY_FILE_SQL = (
 _COMPLETE_PROBE_SQL = (
     "SELECT m.county_count AS expected, "
     "(SELECT COUNT(*) FROM early_vote_county_aggregate c "
-    "WHERE c.source_election_id = m.source_election_id AND c.file_id = m.file_id) AS actual "
+    "WHERE c.source_election_id = m.source_election_id AND c.file_id = m.file_id) AS actual, "
+    "fl.chunk_count AS chunk_count, "
+    "(SELECT COUNT(*) FROM early_vote_chunk ch "
+    "WHERE ch.source_election_id = m.source_election_id AND ch.file_id = m.file_id) "
+    "AS chunks_present "
     "FROM early_vote_aggregate_meta m "
     "JOIN early_vote_file_aggregate f "
     "ON f.source_election_id = m.source_election_id AND f.file_id = m.file_id "
+    "JOIN early_vote_file fl "
+    "ON fl.source_election_id = m.source_election_id AND fl.file_id = m.file_id "
     "WHERE m.source_election_id = ? AND m.file_id = ? LIMIT 1"
 )
 
@@ -213,13 +219,15 @@ def _aggregate_confirmed_complete(
     election_id: str,
     file_id: str,
 ) -> bool:
-    """One-statement probe: recorded county count equals live county rows.
+    """One-statement probe: aggregates match the recorded count and every chunk exists.
 
-    Only a positive answer skips payload reads. A missing meta row (files written
-    before the meta table existed), a mismatch, or an unparseable value all fall
-    through to the full decode path, so the probe can never turn unknown into
-    complete. A single SELECT reads one snapshot, so the file, meta, and county
-    rows cannot disagree because a writer interleaved between queries.
+    Two checks that match what the Worker serves: the recorded county count equals the
+    live county rows, and the chunk rows present equal the file's ``chunk_count``. Only a
+    positive answer skips payload reads. A missing meta row (files written before the
+    meta table existed), any mismatch, or an unparseable value falls through to the full
+    decode path, so the probe can never turn unknown into complete. A single SELECT reads
+    one snapshot, so the rows cannot disagree because a writer interleaved between
+    queries. Chunk payloads are counted, never read.
     """
     rows = store._query_rows(  # noqa: SLF001
         database_id,
@@ -228,9 +236,14 @@ def _aggregate_confirmed_complete(
     )
     if not rows:
         return False
-    expected = _coerce_int(rows[0].get("expected"))
-    actual = _coerce_int(rows[0].get("actual"))
-    return expected is not None and actual is not None and expected == actual
+    row = rows[0]
+    expected = _coerce_int(row.get("expected"))
+    actual = _coerce_int(row.get("actual"))
+    chunk_count = _coerce_int(row.get("chunk_count"))
+    present = _coerce_int(row.get("chunks_present"))
+    if None in (expected, actual, chunk_count, present):
+        return False
+    return expected == actual and chunk_count == present
 
 
 def _target_file_ids_for_finalize(
@@ -308,9 +321,9 @@ def published_precompute_state(
 
     ``unknown`` wins over ``pending``: a target whose aggregates are not confirmed by
     the probe and whose chunks cannot be read is never treated as complete, so callers
-    must not finalize on it. A probe-confirmed target is complete by its aggregate
-    rows even if its chunks are unreadable. A pointer whose file row is gone is
-    ignored, since the Worker cannot serve it.
+    must not finalize on it. The probe confirms aggregate rows and chunk presence, the
+    same completeness the Worker serves. A pointer whose file row is gone is ignored,
+    since the Worker cannot serve it.
     """
     digest = published_digest.strip()
     if not digest:

@@ -561,7 +561,14 @@ class _CountingStore(_BackfillStore):
         if kind == "probe":
             if self.meta_count is None or "f1" not in self._agg_rows:
                 return []
-            return [{"expected": self.meta_count, "actual": self._county_rows.get("f1", 0)}]
+            return [
+                {
+                    "expected": self.meta_count,
+                    "actual": self._county_rows.get("f1", 0),
+                    "chunk_count": self._chunk_count,
+                    "chunks_present": len(self._chunks),
+                }
+            ]
         return super()._query_rows(database_id, sql, params)
 
     def _write_precomputed_aggregates(
@@ -679,6 +686,14 @@ def test_probe_miss_with_unreadable_chunks_is_unknown_not_complete() -> None:
     assert state == "unknown"
 
 
+def test_complete_aggregates_with_a_missing_chunk_are_unknown_not_complete() -> None:
+    store = _CountingStore(120, complete=True)
+    del store._chunks[7]
+    state = published_precompute_state(store, "53815", published_digest=store._digest)
+    assert state == "unknown"
+    assert store.reads["payload"] >= 1  # fell through to the full path, then failed closed
+
+
 def test_probe_sql_against_real_sqlite_rows() -> None:
     import sqlite3
 
@@ -687,20 +702,27 @@ def test_probe_sql_against_real_sqlite_rows() -> None:
         aggregate_body_from_decoded,
         precompute_statements,
     )
+    from texas_turnout_scraper.early_vote_sync import _CHUNK_TABLE_SQL, _FILE_TABLE_SQL
 
     conn = sqlite3.connect(":memory:")
-    for ddl in PRECOMPUTE_SCHEMA_CREATES:
+    for ddl in (*PRECOMPUTE_SCHEMA_CREATES, _FILE_TABLE_SQL, _CHUNK_TABLE_SQL):
         conn.execute(ddl)
     body = aggregate_body_from_decoded(_MANY_COUNTIES, source_election_id="53815")
     for sql, params in precompute_statements("53815", "f1", body):
         conn.execute(sql, params)
+    conn.execute("INSERT INTO early_vote_file VALUES ('53815', 'f1', 'sha', 10, 2)")
+    for index in range(2):
+        conn.execute("INSERT INTO early_vote_chunk VALUES ('53815', 'f1', ?, 'x')", (index,))
 
-    def probe() -> list[tuple[int, int]]:
+    def probe() -> list[tuple[int, int, int, int]]:
         rows = conn.execute(_COMPLETE_PROBE_SQL, ("53815", "f1")).fetchall()
-        return [(int(a), int(b)) for a, b in rows]
+        return [tuple(int(v) for v in row) for row in rows]  # type: ignore[misc]
 
-    assert probe() == [(40, 40)]
+    assert probe() == [(40, 40, 2, 2)]
+    conn.execute("DELETE FROM early_vote_chunk WHERE chunk_index = 1")
+    assert probe() == [(40, 40, 2, 1)]
+    conn.execute("INSERT INTO early_vote_chunk VALUES ('53815', 'f1', 1, 'x')")
     conn.execute("DELETE FROM early_vote_county_aggregate WHERE county = 'COUNTY000'")
-    assert probe() == [(40, 39)]
+    assert probe() == [(40, 39, 2, 2)]
     conn.execute("DELETE FROM early_vote_aggregate_meta")
     assert probe() == []
