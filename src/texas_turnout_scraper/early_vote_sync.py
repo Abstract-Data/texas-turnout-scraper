@@ -1100,9 +1100,13 @@ class CloudflareEarlyVoteStore:
                 [_statement_lists(plan.pointer_update)],
             )
         if old_id and old_id != plan.file_id:
+            repoint: list[tuple[str, list[str]]] = []
+            if not update_pointer and self._pointer_file_id(database_id, election_id) == old_id:
+                repoint.append(_statement_lists(plan.pointer_update))
             self._statements(
                 database_id,
                 [
+                    *repoint,
                     *[
                         _statement_lists(item)
                         for item in delete_precompute_statements(election_id, old_id)
