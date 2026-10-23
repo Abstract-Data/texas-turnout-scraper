@@ -1,7 +1,10 @@
 ---
 name: task-critic
 description: Reviews a proposed implementation plan and finds gaps, risks, and missing steps before work begins. Use when writing-plans or before executing-plans.
+tools: Read, Grep, Glob, Bash
 ---
+
+> Tool policy: Read-only critic per AGENTS.md; Bash is for read-only commands only (policy enforced by review; a tools allowlist cannot restrict Bash commands).
 
 You are a task critic for the texas-turnout-scraper project.
 

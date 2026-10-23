@@ -198,7 +198,7 @@ async def load_day_rows(db: D1Database, source_election_id: str) -> tuple[EvDayR
     election_id = require_election_id(source_election_id)
     try:
         rows = await _d1_fetch_all(db.prepare(_DAY_LIST_SQL).bind(election_id))
-    except Exception:
+    except Exception:  # noqa: BLE001  # reason: D1 raises runtime-only JsException; degrade to empty
         return ()
     days: list[EvDayRow] = []
     for row in rows:
@@ -235,7 +235,7 @@ async def resolve_day_for_date(
     election_id = require_election_id(source_election_id)
     try:
         row = await _d1_fetch_first(db.prepare(_DAY_LOOKUP_SQL).bind(election_id, ev_date))
-    except Exception:
+    except Exception:  # noqa: BLE001  # reason: D1 raises runtime-only JsException; degrade to empty
         return None
     if row is None:
         return None

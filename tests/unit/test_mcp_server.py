@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 import respx
 
 from texas_turnout_scraper.civix import API_PREFIX, BASE_URL, CivixClient
@@ -122,7 +123,7 @@ def test_civix_fetch_ed_turnout_tool() -> None:
 @respx.mock
 @patch(
     "texas_turnout_scraper.civix.CivixClient",
-    side_effect=lambda *args, **kwargs: CivixClient(http_backend="httpx", *args, **kwargs),
+    side_effect=lambda *args, **kwargs: CivixClient(*args, http_backend="httpx", **kwargs),
 )
 def test_civix_fetch_polling_places_tool(_mock_client: MagicMock) -> None:
     csv_text = "COUNTY,POLLING_PLACE\nHARRIS,Example Location\n"
@@ -224,3 +225,33 @@ def test_run_audit_tool(
     report = run_audit(election_id="test", ev_date="2024-10-21", source="civix")
     assert report["election_id"] == "test"
     mock_audit.assert_called_once()
+
+
+@pytest.mark.parametrize("bad_id", ["../etc", "a/b", "..", "", "x y"])
+def test_run_audit_rejects_traversal_election_id(bad_id: str) -> None:
+    result = run_audit(election_id=bad_id, ev_date="2024-10-21", source="civix")
+    assert "Invalid election_id" in result["error"]
+
+
+def test_run_audit_rejects_data_dir_outside_root(tmp_path: Path, monkeypatch) -> None:
+    import texas_turnout_scraper.mcp_server as mod
+
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(mod, "DATA_ROOT", root)
+    for outside in (tmp_path, root / ".." / "other"):
+        result = run_audit(
+            election_id="49664", ev_date="2024-10-21", source="civix", data_dir=str(outside)
+        )
+        assert "data_dir must be" in result["error"]
+
+
+def test_run_audit_not_found_does_not_echo_path(tmp_path: Path, monkeypatch) -> None:
+    import texas_turnout_scraper.mcp_server as mod
+
+    monkeypatch.setattr(mod, "DATA_ROOT", tmp_path)
+    result = run_audit(
+        election_id="49664", ev_date="2024-10-21", source="civix", data_dir=str(tmp_path)
+    )
+    assert "not found" in result["error"]
+    assert str(tmp_path) not in result["error"]

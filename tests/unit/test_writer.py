@@ -392,8 +392,9 @@ def test_read_roster_csv_rejects_invalid_voting_method():
         write_roster_csv(flagged, path)
         raw = path.read_text(encoding="utf-8").replace("IN-PERSON", "NOT-A-METHOD", 1)
         path.write_text(raw, encoding="utf-8")
-        with pytest.raises(ValueError, match="Invalid VOTING_METHOD"):
+        with pytest.raises(ValueError, match="Invalid VOTING_METHOD") as excinfo:
             read_roster_csv(path)
+        assert "NOT-A-METHOD" not in str(excinfo.value)
 
 
 def test_read_roster_csv_rejects_missing_columns():
@@ -564,3 +565,23 @@ def test_report_date_from_roster_csv_empty_uses_utc_today(tmp_path: Path) -> Non
             tzinfo=timezone.utc,
         )
         assert report_date_from_roster_csv(csv_path) == fixed
+
+
+def test_stored_paths_reject_unsafe_election_id(tmp_path: Path) -> None:
+    from texas_turnout_scraper.writer import stored_audit_ev_path, stored_roster_ev_path
+
+    for bad in ("../x", "a/b", "", "..", "a b"):
+        with pytest.raises(ValueError, match="Invalid election id"):
+            stored_roster_ev_path(tmp_path, "civix", bad)
+        with pytest.raises(ValueError, match="Invalid election id"):
+            stored_audit_ev_path(tmp_path, "civix", bad)
+    assert stored_roster_ev_path(tmp_path, "civix", "49664").name == "roster_ev_49664.csv"
+
+
+def test_safe_filename_component() -> None:
+    from texas_turnout_scraper.writer import safe_filename_component
+
+    assert safe_filename_component("../../etc/passwd") == "_.._etc_passwd"
+    assert safe_filename_component(".hidden") == "hidden"
+    assert safe_filename_component("EL PASO") == "EL PASO"
+    assert safe_filename_component("...") == "_"

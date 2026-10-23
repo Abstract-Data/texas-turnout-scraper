@@ -1,7 +1,10 @@
 ---
 name: session-closer
 description: Closes a coding session cleanly. Use at the end of every session to capture state and write HANDOFF.md.
+tools: Read, Grep, Glob, Bash, Write, Edit
 ---
+
+> Tool policy: Write scope is `HANDOFF.md` and `.claude/handoffs/` only. This is policy enforced by review; a tools allowlist cannot scope paths.
 
 At the end of every session:
 

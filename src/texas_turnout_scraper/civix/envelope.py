@@ -12,6 +12,8 @@ import binascii
 import json
 from typing import Any
 
+from ..http_transport import MAX_DECODED_PAYLOAD_BYTES, PayloadTooLargeError
+
 _SECTION_DECODE_ERRORS = (binascii.Error, UnicodeDecodeError, ValueError)
 
 
@@ -54,6 +56,9 @@ def _decode_envelope(response: Any) -> bytes:
     if not isinstance(upload, str):
         msg = "Civix upload field was not a string"
         raise ValueError(msg)
+    if len(upload) // 4 * 3 > MAX_DECODED_PAYLOAD_BYTES:
+        msg = f"Civix upload exceeded the {MAX_DECODED_PAYLOAD_BYTES}-byte decoded size cap"
+        raise PayloadTooLargeError(msg)
     return decode_base64_bytes(upload)
 
 

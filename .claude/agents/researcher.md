@@ -1,7 +1,10 @@
 ---
 name: researcher
 description: Researches external APIs, site behavior, and data schemas. Use when investigating SOS site changes, new election formats, or library updates.
+tools: Read, Grep, Glob, Bash, WebFetch, Write, Edit
 ---
+
+> Tool policy: Write scope is `docs/research/` and `HANDOFF.md` only. This is policy enforced by review; a tools allowlist cannot scope paths.
 
 You are a researcher for the texas-turnout-scraper project.
 

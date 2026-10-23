@@ -1,8 +1,10 @@
 """Structural checks for the early-vote sync workflow. Run with pytest tests/verify/."""
 
+import re
 from pathlib import Path
 
-WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "early-vote-sync.yml"
+WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+WORKFLOW = WORKFLOWS / "early-vote-sync.yml"
 
 
 def test_workflow_run_scripts_do_not_interpolate_inputs() -> None:
@@ -33,4 +35,64 @@ def test_workflow_run_scripts_do_not_interpolate_inputs() -> None:
     assert "cancel-in-progress: false" in text
     assert text.count("election_id must be digits only") == 2
     assert text.count("election_date is required when sync_mode=single") == 2
+    assert text.count("election_date must be MM/DD/YYYY") == 2
     assert "secrets." not in text.split("jobs:", 1)[1].split("apply:", 1)[0]
+
+
+def _run_scripts(text: str) -> list[str]:
+    scripts: list[str] = []
+    current: list[str] | None = None
+    for line in text.splitlines():
+        if line.strip().startswith("run:"):
+            if current is not None:
+                scripts.append("\n".join(current))
+            current = [line]
+        elif current is not None and (line.startswith("          ") or not line.strip()):
+            current.append(line)
+        elif current is not None:
+            scripts.append("\n".join(current))
+            current = None
+    if current is not None:
+        scripts.append("\n".join(current))
+    return scripts
+
+
+def test_all_third_party_actions_are_sha_pinned() -> None:
+    pinned = re.compile(r"uses: [\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d")
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for line in path.read_text().splitlines():
+            if "uses:" in line and not line.strip().startswith("#"):
+                assert pinned.search(line), f"{path.name}: unpinned action: {line.strip()}"
+
+
+def test_uv_sync_is_locked_or_frozen() -> None:
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for line in path.read_text().splitlines():
+            if "uv sync" in line and not line.strip().startswith("#"):
+                assert "--locked" in line or "--frozen" in line, f"{path.name}: {line.strip()}"
+
+
+def test_ci_workflows_declare_read_only_permissions() -> None:
+    for name in ("ci.yml", "tool-config-verify.yml"):
+        text = (WORKFLOWS / name).read_text()
+        assert re.search(r"^permissions:\n  contents: read$", text, re.M), name
+
+
+def test_data_refresh_run_scripts_do_not_interpolate_expressions() -> None:
+    text = (WORKFLOWS / "data-refresh.yml").read_text()
+    for script in _run_scripts(text):
+        assert "${{" not in script, script
+    assert "election_id must be digits only" in text
+
+
+def test_terraform_apply_passes_plan_sha_via_env() -> None:
+    text = (WORKFLOWS / "terraform-preview.yml").read_text()
+    for script in _run_scripts(text):
+        assert "needs.plan.outputs" not in script
+    assert "PLAN_SHA256: ${{ needs.plan.outputs.plan_sha256 }}" in text
+
+
+def test_terraform_drift_gate_exempts_only_reproducible_dist_info_files() -> None:
+    text = (WORKFLOWS / "terraform-preview.yml").read_text()
+    assert "(RECORD|direct_url[.]json|uv_cache[.]json)$" in text
+    assert "dist-info/' ||" not in text

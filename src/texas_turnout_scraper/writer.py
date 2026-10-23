@@ -26,6 +26,7 @@ from __future__ import annotations
 import collections
 import csv
 import io
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -264,9 +265,7 @@ def read_roster_csv(path: Path) -> list[VoterRecord]:
             try:
                 VoteMethod(method_raw)
             except ValueError as exc:
-                raise ValueError(
-                    f"Invalid VOTING_METHOD value in roster CSV: {method_raw!r}"
-                ) from exc
+                raise ValueError("Invalid VOTING_METHOD value in roster CSV") from exc
             report_date = datetime.strptime(row["REPORT_DATE"], "%Y-%m-%d").date()
             rec = VoterRecord.from_csv_row(
                 row,
@@ -286,13 +285,32 @@ def read_roster_csv(path: Path) -> list[VoterRecord]:
     return records
 
 
+_ELECTION_ID_RE = re.compile(r"^[0-9A-Za-z_-]+$")
+_UNSAFE_FILENAME_CHARS_RE = re.compile(r"[^A-Za-z0-9 _.-]")
+
+
+def validate_election_id(election_id: str) -> str:
+    """Return ``election_id`` unchanged if it is safe as a path component."""
+    if not _ELECTION_ID_RE.fullmatch(election_id):
+        raise ValueError("Invalid election id; expected only letters, digits, '_' or '-'")
+    return election_id
+
+
+def safe_filename_component(name: str) -> str:
+    """Sanitize remote-supplied text (e.g. a county name) for use in a filename."""
+    cleaned = _UNSAFE_FILENAME_CHARS_RE.sub("_", name).lstrip(".")
+    return cleaned or "_"
+
+
 def stored_roster_ev_path(data_dir: Path, source: str, election_id: str) -> Path:
     """Path to the combined per-election EV roster CSV on disk."""
+    validate_election_id(election_id)
     return data_dir / "elections" / source / election_id / f"roster_ev_{election_id}.csv"
 
 
 def stored_audit_ev_path(data_dir: Path, source: str, election_id: str) -> Path:
     """Path to the combined per-election EV audit JSON on disk."""
+    validate_election_id(election_id)
     return data_dir / "elections" / source / election_id / f"audit_ev_{election_id}.json"
 
 
@@ -303,11 +321,13 @@ def stored_ed_turnout_path(output_dir: Path, election_id: str, election_date: da
     (``turnout_ed_{YYYY-MM-DD}.csv``) so the audit loader can find it
     with the same per-source glob.
     """
+    validate_election_id(election_id)
     return output_dir / election_id / f"turnout_ed_{election_date.isoformat()}.csv"
 
 
 def stored_roster_ed_path(output_dir: Path, election_id: str, election_date: date) -> Path:
     """Path to the election-day voter roster CSV parsed from the statewide ZIP."""
+    validate_election_id(election_id)
     return output_dir / election_id / f"roster_ed_{election_date.isoformat()}.csv"
 
 
@@ -317,6 +337,7 @@ def stored_statewide_ed_zip_path(
     election_date: date,
 ) -> Path:
     """Path to the raw election-day statewide report ZIP from Civix."""
+    validate_election_id(election_id)
     return output_dir / election_id / f"statewide_ed_{election_id}_{election_date.isoformat()}.zip"
 
 
@@ -379,6 +400,7 @@ def stored_turnout_paths(data_dir: Path, source: str, election_id: str) -> list[
     election-day (``turnout_ed_*.csv``) files. For legacy, only the
     unprefixed ``turnout_*.csv`` form is matched.
     """
+    validate_election_id(election_id)
     election_dir = data_dir / "elections" / source / election_id
     if not election_dir.is_dir():
         return []

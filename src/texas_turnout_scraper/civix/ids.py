@@ -22,7 +22,7 @@ def normalize_election_id(value: object) -> str | None:
         return str(value)
     if isinstance(value, str):
         text = value.strip()
-        if not text.isdigit():
+        if not (text.isascii() and text.isdecimal()):
             return None
         # Validation only. The returned value is still ``text``.
         if int(text) <= 0:

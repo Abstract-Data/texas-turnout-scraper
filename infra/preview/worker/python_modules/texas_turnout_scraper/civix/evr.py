@@ -26,7 +26,7 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from ..http_transport import HttpBackend, PacedHttpClient
+from ..http_transport import HttpBackend, PacedHttpClient, PayloadTooLargeError
 from ..models import (
     CivixCountyTurnout,
     CivixElection,
@@ -46,6 +46,25 @@ DEFAULT_PACE_SECONDS = 1.0
 # Election-day "Generate Statewide Report" ZIP members (see EVR_STATEWIDE_ELECTIONDAY).
 STATEWIDE_ED_VOTER_CSV = "STATEWIDE_VOTER_INFO.csv"
 STATEWIDE_ED_POLLING_CSV = "STATEWIDE_POLLING_PLACE_INFO.csv"
+
+_ZIP_MAX_MEMBERS = 256
+_ZIP_MAX_MEMBER_BYTES = 512 * 1024**2
+_ZIP_MAX_TOTAL_BYTES = 1024**3
+
+
+def _check_zip_limits(zf: zipfile.ZipFile) -> None:
+    """Reject ZIPs with too many members or too much declared uncompressed data."""
+    infos = zf.infolist()
+    if len(infos) > _ZIP_MAX_MEMBERS:
+        raise PayloadTooLargeError("ZIP archive has too many members")
+    total = 0
+    for info in infos:
+        if info.file_size > _ZIP_MAX_MEMBER_BYTES:
+            raise PayloadTooLargeError("ZIP member exceeds the uncompressed size cap")
+        total += info.file_size
+    if total > _ZIP_MAX_TOTAL_BYTES:
+        raise PayloadTooLargeError("ZIP archive exceeds the total uncompressed size cap")
+
 
 _CIVIX_ELECTIONS_ADAPTER = TypeAdapter(list[CivixElection])
 
@@ -448,6 +467,7 @@ class CivixClient:
 
         records: list[VoterRecord] = []
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            _check_zip_limits(zf)
             for member in zf.namelist():
                 if not member.lower().endswith(".csv"):
                     continue
@@ -530,6 +550,7 @@ def parse_ed_statewide_voter_records(
     PII note: ``ID_VOTER`` and ``VOTER_NAME`` values are NEVER logged.
     """
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        _check_zip_limits(zf)
         try:
             csv_bytes = zf.read(STATEWIDE_ED_VOTER_CSV)
         except KeyError as exc:

@@ -25,9 +25,16 @@ else
   echo "⚠️  Gate 1: TASK.md not found — skipping"
 fi
 
+# Prefer `uv run` so tools resolve to the project venv (Python 3.10+).
+if command -v uv &>/dev/null; then
+  RUN=(uv run)
+else
+  RUN=()
+fi
+
 # Gate 2: Unit tests
-if command -v pytest &>/dev/null; then
-  if ! pytest tests/unit -q --tb=no 2>&1 | tail -5; then
+if command -v uv &>/dev/null || command -v pytest &>/dev/null; then
+  if ! "${RUN[@]}" pytest tests/unit -q --tb=no 2>&1 | tail -5; then
     echo "❌ Gate 2 FAILED: unit tests are failing" >&2
     FAIL=1
   else
@@ -38,8 +45,8 @@ else
 fi
 
 # Gate 3: Lint
-if command -v ruff &>/dev/null; then
-  if ! ruff check . --select E,W,F --quiet 2>&1; then
+if command -v uv &>/dev/null || command -v ruff &>/dev/null; then
+  if ! "${RUN[@]}" ruff check . --select E,W,F --quiet 2>&1; then
     echo "❌ Gate 3 FAILED: ruff lint errors present" >&2
     FAIL=1
   else

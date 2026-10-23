@@ -29,15 +29,15 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
 
@@ -46,7 +46,7 @@ jobs:
         # mirror. fetch-all / refresh-all do not use DuckDB.
         # uv sync includes the dev group by default and does not sync extras
         # unless --extra is passed (https://docs.astral.sh/uv/concepts/projects/sync/).
-        run: uv sync --extra cli --extra waf
+        run: uv sync --locked --extra cli --extra waf
 
       - name: Refresh Civix elections
         id: civix_refresh
@@ -56,10 +56,16 @@ jobs:
           github.event.inputs.source == 'civix') &&
           (github.event.inputs.source != 'legacy')
         continue-on-error: true
+        env:
+          ELECTION_ID: ${{ github.event.inputs.election_id }}
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.election_id }}" ]; then
-            uv run tx-turnout civix fetch-all "${{ github.event.inputs.election_id }}" --audit
+          if [ -n "$ELECTION_ID" ]; then
+            if [[ ! "$ELECTION_ID" =~ ^[0-9]+$ ]]; then
+              echo "::error::election_id must be digits only"
+              exit 1
+            fi
+            uv run tx-turnout civix fetch-all "$ELECTION_ID" --audit
           else
             uv run tx-turnout civix refresh-all --audit
           fi
@@ -72,28 +78,44 @@ jobs:
           github.event.inputs.source == 'legacy') &&
           (github.event.inputs.source != 'civix')
         continue-on-error: true
+        env:
+          ELECTION_ID: ${{ github.event.inputs.election_id }}
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.election_id }}" ]; then
-            uv run tx-turnout legacy fetch-all "${{ github.event.inputs.election_id }}" --audit
+          if [ -n "$ELECTION_ID" ]; then
+            if [[ ! "$ELECTION_ID" =~ ^[0-9]+$ ]]; then
+              echo "::error::election_id must be digits only"
+              exit 1
+            fi
+            uv run tx-turnout legacy fetch-all "$ELECTION_ID" --audit
           else
             uv run tx-turnout legacy refresh-all --audit
           fi
 
       - name: Verify refresh outcome
+        env:
+          CIVIX_OUTCOME: ${{ steps.civix_refresh.outcome || 'skipped' }}
+          LEGACY_OUTCOME: ${{ steps.legacy_refresh.outcome || 'skipped' }}
+          INPUT_ELECTION_ID: ${{ github.event.inputs.election_id }}
+          INPUT_SOURCE: ${{ github.event.inputs.source }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          civix_outcome="${{ steps.civix_refresh.outcome || 'skipped' }}"
-          legacy_outcome="${{ steps.legacy_refresh.outcome || 'skipped' }}"
-          election_id="${{ github.event.inputs.election_id }}"
-          source="${{ github.event.inputs.source }}"
+          civix_outcome="$CIVIX_OUTCOME"
+          legacy_outcome="$LEGACY_OUTCOME"
+          election_id="$INPUT_ELECTION_ID"
+          source="$INPUT_SOURCE"
+          if [ -n "$election_id" ] && [[ ! "$election_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::election_id must be digits only"
+            exit 1
+          fi
 
           civix_failed=false
           legacy_failed=false
           if [ "$civix_outcome" = "failure" ]; then civix_failed=true; fi
           if [ "$legacy_outcome" = "failure" ]; then legacy_failed=true; fi
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$election_id" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$election_id" ]; then
             if [ "$source" = "all" ]; then
               if $civix_failed && $legacy_failed; then
                 echo "Both civix and legacy refresh failed for election_id=$election_id"
@@ -106,7 +128,7 @@ jobs:
               echo "Legacy refresh failed for election_id=$election_id"
               exit 1
             fi
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
+          elif [ "$EVENT_NAME" = "schedule" ]; then
             if $civix_failed && $legacy_failed; then
               echo "Both civix and legacy scheduled refresh steps failed"
               exit 1
@@ -114,7 +136,7 @@ jobs:
           fi
 
       - name: Commit data changes
-        uses: stefanzweifel/git-auto-commit-action@v7
+        uses: stefanzweifel/git-auto-commit-action@d0b01107b5db882071f96de5dd4b54961ea93f4c # v7
         with:
           commit_message: "data: refresh election rosters [skip ci]"
           file_pattern: "data/elections/**"

@@ -269,7 +269,11 @@ def civix_roster_fetch(
             if out_dir is not None:
                 import csv
 
-                out_path = out_dir / f"roster_{ev_date}_{county_ref.name}.csv"
+                from ..writer import safe_filename_component
+
+                out_path = (
+                    out_dir / f"roster_{ev_date}_{safe_filename_component(county_ref.name)}.csv"
+                )
                 with out_path.open("w", newline="") as fh:
                     writer = csv.writer(fh)
                     writer.writerow(["id_voter", "voting_method", "precinct"])

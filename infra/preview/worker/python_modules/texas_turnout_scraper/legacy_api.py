@@ -16,7 +16,7 @@ from .models import CountyRoster, CountyTurnout, LegacyElection
 from .roster import fetch_roster_strategy_a, fetch_roster_strategy_b
 from .session import LegacySession
 from .turnout import extract_county_ids, fetch_ev_details_html, fetch_turnout
-from .writer import write_roster_csv
+from .writer import safe_filename_component, write_roster_csv
 
 Strategy = Literal["A", "B"]
 
@@ -105,7 +105,9 @@ def fetch_roster(
             out_dir.mkdir(parents=True, exist_ok=True)
             date_str = ev_date.isoformat()
             for roster in rosters:
-                out_path = out_dir / f"roster_{date_str}_{roster.county}.csv"
+                out_path = (
+                    out_dir / f"roster_{date_str}_{safe_filename_component(roster.county)}.csv"
+                )
                 write_roster_csv(roster.records, out_path)
 
         return rosters

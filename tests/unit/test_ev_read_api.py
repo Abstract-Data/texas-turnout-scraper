@@ -442,3 +442,69 @@ def test_http_health_consumer_bearer_revoked_401() -> None:
         token_db=_TokenDb(set()),
     ).get("/health", headers={"Authorization": f"Bearer {secret}"})
     assert response.status_code == 401
+
+
+def test_non_ascii_access_header_is_401_not_500() -> None:
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION)})
+    response = _client(kv, RecordingStore()).get(
+        _url(),
+        headers={
+            "CF-Access-Client-Id": "café".encode("latin-1"),
+            "CF-Access-Client-Secret": "sécret".encode("latin-1"),
+        },
+    )
+    assert response.status_code == 401
+
+
+def test_non_ascii_access_header_does_not_block_valid_consumer_token() -> None:
+    secret = "consumer-with-bad-access-header"
+    key = cache_key(_ELECTION, _VERSION, *_segments())
+    kv = MemoryKv(
+        {
+            version_key(_ELECTION): str(_VERSION),
+            key: json.dumps({"statewide": {"total": 1}}),
+            kv_key_for_hash(hash_token(secret)): "1",
+        }
+    )
+    response = _client(kv, RecordingStore()).get(
+        _url(),
+        headers={
+            "CF-Access-Client-Id": "café".encode("latin-1"),
+            "CF-Access-Client-Secret": "sécret".encode("latin-1"),
+            "Authorization": f"Bearer {secret}".encode(),
+        },
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["2024-1-21", "20241021", "2024-10-21x", "2024-10-21\n", "٢024-10-21", "../x", ""],
+)
+def test_invalid_ev_date_is_400(bad: str) -> None:
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION)})
+    store = RecordingStore()
+    response = _client(kv, store).get(
+        f"/elections/{_ELECTION}/aggregates/totals", params={"ev_date": bad}, headers=_AUTH
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": "bad_request"}
+    assert store.calls == []
+
+
+def test_invalid_ev_date_unauthenticated_is_401() -> None:
+    response = _client(MemoryKv(), RecordingStore()).get(
+        f"/elections/{_ELECTION}/aggregates/totals", params={"ev_date": "bad"}
+    )
+    assert response.status_code == 401
+
+
+def test_valid_ev_date_is_served() -> None:
+    key = cache_key(_ELECTION, _VERSION, *_segments("totals", "2024-10-21"))
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: json.dumps({"ok": 1})})
+    response = _client(kv, RecordingStore()).get(
+        f"/elections/{_ELECTION}/aggregates/totals",
+        params={"ev_date": "2024-10-21"},
+        headers=_AUTH,
+    )
+    assert response.status_code == 200

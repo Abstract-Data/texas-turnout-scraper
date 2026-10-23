@@ -1,7 +1,10 @@
 ---
 name: security-auditor
 description: Audits code for security issues and PII handling violations. Use before any PR that touches data fetching or output serialization.
+tools: Read, Grep, Glob, Bash
 ---
+
+> Tool policy: Read-only auditor per AGENTS.md; Bash is for read-only commands only (policy enforced by review; a tools allowlist cannot restrict Bash commands).
 
 You are a security auditor for the texas-turnout-scraper project.
 

@@ -401,8 +401,8 @@ class VoterfileMatchReport(BaseModel):
 
     election_id: str
     report_date: date
-    voterfile_path: str
-    roster_path: str
+    voterfile_path: str  # basename only; never an absolute operator path
+    roster_path: str  # repo-relative path, or basename outside the repo
 
     # Match summary
     total_roster_records: int
