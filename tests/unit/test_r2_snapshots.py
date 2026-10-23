@@ -116,3 +116,20 @@ def test_from_env_requires_every_variable_or_returns_none(monkeypatch: pytest.Mo
     assert snapshot_store_from_env() is None
     monkeypatch.setenv("EV_SNAPSHOT_R2_SECRET_ACCESS_KEY", "s")
     assert snapshot_store_from_env() is not None
+
+
+def test_from_env_falls_back_to_the_shared_r2_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("EV_SNAPSHOT_R2_ACCESS_KEY_ID", "EV_SNAPSHOT_R2_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", ACCOUNT)
+    monkeypatch.setenv("EV_SNAPSHOT_BUCKET", "my-bucket")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "shared-id")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "shared-secret")
+    store = snapshot_store_from_env()
+    assert store is not None
+    assert store._access_key_id == "shared-id"
+    monkeypatch.setenv("EV_SNAPSHOT_R2_ACCESS_KEY_ID", "own-id")
+    monkeypatch.setenv("EV_SNAPSHOT_R2_SECRET_ACCESS_KEY", "own-secret")
+    own = snapshot_store_from_env()
+    assert own is not None
+    assert own._access_key_id == "own-id"
