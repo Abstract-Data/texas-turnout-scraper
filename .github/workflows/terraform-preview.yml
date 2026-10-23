@@ -28,10 +28,10 @@ jobs:
       run:
         working-directory: infra/preview
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
 
@@ -43,11 +43,12 @@ jobs:
           uv sync --frozen
           uv run pywrangler sync --force
           cd "${GITHUB_WORKSPACE}"
-          # Wheel .dist-info metadata (RECORD hashes, path-dep direct_url.json, uv_cache.json)
-          # is not reproducible across machines; importable package trees and pylock.toml are.
+          # Only RECORD hashes, path-dep direct_url.json, and uv_cache.json under *.dist-info
+          # are not reproducible across machines. Any other dist-info change (entry_points.txt,
+          # METADATA, ...), the importable package trees, and pylock.toml must match the committed tree.
           drift="$(git status --porcelain -- infra/preview/worker/python_modules infra/preview/worker/pylock.toml || true)"
           if [ -n "${drift}" ]; then
-            unexpected="$(printf '%s\n' "${drift}" | grep -vE '/python_modules/[^/]+[.]dist-info/' || true)"
+            unexpected="$(printf '%s\n' "${drift}" | grep -vE '/python_modules/[^/]+[.]dist-info/(RECORD|direct_url[.]json|uv_cache[.]json)$' || true)"
             if [ -n "${unexpected}" ]; then
               echo "Unexpected pywrangler drift after sync:"
               printf '%s\n' "${unexpected}"
@@ -61,12 +62,12 @@ jobs:
           set -euo pipefail
           bash scripts/verify_pyodide_startup.sh
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: "1.13.4"
           terraform_wrapper: false
 
-      - uses: terraform-linters/setup-tflint@v6
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6
         with:
           tflint_version: v0.64.0
 
@@ -96,14 +97,14 @@ jobs:
     outputs:
       plan_sha256: ${{ steps.store.outputs.plan_sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: "1.13.4"
           terraform_wrapper: false
 
-      - uses: terraform-linters/setup-tflint@v6
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6
         with:
           tflint_version: v0.64.0
 
@@ -232,14 +233,14 @@ jobs:
       run:
         working-directory: infra/preview
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: "1.13.4"
           terraform_wrapper: false
 
-      - uses: terraform-linters/setup-tflint@v6
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6
         with:
           tflint_version: v0.64.0
 
@@ -292,6 +293,7 @@ jobs:
       - name: Apply stored tfplan
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          PLAN_SHA256: ${{ needs.plan.outputs.plan_sha256 }}
         run: |
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- bash -c 'AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" bash -s' <<'SCRIPT'
           set -euo pipefail
@@ -305,7 +307,7 @@ jobs:
           done
           test "${missing}" -eq 0
           command -v aws >/dev/null
-          expected="${{ needs.plan.outputs.plan_sha256 }}"
+          expected="${PLAN_SHA256}"
           if ! printf '%s' "${expected}" | grep -Eq '^[0-9a-f]{64}$'; then
             echo "Plan job did not publish a SHA-256"
             exit 1
