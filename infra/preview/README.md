@@ -108,6 +108,12 @@ Send the id as `CF-Access-Client-Id` and the secret as `CF-Access-Client-Secret`
 
 The preview Worker version binds `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (from the Access service token above), shell D1 `DB` (consumer tokens), an imported election D1 (default `EV_53815` → `ev-53815`), and `EV_D1_BINDINGS` (JSON map from `preview_source_election_id` to that election binding name). Rotating the service token requires `terraform apply` so the Worker bindings pick up the new values.
 
+## Rotating the Access service token
+
+Rotate through Terraform, not the dashboard. The Worker's `ACCESS_CLIENT_SECRET` binding comes from `cloudflare_zero_trust_access_service_token.preview.client_secret` in state, and Cloudflare never returns that secret again. A dashboard rotation updates Access but leaves state and the Worker binding on the old value, so Access passes the request and the Worker answers 401.
+
+To rotate: raise `client_secret_version` in `main.tf` above the version Cloudflare reports for the token (a dashboard rotation also raises it), and set `previous_client_secret_expires_at` to when the old secret should stop working. The provider then rotates, reads the new secret into state, and the next Worker version binds it. After apply, read the new secret with the `terraform output -raw access_client_secret` command above and store it in 1Password as `ACCESS_CLIENT_SECRET`.
+
 ## Consumer bearer tokens (minted)
 
 Internal callers keep using Cloudflare Access service token headers. External consumers use minted tokens in addition to Access:
