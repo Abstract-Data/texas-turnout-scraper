@@ -298,8 +298,10 @@ def published_precompute_state(
 ) -> PrecomputeState:
     """Aggregate state of pointer and digest-matched files.
 
-    ``unknown`` wins over ``pending``: a target whose chunks or file row cannot
-    be read is never confirmed complete, so callers must not finalize on it.
+    ``unknown`` wins over ``pending``: a target whose file row is missing, or whose
+    aggregates are not confirmed by the probe and whose chunks cannot be read, is
+    never treated as complete, so callers must not finalize on it. A probe-confirmed
+    target is complete by its aggregate rows even if its chunks are unreadable.
     """
     digest = published_digest.strip()
     if not digest:
