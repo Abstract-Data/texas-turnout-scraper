@@ -83,6 +83,15 @@ gh workflow run release-please.yml
 | Integration tests always skipped | Pass `--live` to pytest |
 | Live tests fail with 403 | WAF — confirm cloudscraper backend, not raw httpx |
 
+### An election has stopped updating on Pages (held back for size)
+
+`data-refresh.yml` runs `.github/scripts/skip_oversize_data.py` before it commits. GitHub rejects any single file over 100 MiB, so a file over 95 MiB holds back its whole election: the election folder goes back to its last published state (or is removed if it was never published) and its `index.json` entry is restored. Other elections still publish.
+
+- Where to look: the run's **Summary** page has a "Held back" table, and the log has `::warning::` lines naming the file and size.
+- What it means: that election is frozen on Pages at its last published data. A statewide roster for election 53813 was 130.79 MB when this was added, so it is not published.
+- To publish it anyway you need a different format or host for the file (for example gzip or LFS). That is a design decision, not a runbook step.
+- If `index.json` is not valid JSON in the working tree, the step fails with an `::error::` annotation. Fix the refresh that wrote it.
+
 ## PII
 
 Never log `VOTER_NAME` or `ID_VOTER`. Use record counts in log messages only.
