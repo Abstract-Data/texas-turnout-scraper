@@ -10,8 +10,9 @@ early-voting date, and stops on the county turnout table. With ``--download-coun
 it also clicks that county's "Voter Details Report" CSV download for the selected
 early-voting date (the voters for that date, in-person and mail-in), and records only
 its byte count, row count, SHA-256, and header field names. The file is deleted
-unless ``--keep-download`` is passed. Statewide reports and every other roster control
-stay blocked.
+unless ``--keep-download`` is passed, and the Playwright trace is discarded in that
+case because it can capture the response. Statewide reports and every other roster
+control stay blocked.
 
 Playwright is not a dependency of this package. Run from the repo root:
 
@@ -20,7 +21,7 @@ Playwright is not a dependency of this package. Run from the repo root:
       --headless --channel "" --download-county GALVESTON
 
 Recordings go to ``./.recordings/`` (gitignored). They can contain voter data when
-``--keep-download`` is used, so do not commit or share them. Live runs are manual
+``--keep-download`` is used (the trace is then kept too), so do not commit or share them. Live runs are manual
 and never part of CI.
 
 PII: ``VOTER_NAME`` and ``ID_VOTER`` values are never logged, printed, or written
@@ -251,6 +252,18 @@ def _transcode_webm_to_mp4(webm: Path, mp4: Path) -> None:
         raise subprocess.CalledProcessError(result.returncode, result.args)
 
 
+def trace_destination(config: WalkConfig, recordings_dir: Path) -> Path | None:
+    """Where to save the Playwright trace, or None to discard it.
+
+    A trace with snapshots records network activity, which can include the downloaded
+    county file's response. When a download runs without ``--keep-download`` the trace
+    is discarded so the "file is deleted" promise holds for every artifact.
+    """
+    if config.download_county is not None and not config.keep_download:
+        return None
+    return recordings_dir / "civix-evr-trace.zip"
+
+
 async def _option_index(page: Page, label: str) -> int:
     options = page.locator("mat-option")
     count = await options.count()
@@ -417,7 +430,11 @@ async def _record_desktop(
         summary = await _walk_early_vote(page, config, recordings_dir)
         await page.screenshot(path=str(recordings_dir / "civix-evr-desktop.png"))
     finally:
-        await context.tracing.stop(path=str(recordings_dir / "civix-evr-trace.zip"))
+        trace_path = trace_destination(config, recordings_dir)
+        if trace_path is None:
+            await context.tracing.stop()
+        else:
+            await context.tracing.stop(path=str(trace_path))
         if page is not None:
             await page.close()
         if video is not None:

@@ -183,3 +183,20 @@ def test_download_matches_whole_county_cell_not_substring(tmp_path: Path) -> Non
     with pytest.raises(WalkthroughError):
         _download("HARR", tmp_path, keep=False)
     assert _download("harrison", tmp_path, keep=False).row_count == 2
+
+
+def _config(county: str | None, *, keep: bool = False) -> walkthrough.WalkConfig:
+    return walkthrough.WalkConfig(
+        source_election_id="56181",
+        election_label="L",
+        early_vote_date="04/20/2026",
+        download_county=county,
+        keep_download=keep,
+    )
+
+
+def test_trace_is_discarded_when_a_download_is_not_kept(tmp_path: Path) -> None:
+    saved = tmp_path / "civix-evr-trace.zip"
+    assert walkthrough.trace_destination(_config(None), tmp_path) == saved
+    assert walkthrough.trace_destination(_config("GALVESTON"), tmp_path) is None
+    assert walkthrough.trace_destination(_config("GALVESTON", keep=True), tmp_path) == saved

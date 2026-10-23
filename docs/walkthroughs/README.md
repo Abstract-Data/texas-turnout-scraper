@@ -15,7 +15,8 @@ The file is the voter list for that county and early-voting date. For GALVESTON 
 table's cumulative mail column (87), so treat the file as one day's voters, not the
 cumulative total. The run records only byte count, row count, SHA-256, and header field
 names (and none if the first row does not look like a header), then deletes the file
-even if summarizing fails, unless `--keep-download` is passed. Statewide reports stay
+even if summarizing fails, unless `--keep-download` is passed. The Playwright trace is
+discarded in the same case, because a trace can capture the download response. Statewide reports stay
 blocked.
 
 ## Run it (manual, live)
