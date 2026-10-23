@@ -135,30 +135,6 @@ async def stream_day(
         yield piece
 
 
-class _RowDater:
-    """Turns stored CSV lines into the all-days format: one header, every row dated."""
-
-    def __init__(self) -> None:
-        self.header_written = False
-        self._prefix = b""
-        self._header_pending = True
-
-    def start_day(self, ev_date: str) -> None:
-        self._prefix = f"{ev_date},".encode()
-        self._header_pending = True
-
-    def convert(self, line: bytes) -> bytes | None:
-        if not line.strip(b"\r"):
-            return None
-        if self._header_pending:
-            self._header_pending = False
-            if self.header_written:
-                return None
-            self.header_written = True
-            return b"EV_DATE," + line.removeprefix(_BOM) + b"\n"
-        return self._prefix + line + b"\n"
-
-
 async def stream_all_days(
     db: D1Database,
     source_election_id: str,
@@ -166,18 +142,37 @@ async def stream_all_days(
     *,
     batch_chunks: int = DEFAULT_BATCH_CHUNKS,
 ) -> AsyncIterator[bytes]:
-    """Yield every day as one CSV: a single header with ``EV_DATE`` first, each row dated."""
+    """Yield every day as one CSV: a single header with ``EV_DATE`` first, each row dated.
+
+    Rows are dated with one bulk ``bytes.replace`` per batch, not a Python call per line,
+    because 2 million rows add up on the Worker's WASM runtime.
+    """
     election_id = require_election_id(source_election_id)
-    dater = _RowDater()
+    header_written = False
     for day in days:
-        dater.start_day(day.ev_date)
+        prefix = f"{day.ev_date},".encode()
+        glue = b"\n" + prefix
         pending = b""
+        header_pending = True
         async for piece in _decoded_pieces(db, election_id, day, batch_chunks):
             pending += piece
-            *lines, pending = pending.split(b"\n")
-            out = [item for item in map(dater.convert, lines) if item is not None]
-            if out:
-                yield b"".join(out)
-        tail = dater.convert(pending)
-        if tail is not None:
-            yield tail
+            if header_pending:
+                newline = pending.find(b"\n")
+                if newline < 0:
+                    continue
+                header_pending = False
+                header, pending = pending[:newline], pending[newline + 1 :]
+                if not header_written:
+                    header_written = True
+                    yield b"EV_DATE," + header.removeprefix(_BOM) + b"\n"
+            cut = pending.rfind(b"\n")
+            if cut < 0:
+                continue
+            body, pending = pending[: cut + 1], pending[cut + 1 :]
+            yield (prefix + body.replace(b"\n", glue))[: -len(prefix)]
+        if header_pending and pending.strip(b"\r"):
+            if not header_written:
+                header_written = True
+                yield b"EV_DATE," + pending.removeprefix(_BOM) + b"\n"
+        elif pending.strip(b"\r"):
+            yield prefix + pending + b"\n"

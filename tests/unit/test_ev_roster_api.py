@@ -10,9 +10,9 @@ from fastapi.testclient import TestClient
 
 from tests.unit.test_early_vote_roster_stream import DAY1, DAY2, HEADER, _Db, _store_day
 from texas_turnout_scraper import early_vote_sync
+from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
 from texas_turnout_scraper.early_vote_d1_precompute import PRECOMPUTE_SCHEMA_CREATES
 from texas_turnout_scraper.early_vote_sync import _SCHEMA_CREATES, sha256_decoded
-from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
 
 ACCESS = {"CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "secret-not-real"}
 ROSTER = {"Authorization": "Bearer roster-secret"}
@@ -50,7 +50,7 @@ class _Rosters:
 @pytest.fixture
 def stored(monkeypatch: pytest.MonkeyPatch) -> _Db:
     monkeypatch.setattr(early_vote_sync, "CHUNK_RAW_BYTES", 16)
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
     for sql in (*_SCHEMA_CREATES, *PRECOMPUTE_SCHEMA_CREATES):
         conn.execute(sql)
     _store_day(conn, "2026-10-19", DAY1)

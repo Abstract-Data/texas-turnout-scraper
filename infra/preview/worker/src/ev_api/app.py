@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Protocol
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from ev_api.auth import read_request_authorized
-from ev_api.bindings import WorkersAggregateStore, WorkersKvNamespace, binding_map_from_env
+from ev_api.bindings import (
+    WorkersAggregateStore,
+    WorkersKvNamespace,
+    WorkersRosterStore,
+    binding_map_from_env,
+)
 from ev_api.read import (
     DEFAULT_KV_TTL_SECONDS,
     AggregateStore,
@@ -20,11 +26,26 @@ from ev_api.read import (
     read_resource,
     response_headers,
 )
+from ev_api.roster_routes import register_roster_routes
 from texas_turnout_scraper.civix.read_client import http_path
 
 logger = logging.getLogger(__name__)
 
 _EV_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+class RosterStore(Protocol):
+    def election_ids(self) -> tuple[str, ...]: ...
+
+    def database(self, election_id: str) -> object | None: ...
+
+
+class _ClosedRosters:
+    def election_ids(self) -> tuple[str, ...]:
+        return ()
+
+    def database(self, election_id: str) -> object | None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -35,6 +56,7 @@ class ReadDeps:
     access_client_secret: str
     token_db: object | None = None
     ttl_seconds: int = DEFAULT_KV_TTL_SECONDS
+    rosters: RosterStore = field(default_factory=_ClosedRosters)
 
 
 class _ClosedKv:
@@ -70,6 +92,7 @@ def deps_from_env(env: object) -> ReadDeps:
     return ReadDeps(
         kv=kv,
         store=store,
+        rosters=WorkersRosterStore(env, mapping),
         access_client_id=str(client_id),
         access_client_secret=str(client_secret),
         token_db=token_db,
@@ -211,6 +234,8 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
     @app.get("/elections/{source_election_id}/aggregates/county-by-day")
     async def aggregates_county_by_day(source_election_id: str, request: Request) -> Response:
         return await _serve(source_election_id, "county-by-day", request, None)
+
+    register_roster_routes(app, _deps_for_request)
 
     return app
 

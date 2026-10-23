@@ -177,3 +177,20 @@ tx-turnout tokens revoke <token_id>
 ```
 
 The first `mint` or `list` after this release adds the `scope` column to the token table (default `aggregates`); run `tx-turnout tokens list` once before deploying a Worker that reads it.
+
+## Elections list and roster routes
+
+All routes need `Authorization: Bearer <token>` (or `X-API-Key`). The roster routes need a token minted with `--scope roster`; an aggregates token gets 403 and the shared Access credential gets 401.
+
+| Route | Who | Returns |
+|---|---|---|
+| `GET /elections?q=` | any valid credential | Stored elections, optionally filtered by id substring. Each has `first_ev_date`, `last_ev_date`, `total_rows` and `days` (`ev_date`, `rows`, `sha256`, `byte_length`). Counts only. |
+| `GET /elections/{id}` | any valid credential | The same summary for one election (404 if unknown). |
+| `GET /elections/{id}/roster/{YYYY-MM-DD}` | roster token | That day's stored CSV, byte for byte (`ID_VOTER`, `VOTER_NAME`, `VOTING_METHOD`, `PRECINCT`, `COUNTY`). `Content-Length` and `ETag` are set. |
+| `GET /elections/{id}/roster` | roster token | Every day as one CSV: a single header with `EV_DATE` added as the first column, and each row dated. Streamed with no `Content-Length`. |
+
+- **No pagination.** A day is one download, as the portal serves it. The all-days route is one longer download.
+- **Incremental pulls.** Send `If-None-Match` with the last `ETag`. A match returns 304 and reads no rows. A day's `ETag` is its `sha256` from the list; the all-days `ETag` changes when any day changes.
+- **Only complete, hash-verified days are served.** A day still loading is absent from the list and returns 404.
+- **PII.** Responses carry names and VUIDs, are `Cache-Control: private, no-cache`, and are never stored in KV. Rows are not logged. A leaked roster token is revoked with `tx-turnout tokens revoke <id>`.
+- The Worker reads each file in batches of 64 chunks (about 21 D1 queries for a 44 MB day).
