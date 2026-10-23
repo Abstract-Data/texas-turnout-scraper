@@ -5,13 +5,15 @@ from __future__ import annotations
 import base64
 import json
 
+import pytest
+
 from texas_turnout_scraper.early_vote_d1_precompute_backfill import (
     _load_chunks_b64_paged,
     run_precompute_backfill_on_store,
     should_finalize_kv_version,
 )
 from texas_turnout_scraper.early_vote_d1_precompute_store import PRECOMPUTE_SCHEMA_CREATES
-from texas_turnout_scraper.early_vote_sync import sha256_decoded
+from texas_turnout_scraper.early_vote_sync import EarlyVoteSyncError, sha256_decoded
 
 
 class _BackfillStore:
@@ -381,3 +383,122 @@ def test_backfill_rewrites_when_county_set_incomplete() -> None:
     result = run_precompute_backfill_on_store(store, "53815", dry_run=False)
     assert result.files_written == 1
     assert store.writes == 1
+
+
+_ONE_COUNTY = json.dumps(
+    {
+        "turnout_by_county": [
+            {
+                "name": "TRAVIS",
+                "total_in_person_votes_for_election": 1,
+                "total_mail_votes_for_election": 0,
+            }
+        ]
+    }
+).encode()
+
+
+class _TwoFileStore(_BackfillStore):
+    """Pointer file ``f1`` is readable; digest-matched ``f2`` has no chunk payload."""
+
+    def __init__(self) -> None:
+        super().__init__("53815", "f1", _ONE_COUNTY)
+        self.f2_readable = False
+
+    def _query_rows(self, database_id: str, sql: str, params: list[str]) -> list[dict[str, object]]:
+        flat = sql.replace("\n", " ")
+        if "chunk_count" in sql and "early_vote_file" in sql:
+            return [
+                {"file_id": f, "sha256": self._digest, "chunk_count": 1} for f in ("f1", "f2")
+            ]
+        if "early_vote_pointer" in sql:
+            return [{"file_id": "f1"}]
+        if params and len(params) > 1 and params[1] == "f2":
+            if "payload_b64 FROM early_vote_chunk" in flat and not self.f2_readable:
+                return []
+            if "chunk_index FROM early_vote_chunk" in flat:
+                return [{"chunk_index": 0}]
+            if "early_vote_file_aggregate" in sql and "LIMIT 1" in sql:
+                return [{"file_id": "f2"}] if "f2" in self._agg_rows else []
+            if "COUNT(*) AS n" in sql:
+                return [{"n": self._county_rows.get("f2", 0)}]
+            if "payload_b64 FROM early_vote_chunk" in flat:
+                return [{"payload_b64": self._chunks[0]}]
+        return super()._query_rows(database_id, sql, params)
+
+
+def _run_finalize(monkeypatch, store: _BackfillStore, digest: str, bumped: list[str]) -> int:
+    def _bump(election_id: str, value: str) -> str:
+        bumped.append(value)
+        store.kv_stored_hash = value
+        return str(len(bumped))
+
+    store.bump_version = _bump  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "texas_turnout_scraper.early_vote_d1_precompute_backfill._cloudflare_config_from_env",
+        lambda: ("acct", "token", "ns"),
+    )
+    monkeypatch.setattr(
+        "texas_turnout_scraper.early_vote_d1_precompute_backfill.CloudflareEarlyVoteStore",
+        lambda **kwargs: store,
+    )
+    from texas_turnout_scraper.early_vote_d1_precompute_backfill import main
+
+    return main(["--election-id", "53815", "--apply", "--finalize-kv-digest", digest])
+
+
+def test_unreadable_target_with_stale_kv_hash_fails_without_bump(monkeypatch) -> None:
+    store = _BackfillStore("53815", "f1", _ONE_COUNTY)
+    del store._chunks[0]
+    store.kv_stored_hash = "stale-kv"
+    bumped: list[str] = []
+    with pytest.raises(EarlyVoteSyncError, match="unreadable"):
+        _run_finalize(monkeypatch, store, store._digest, bumped)
+    assert bumped == []
+    assert store.writes == 0
+
+
+def test_precompute_state_distinguishes_complete_pending_unknown() -> None:
+    from texas_turnout_scraper.early_vote_d1_precompute_backfill import published_precompute_state
+
+    store = _BackfillStore("53815", "f1", _ONE_COUNTY)
+    digest = store._digest
+    assert published_precompute_state(store, "53815", published_digest=digest) == "pending"
+    store._agg_rows.add("f1")
+    store._county_rows["f1"] = 1
+    assert published_precompute_state(store, "53815", published_digest=digest) == "complete"
+    del store._chunks[0]
+    store._agg_rows.clear()
+    assert published_precompute_state(store, "53815", published_digest=digest) == "unknown"
+
+
+def test_pending_target_still_bumps_after_backfill_writes(monkeypatch) -> None:
+    store = _BackfillStore("53815", "f1", _ONE_COUNTY)
+    store.kv_stored_hash = "stale-kv"
+    bumped: list[str] = []
+    assert _run_finalize(monkeypatch, store, store._digest, bumped) == 0
+    assert bumped == [store._digest]
+    assert store.writes == 1
+
+
+def test_one_unreadable_target_among_many_blocks_bump_even_when_other_writes(monkeypatch) -> None:
+    store = _TwoFileStore()
+    store.kv_stored_hash = "stale-kv"
+    bumped: list[str] = []
+    with pytest.raises(EarlyVoteSyncError, match="unreadable"):
+        _run_finalize(monkeypatch, store, store._digest, bumped)
+    assert bumped == []
+
+
+def test_retry_after_target_becomes_readable_bumps_exactly_once(monkeypatch) -> None:
+    store = _TwoFileStore()
+    store.kv_stored_hash = "stale-kv"
+    bumped: list[str] = []
+    with pytest.raises(EarlyVoteSyncError):
+        _run_finalize(monkeypatch, store, store._digest, bumped)
+    assert bumped == []
+    store.f2_readable = True
+    assert _run_finalize(monkeypatch, store, store._digest, bumped) == 0
+    assert bumped == [store._digest]
+    assert _run_finalize(monkeypatch, store, store._digest, bumped) == 0
+    assert bumped == [store._digest]
