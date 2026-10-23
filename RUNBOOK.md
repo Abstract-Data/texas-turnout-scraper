@@ -72,6 +72,13 @@ gh workflow run release-please.yml
 - Use `feat:`, `fix:`, `docs:`, `chore:`, etc. on `main` for library changes.
 - Scheduled `data: refresh ...` commits are ignored for semver; they do not block releases.
 - See [ADR-005](docs/adr/005-release-please.md) for rationale.
+- **`uv.lock` is bumped by the release PR.** Release Please has no `uv.lock` updater for Python, so
+  `release-please-config.json` carries an `extra-files` entry that rewrites the project's own
+  `[[package]]` version by index (`$.package[62].version`). The TOML updater cannot filter by name.
+  The index shifts when dependencies are added or removed before `texas-turnout-scraper` in `uv.lock`.
+  `tests/verify/check_release_please_uv_lock.py` fails in CI and prints the new index when that happens;
+  update the number in the config. Without this, the release PR fails `uv sync --locked`.
+- The Claude Code Review workflow skips `release-please--*` PRs (bot-authored, generated).
 
 ## Common issues
 
