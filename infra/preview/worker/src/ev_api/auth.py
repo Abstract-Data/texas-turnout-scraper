@@ -46,8 +46,8 @@ def access_authorized(
         return False
     presented_id = _header(headers, CF_ACCESS_CLIENT_ID_HEADER)
     presented_secret = _header(headers, CF_ACCESS_CLIENT_SECRET_HEADER)
-    id_ok = hmac.compare_digest(presented_id, client_id)
-    secret_ok = hmac.compare_digest(presented_secret, client_secret)
+    id_ok = hmac.compare_digest(presented_id.encode("utf-8"), client_id.encode("utf-8"))
+    secret_ok = hmac.compare_digest(presented_secret.encode("utf-8"), client_secret.encode("utf-8"))
     return id_ok and secret_ok
 
 

@@ -12,7 +12,15 @@ via datetime.strptime(date_str, "%Y-%m-%d").date().
 
 from __future__ import annotations
 
+import os
+import re
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP
+
+# Root under which ``run_audit`` may read stored data. Tests may monkeypatch it.
+DATA_ROOT = Path(os.environ.get("TX_TURNOUT_DATA_ROOT", "data"))
+_ELECTION_ID_RE = re.compile(r"^[0-9A-Za-z_-]+$")
 
 mcp = FastMCP(
     "texas-turnout",
@@ -378,7 +386,8 @@ def run_audit(
         election_id: Election ID string (source_election_id).
         ev_date: EV date in YYYY-MM-DD format.
         source: Data source — 'civix' or 'legacy'. Determines roster file path.
-        data_dir: Root data directory (default: 'data').
+        data_dir: Data directory; must be the configured data root (default 'data',
+            override via TX_TURNOUT_DATA_ROOT) or a subdirectory of it.
 
     Returns a dict containing the full AuditReport:
       - election_id (str)
@@ -392,8 +401,6 @@ def run_audit(
         county, detail, severity
       - generated_at (str): ISO 8601 timestamp
     """
-    from pathlib import Path
-
     from .audit import audit_records
     from .writer import (
         load_stored_turnout_for_audit,
@@ -411,11 +418,28 @@ def run_audit(
             "source": source,
         }
 
-    roster_path = stored_roster_ev_path(Path(data_dir), source_key, election_id)
+    if not _ELECTION_ID_RE.fullmatch(election_id):
+        return {
+            "error": "Invalid election_id; expected only letters, digits, '_' or '-'.",
+            "ev_date": ev_date,
+            "source": source,
+        }
+
+    root = DATA_ROOT.resolve()
+    data_path = Path(data_dir).resolve()
+    if data_path != root and root not in data_path.parents:
+        return {
+            "error": "data_dir must be the configured data root or a subdirectory of it.",
+            "election_id": election_id,
+            "ev_date": ev_date,
+            "source": source,
+        }
+
+    roster_path = stored_roster_ev_path(data_path, source_key, election_id)
 
     if not roster_path.exists():
         return {
-            "error": f"Roster file not found: {roster_path}",
+            "error": f"Roster file not found for election {election_id!r} (source {source_key}).",
             "election_id": election_id,
             "ev_date": ev_date,
             "source": source,
@@ -427,7 +451,7 @@ def run_audit(
 
     records = read_roster_csv(roster_path)
     turnout = load_stored_turnout_for_audit(
-        Path(data_dir),
+        data_path,
         source_key,
         election_id,
         report_dates={r.report_date for r in records} or None,

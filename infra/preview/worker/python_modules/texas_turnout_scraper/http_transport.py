@@ -52,6 +52,31 @@ JSON_RETRY_JITTER_SECONDS = 0.2
 _RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
 _MAX_HTTP_RETRIES = 2
 
+# Caps for untrusted remote payloads. A base64 envelope is ~4/3 the size of the
+# 512 MiB decoded cap, so the response cap sits above that.
+MAX_RESPONSE_BYTES = 1024 * 1024 * 1024
+MAX_DECODED_PAYLOAD_BYTES = 512 * 1024 * 1024
+
+
+class PayloadTooLargeError(ValueError):
+    """A remote payload exceeded a configured size cap. Carries no content."""
+
+
+def check_response_size(response: Any, limit: int = MAX_RESPONSE_BYTES) -> None:
+    """Raise :class:`PayloadTooLargeError` when a buffered response exceeds ``limit``."""
+    headers = getattr(response, "headers", None)
+    declared = None
+    if headers is not None:
+        try:
+            declared = int(headers.get("content-length", ""))
+        except (TypeError, ValueError, AttributeError):
+            declared = None
+    content = getattr(response, "content", None)
+    actual = len(content) if isinstance(content, (bytes, bytearray)) else 0
+    if max(declared or 0, actual) > limit:
+        msg = f"Response exceeded the {limit}-byte size cap"
+        raise PayloadTooLargeError(msg)
+
 
 def format_fetch_error(exc: BaseException) -> str:
     """Short error label for logs (no voter PII)."""
@@ -165,6 +190,7 @@ class PacedHttpClient:
                 time.sleep((2**attempt) + random.uniform(0, 0.5))
                 continue
             last_response.raise_for_status()
+            check_response_size(last_response)
             return last_response
         if last_response is not None:
             last_response.raise_for_status()

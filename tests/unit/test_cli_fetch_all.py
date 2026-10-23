@@ -424,7 +424,10 @@ def test_audit_run_uses_combined_roster_path(
     assert (tmp_path / "elections" / "civix" / "53813" / "audit_ev_53813.json").exists()
 
 
-def test_mcp_run_audit_uses_combined_roster_path(tmp_path: Path) -> None:
+def test_mcp_run_audit_uses_combined_roster_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("texas_turnout_scraper.mcp_server.DATA_ROOT", tmp_path)
     roster_path = stored_roster_ev_path(tmp_path, "legacy", "49664")
     _minimal_roster(
         roster_path,

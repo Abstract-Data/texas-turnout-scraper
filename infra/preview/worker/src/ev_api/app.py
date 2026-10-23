@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from fastapi import FastAPI, Query, Request
@@ -22,6 +23,8 @@ from ev_api.read import (
 from texas_turnout_scraper.civix.read_client import http_path
 
 logger = logging.getLogger(__name__)
+
+_EV_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 @dataclass(frozen=True)
@@ -138,6 +141,8 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
             token_db=active.token_db,
         ):
             return Response(status_code=401)
+        if ev_date is not None and _EV_DATE_RE.fullmatch(ev_date) is None:
+            return JSONResponse({"detail": "bad_request"}, status_code=400)
         segments = _segments(resource, ev_date)
         http_path(source_election_id, *segments)
         outcome = await read_resource(
