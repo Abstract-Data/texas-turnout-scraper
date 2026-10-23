@@ -508,3 +508,16 @@ def test_valid_ev_date_is_served() -> None:
         headers=_AUTH,
     )
     assert response.status_code == 200
+
+
+def test_http_invalid_election_id_is_400_not_500() -> None:
+    response = _client(MemoryKv(), RecordingStore()).get(
+        "/elections/00000/aggregates/totals", headers=_AUTH
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": "bad_request"}
+
+
+def test_http_invalid_election_id_without_credentials_is_still_401() -> None:
+    response = _client(MemoryKv(), RecordingStore()).get("/elections/00000/aggregates/totals")
+    assert response.status_code == 401

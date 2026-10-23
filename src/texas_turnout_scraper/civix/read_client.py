@@ -9,9 +9,13 @@ purged; they expire by TTL.
 KV can take about a minute to show a new version at every edge. That window
 is acceptable for this daily file. This client does not offer a faster path.
 
-``HttpxReadTransport`` speaks HTTP. A later Cloudflare service binding named
-``EV_API`` implements :class:`ReadTransport` and leaves :meth:`EarlyVoteReadClient.get`
-unchanged.
+``HttpxReadTransport`` speaks HTTP. Behind Cloudflare Access the preview API needs the
+Access service token headers (``access_client_id``/``access_client_secret``) to get past
+the edge, and a minted consumer token (``bearer_token``) for the Worker itself. The Access
+headers alone are not enough: the Worker answers 401 without the bearer.
+
+A later Cloudflare service binding named ``EV_API`` implements :class:`ReadTransport` and
+leaves :meth:`EarlyVoteReadClient.get` unchanged.
 
 httpx treats 304 as a failure: ``Response.is_success`` is only 2xx, and
 ``raise_for_status`` raises ``HTTPStatusError`` for 304
@@ -228,6 +232,7 @@ class HttpxReadTransport:
         timeout: float = 20.0,
         access_client_id: str | None = None,
         access_client_secret: str | None = None,
+        bearer_token: str | None = None,
     ) -> None:
         if not isinstance(base_url, str) or not base_url.strip():
             msg = "base_url is required"
@@ -236,17 +241,32 @@ class HttpxReadTransport:
         self._client = client
         self._timeout = timeout
         self._access_headers = _access_headers(access_client_id, access_client_secret)
+        self._bearer_headers = _bearer_headers(bearer_token)
 
     async def send(self, path: str, *, headers: Mapping[str, str]) -> TransportResponse:
         """GET ``path``. 304 is returned as a response, not raised."""
         url = join_base_url(self._base_url, path)
-        merged = {**headers, **self._access_headers}
+        merged = {**headers, **self._access_headers, **self._bearer_headers}
         if self._client is not None:
             response = await self._client.get(url, headers=merged, timeout=self._timeout)
             return _from_httpx(response)
         async with httpx.AsyncClient(timeout=self._timeout) as owned:
             response = await owned.get(url, headers=merged, timeout=self._timeout)
             return _from_httpx(response)
+
+
+def _bearer_headers(bearer_token: str | None) -> dict[str, str]:
+    """``Authorization: Bearer`` for a minted consumer token (the Worker's own credential)."""
+    if bearer_token is None:
+        return {}
+    if (
+        not isinstance(bearer_token, str)
+        or bearer_token.strip() == ""
+        or any(char.isspace() for char in bearer_token)
+    ):
+        msg = "bearer token must be a single non-empty token with no whitespace"
+        raise ValueError(msg)
+    return {"Authorization": f"Bearer {bearer_token}"}
 
 
 def _access_headers(
