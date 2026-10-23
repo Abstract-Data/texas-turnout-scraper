@@ -153,3 +153,15 @@ The portal publishes one file per early-vote date, and each file holds only that
 | `county-by-day` | `daily` | Per-county counts for each day. |
 
 A day whose file is still being written is left out until it is complete, and `days` shows what was included. A complete day with no computed aggregates returns 503 instead of an undercount.
+
+## Local Terraform checks (git hooks)
+
+CI runs `terraform fmt -check`, `terraform validate` and `tflint`. To prove the first two before anything leaves your machine, install the repo's hooks once per clone:
+
+```bash
+bash scripts/install-git-hooks.sh
+```
+
+- **pre-commit** (plain `git commit`; GitButler's wrapper runs it as `pre-commit-user`) and **pre-push** (also run by `but push`) call `scripts/githooks/terraform-proof.sh`. It does nothing unless a `.tf`, `.tfvars`, `.terraform.lock.hcl` or `.tflint.hcl` file changed. The pre-push run also looks at everything committed since `origin/main`.
+- Validation runs in a temporary directory of symlinks, so `terraform init` never rewrites the lock file or creates `.terraform/` in the repo. Provider downloads are cached in `~/.terraform.d/plugin-cache`; the first run can take a couple of minutes.
+- GitButler's `but commit` does not run git hooks, so a commit made that way is only checked when you push (`but push --no-hooks` skips it) and again in CI. Run `bash scripts/githooks/terraform-proof.sh` by hand any time.

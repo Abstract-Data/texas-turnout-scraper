@@ -115,3 +115,12 @@ def test_apply_step_names_the_snapshot_bucket() -> None:
     """The S3 keys come from 1Password; the bucket name is not secret and lives here."""
     text = WORKFLOW.read_text()
     assert text.count("EV_SNAPSHOT_BUCKET: tx-turnout-ev-snapshots-preview") == 1
+
+
+def test_tflint_plugin_download_is_authenticated() -> None:
+    """Unauthenticated `tflint --init` hits the GitHub API rate limit and fails the PR."""
+    for workflow in WORKFLOWS.glob("*.yml"):
+        text = workflow.read_text()
+        for index in [i for i in range(len(text)) if text.startswith("tflint --init", i)]:
+            window = text[max(0, index - 300) : index]
+            assert "GITHUB_TOKEN: ${{ github.token }}" in window, workflow.name

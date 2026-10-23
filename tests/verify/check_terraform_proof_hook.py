@@ -11,7 +11,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "githooks" / "terraform-proof.sh"
-GOOD = 'variable "name" {\n  type    = string\n  default = "x"\n}\n\noutput "name" {\n  value = var.name\n}\n'
+GOOD = (
+    'variable "name" {\n  type    = string\n  default = "x"\n}\n\n'
+    'output "name" {\n  value = var.name\n}\n'
+)
 UNFORMATTED = 'variable "name" {\ntype = string\n default = "x"\n}\n'
 INVALID = 'output "name" {\n  value = var.missing\n}\n'
 
