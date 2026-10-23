@@ -155,6 +155,15 @@ resource "cloudflare_zero_trust_access_service_token" "preview" {
   account_id = var.account_id
   name       = local.worker_name
   duration   = "8760h"
+
+  # Rotate the secret through Terraform so state and the Worker's ACCESS_CLIENT_SECRET
+  # binding learn the new value. A dashboard rotation leaves state stale because the API
+  # never returns the secret again. Raising the version makes the provider rotate and read
+  # the new secret. Cloudflare was at version 2 after a manual rotation, so use 3.
+  # The previous secret stays valid until the timestamp, which gives time to update
+  # 1Password from `terraform output -raw access_client_secret`.
+  client_secret_version             = 3
+  previous_client_secret_expires_at = "2026-10-24T06:00:00Z"
 }
 
 resource "cloudflare_zero_trust_access_policy" "preview_service" {
