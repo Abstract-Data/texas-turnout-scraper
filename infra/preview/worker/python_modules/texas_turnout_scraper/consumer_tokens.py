@@ -20,6 +20,11 @@ BEARER_PREFIX = "bearer "
 
 KV_PREFIX = "consumer_token:"
 
+# aggregates: counts only (every token minted before scopes existed). roster: row-level access.
+SCOPE_AGGREGATES = "aggregates"
+SCOPE_ROSTER = "roster"
+SCOPES = (SCOPE_AGGREGATES, SCOPE_ROSTER)
+
 # Active digest scheme (fast on Pyodide; shared by CLI mint and Worker auth).
 DIGEST_SCHEME_V2 = "v2"
 _CONSUMER_TOKEN_PEPPER_V2 = b"tx-turnout-preview-consumer-v2-hmac-pepper!!"
@@ -30,23 +35,30 @@ _SCHEMA_CREATES: tuple[str, ...] = (
   token_hash TEXT NOT NULL UNIQUE,
   label TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  revoked_at TEXT
+  revoked_at TEXT,
+  scope TEXT NOT NULL DEFAULT 'aggregates'
 )""",
     "CREATE INDEX IF NOT EXISTS idx_consumer_api_token_hash ON consumer_api_token(token_hash)",
 )
 
+SCOPE_COLUMNS_SQL = "SELECT name FROM pragma_table_info('consumer_api_token')"
+ADD_SCOPE_COLUMN_SQL = (
+    "ALTER TABLE consumer_api_token ADD COLUMN scope TEXT NOT NULL DEFAULT 'aggregates'"
+)
 INSERT_SQL = (
-    "INSERT INTO consumer_api_token (token_id, token_hash, label, created_at) VALUES (?, ?, ?, ?)"
+    "INSERT INTO consumer_api_token (token_id, token_hash, label, created_at, scope) "
+    "VALUES (?, ?, ?, ?, ?)"
 )
 LIST_SQL = (
-    "SELECT token_id, label, created_at, revoked_at "
+    "SELECT token_id, label, created_at, revoked_at, scope "
     "FROM consumer_api_token ORDER BY created_at DESC"
 )
 REVOKE_SQL = (
     "UPDATE consumer_api_token SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL"
 )
+# SELECT * so the lookup still works on a table that has not been migrated to add scope.
 ACTIVE_BY_HASH_SQL = (
-    "SELECT token_id FROM consumer_api_token WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1"
+    "SELECT * FROM consumer_api_token WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1"
 )
 
 
@@ -72,6 +84,22 @@ def hash_token(api_token: str) -> str:
         hashlib.sha256,
     ).hexdigest()
     return f"{DIGEST_SCHEME_V2}:{digest}"
+
+
+def parse_scope(value: str) -> str:
+    if value not in SCOPES:
+        msg = f"scope must be one of: {', '.join(SCOPES)}"
+        raise ValueError(msg)
+    return value
+
+
+def kv_value_for_scope(scope: str) -> str:
+    return parse_scope(scope)
+
+
+def scope_from_kv_value(value: str) -> str:
+    """Map a KV cache value to a scope; the legacy value ``1`` and unknowns mean aggregates."""
+    return SCOPE_ROSTER if value.strip() == SCOPE_ROSTER else SCOPE_AGGREGATES
 
 
 def kv_key_for_hash(token_hash: str) -> str:

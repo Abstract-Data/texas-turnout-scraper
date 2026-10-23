@@ -20,9 +20,12 @@ from texas_turnout_scraper.civix.read_client import (
 )
 from texas_turnout_scraper.consumer_tokens import (
     ACTIVE_BY_HASH_SQL,
+    SCOPE_AGGREGATES,
+    SCOPE_ROSTER,
     extract_consumer_credential,
     hash_token,
     kv_key_for_hash,
+    scope_from_kv_value,
 )
 from texas_turnout_scraper.early_vote_d1_read import D1Database
 
@@ -57,12 +60,34 @@ def _row_value(row: object, key: str) -> object | None:
     return getattr(row, key, None)
 
 
-async def _token_active_in_d1(db: D1Database, digest: str) -> bool:
+async def _token_scope_in_d1(db: D1Database, digest: str) -> str | None:
     row = await db.prepare(ACTIVE_BY_HASH_SQL).bind(digest).first()
     if row is None:
-        return False
+        return None
     token_id = _row_value(row, "token_id")
-    return isinstance(token_id, str) and bool(token_id)
+    if not (isinstance(token_id, str) and token_id):
+        return None
+    scope = _row_value(row, "scope")
+    return SCOPE_ROSTER if scope == SCOPE_ROSTER else SCOPE_AGGREGATES
+
+
+async def consumer_token_scope(
+    headers: Mapping[str, str],
+    *,
+    kv: KvNamespace,
+    token_db: Any | None,
+) -> str | None:
+    """Scope of the minted consumer credential, or None when it is missing or not active."""
+    raw = extract_consumer_credential(headers)
+    if not raw:
+        return None
+    digest = hash_token(raw)
+    cached = await kv.get(kv_key_for_hash(digest))
+    if cached is not None and cached.strip():
+        return scope_from_kv_value(cached)
+    if token_db is None:
+        return None
+    return await _token_scope_in_d1(token_db, digest)
 
 
 async def consumer_token_authorized(
@@ -71,17 +96,22 @@ async def consumer_token_authorized(
     kv: KvNamespace,
     token_db: Any | None,
 ) -> bool:
-    """True when a minted consumer credential matches KV or preview D1."""
-    raw = extract_consumer_credential(headers)
-    if not raw:
-        return False
-    digest = hash_token(raw)
-    cached = await kv.get(kv_key_for_hash(digest))
-    if cached is not None and cached.strip():
-        return True
-    if token_db is None:
-        return False
-    return await _token_active_in_d1(token_db, digest)
+    """True when a minted consumer credential (any scope) matches KV or preview D1."""
+    return await consumer_token_scope(headers, kv=kv, token_db=token_db) is not None
+
+
+async def roster_request_authorized(
+    headers: Mapping[str, str],
+    *,
+    kv: KvNamespace,
+    token_db: Any | None,
+) -> bool:
+    """Row-level access: only an active roster-scoped consumer token.
+
+    The shared Access service credential and aggregates-scoped tokens never qualify.
+    """
+    scope = await consumer_token_scope(headers, kv=kv, token_db=token_db)
+    return scope == SCOPE_ROSTER
 
 
 async def read_request_authorized(

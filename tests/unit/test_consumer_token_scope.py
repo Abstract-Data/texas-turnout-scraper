@@ -81,9 +81,7 @@ async def test_scope_comes_from_kv_then_d1() -> None:
     db = _Db({hash_token(from_d1): {"token_id": "t1", "scope": "roster"}})
 
     async def scope(secret: str) -> str | None:
-        return await consumer_token_scope(
-            {"Authorization": f"Bearer {secret}"}, kv=kv, token_db=db
-        )
+        return await consumer_token_scope({"Authorization": f"Bearer {secret}"}, kv=kv, token_db=db)
 
     assert await scope(roster) == SCOPE_ROSTER
     assert await scope(legacy) == SCOPE_AGGREGATES

@@ -10,13 +10,18 @@ from urllib.parse import quote
 import httpx
 
 from texas_turnout_scraper.consumer_tokens import (
+    ADD_SCOPE_COLUMN_SQL,
     INSERT_SQL,
     LIST_SQL,
     REVOKE_SQL,
+    SCOPE_AGGREGATES,
+    SCOPE_COLUMNS_SQL,
     hash_token,
     kv_key_for_hash,
+    kv_value_for_scope,
     mint_plaintext_token,
     new_token_id,
+    parse_scope,
     schema_creates,
     utc_now_iso,
 )
@@ -31,6 +36,7 @@ class ConsumerTokenRecord:
     label: str
     created_at: str
     revoked_at: str | None
+    scope: str = SCOPE_AGGREGATES
 
 
 class ConsumerTokenAdmin:
@@ -79,16 +85,20 @@ class ConsumerTokenAdmin:
 
     def ensure_schema(self) -> None:
         self._statements([(sql, []) for sql in schema_creates()])
+        columns = {row.get("name") for row in self._query_rows(SCOPE_COLUMNS_SQL, [])}
+        if "scope" not in columns:
+            self._statements([(ADD_SCOPE_COLUMN_SQL, [])])
 
-    def mint(self, label: str) -> tuple[str, str]:
+    def mint(self, label: str, scope: str = SCOPE_AGGREGATES) -> tuple[str, str]:
         """Return ``(token_id, plaintext)``. Plaintext is only for the caller to copy."""
+        scope = parse_scope(scope)
         self.ensure_schema()
         token_id = new_token_id()
         plaintext = mint_plaintext_token()
         digest = hash_token(plaintext)
         created = utc_now_iso()
-        self._statements([(INSERT_SQL, [token_id, digest, label, created])])
-        self._kv_put(kv_key_for_hash(digest), "1")
+        self._statements([(INSERT_SQL, [token_id, digest, label, created, scope])])
+        self._kv_put(kv_key_for_hash(digest), kv_value_for_scope(scope))
         return token_id, plaintext
 
     def list_tokens(self) -> list[ConsumerTokenRecord]:
@@ -105,12 +115,16 @@ class ConsumerTokenAdmin:
             if not isinstance(created_at, str):
                 continue
             revoked = revoked_at if isinstance(revoked_at, str) and revoked_at else None
+            raw_scope = row.get("scope")
             records.append(
                 ConsumerTokenRecord(
                     token_id=token_id,
                     label=label,
                     created_at=created_at,
                     revoked_at=revoked,
+                    scope=raw_scope
+                    if isinstance(raw_scope, str) and raw_scope
+                    else SCOPE_AGGREGATES,
                 )
             )
         return records
