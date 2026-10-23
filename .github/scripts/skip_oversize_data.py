@@ -25,9 +25,13 @@ DEFAULT_LIMIT_BYTES = 95 * 1024 * 1024
 _SOURCES = ("civix", "legacy")
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _git(
+    repo: Path, *args: str, check: bool = True, literal: bool = True
+) -> subprocess.CompletedProcess[str]:
+    """Run git. Paths are literal (no glob magic) except for check-ignore, which rejects it."""
+    prefix = ["git", "--literal-pathspecs"] if literal else ["git"]
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        [*prefix, "-C", str(repo), *args],
         check=check,
         capture_output=True,
         text=True,
@@ -80,6 +84,11 @@ def _restore_index_entry(repo: Path, root: Path, directory: Path) -> None:
             restored.append(head_entry)
             placed = True
     current.setdefault(source, {})["elections"] = restored
+    if shown.returncode == 0 and all(current.get(k) == head.get(k) for k in _SOURCES):
+        # Back to the published sections: keep HEAD's bytes, including last_updated, so
+        # a held-back election does not cause a timestamp-only commit every run.
+        index_path.write_text(shown.stdout)
+        return
     index_path.write_text(json.dumps(current, indent=2) + "\n")
 
 
@@ -94,6 +103,13 @@ def skip_oversize(repo: Path, root: Path, limit_bytes: int) -> list[Path]:
         if not path.is_file() or path.stat().st_size <= limit_bytes:
             continue
         relative = path.relative_to(repo)
+        if (
+            _git(
+                repo, "check-ignore", "-q", "--", str(relative), check=False, literal=False
+            ).returncode
+            == 0
+        ):
+            continue  # git never pushes ignored files, so they cannot trip the limit
         skipped.append(relative)
         directory = _hold_back_unit(root, relative)
         size_mib = path.stat().st_size / (1024 * 1024)

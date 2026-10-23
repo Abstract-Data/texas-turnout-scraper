@@ -132,3 +132,42 @@ def test_file_at_the_limit_is_kept(repo: Path) -> None:
 
 def test_default_limit_is_below_the_github_push_limit() -> None:
     assert skip.DEFAULT_LIMIT_BYTES < 100 * 1024 * 1024
+
+
+def test_index_bytes_are_restored_when_only_the_held_election_changed(repo: Path) -> None:
+    directory = _civix_dir(repo, "58315")
+    (directory / "roster_ev_58315.csv").write_bytes(b"old\n")
+    index = _write_index(repo, [_entry("58315", 1)])
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "seed")
+    committed = index.read_text()
+
+    (directory / "roster_ev_58315.csv").write_bytes(b"x" * (LIMIT + 1))
+    payload = json.loads(committed)
+    payload["last_updated"] = "later"
+    payload["civix"]["elections"][0]["total_records"] = 999
+    index.write_text(json.dumps(payload, indent=2) + "\n")
+
+    skip.skip_oversize(repo, ROOT, LIMIT)
+
+    assert index.read_text() == committed
+
+
+def test_gitignored_oversize_file_does_not_hold_an_election_back(repo: Path) -> None:
+    (repo / ".gitignore").write_text("matched_*.csv\n")
+    directory = _civix_dir(repo, "7")
+    (directory / "roster_ev_7.csv").write_bytes(b"ok")
+    (directory / "matched_roster.csv").write_bytes(b"x" * (LIMIT + 1))
+    assert skip.skip_oversize(repo, ROOT, LIMIT) == []
+    assert (directory / "roster_ev_7.csv").exists()
+
+
+def test_pathspecs_are_literal(repo: Path) -> None:
+    directory = _civix_dir(repo, "8")
+    odd = directory / "roster[1].csv"
+    odd.write_bytes(b"x" * (LIMIT + 1))
+    sibling = repo / ROOT / "keep.csv"
+    sibling.write_bytes(b"keep")
+    assert "--literal-pathspecs" in _SCRIPT.read_text()
+    skip.skip_oversize(repo, ROOT, LIMIT)
+    assert sibling.exists()
