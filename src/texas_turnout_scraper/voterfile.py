@@ -558,7 +558,7 @@ def match_voterfile_to_roster(
     report = VoterfileMatchReport(
         election_id=roster_records[0].election_id if roster_records else "unknown",
         report_date=roster_records[0].report_date if roster_records else ref,
-        voterfile_path=str(voterfile_path),
+        voterfile_path=voterfile_path.name,
         roster_path="",  # filled in by CLI
         total_roster_records=total,
         total_voterfile_records=total_vf_rows,

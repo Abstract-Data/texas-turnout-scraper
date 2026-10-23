@@ -27,6 +27,14 @@ _STANDARD_FIELDS = {
 }
 
 
+def _publishable_path(path: Path) -> str:
+    """Return a cwd-relative posix path, or the basename when outside the cwd."""
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return path.name
+
+
 @voterfile_app.command("match")
 def voterfile_match(
     roster_csv: Annotated[
@@ -227,7 +235,7 @@ def voterfile_match(
     except (ImportError, ValueError, OSError) as exc:
         typer.echo(f"Error: match failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
-    report.roster_path = str(roster_csv)
+    report.roster_path = _publishable_path(roster_csv)
     stem = roster_csv.stem
 
     gap_report_path: Path | None = None
@@ -256,7 +264,7 @@ def voterfile_match(
 
     # Save mapping sidecar after a successful match
     if save_mapping:
-        mapping.voterfile_path = str(voterfile)
+        mapping.voterfile_path = voterfile.name
         if not mapping.created_at:
             mapping.created_at = dt.datetime.now(dt.timezone.utc).isoformat()
         _save_mapping(mapping, sidecar)

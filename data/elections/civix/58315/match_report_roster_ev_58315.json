@@ -1,7 +1,7 @@
 {
   "election_id": "58315",
   "report_date": "2026-05-18",
-  "voterfile_path": "/Users/johneakin/Documents/VEP 2026/voterfiles/texasmay2026.csv",
+  "voterfile_path": "texasmay2026.csv",
   "roster_path": "data/elections/civix/58315/roster_ev_58315.csv",
   "total_roster_records": 780532,
   "total_voterfile_records": null,

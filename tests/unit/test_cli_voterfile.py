@@ -83,6 +83,28 @@ def test_voterfile_match_no_interactive_writes_outputs(tmp_path: Path) -> None:
     assert report["total_voterfile_records"] == 10
 
 
+def test_voterfile_match_report_paths_are_not_absolute(tmp_path: Path) -> None:
+    roster = tmp_path / "roster.csv"
+    _write_minimal_roster(roster)
+    result = runner.invoke(
+        app,
+        [
+            "voterfile",
+            "match",
+            str(roster),
+            str(FIXTURE_VOTERFILE.resolve()),
+            "--no-interactive",
+            "--output-dir",
+            str(tmp_path),
+            "--no-save-mapping",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    report = json.loads((tmp_path / "match_report_roster.json").read_text(encoding="utf-8"))
+    assert report["voterfile_path"] == FIXTURE_VOTERFILE.name
+    assert report["roster_path"] == "roster.csv"
+
+
 def test_voterfile_match_default_skips_voterfile_row_count(tmp_path: Path) -> None:
     roster = tmp_path / "roster.csv"
     _write_minimal_roster(roster)

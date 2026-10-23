@@ -579,6 +579,17 @@ class TestMatchReportCounts:
 
 
 @requires_duckdb
+class TestMatchReportPublishablePaths:
+    def test_voterfile_path_is_basename_for_absolute_input(self):
+        roster = [_voter("0000000001")]
+        mapping = ColumnMapping(vuid="VUID")
+        absolute = SAMPLE_VOTERFILE.resolve()
+        assert absolute.is_absolute()
+        _, report = match_voterfile_to_roster(roster, absolute, mapping, reference_date=_REF)
+        assert report.voterfile_path == absolute.name
+        assert "/" not in report.voterfile_path
+
+
 class TestMatchReportAgeBreakdown:
     def test_age_brackets_populated_for_matched(self):
         # Use all 10 fixture rows — all should have known DOBs
