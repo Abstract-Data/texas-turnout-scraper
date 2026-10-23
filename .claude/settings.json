@@ -9,6 +9,11 @@
       "Bash(truncate*production*)",
       "Bash(curl*|*sh)",
       "Bash(wget*|*sh)"
+    ],
+    "allow": [
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(uv run ty:*)"
     ]
   },
   "hooks": {
