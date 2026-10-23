@@ -78,7 +78,7 @@ def test_statements_hold_ids_not_names_and_are_idempotent() -> None:
 
 
 def test_large_diffs_split_into_statements_within_the_d1_parameter_limit() -> None:
-    old = _csv(*[(f"{i:010d}", "N", "TRAVIS", "MAIL-IN") for i in range(500)])
+    old = _csv(*[(f"{i:010d}", "N", "TRAVIS", "MAIL-IN") for i in range(1, 501)])
     new = _csv()
     diff = diff_rosters(old, new)
     statements = change_statements(
