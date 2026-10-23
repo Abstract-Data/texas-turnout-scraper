@@ -171,3 +171,82 @@ def test_pathspecs_are_literal(repo: Path) -> None:
     assert "--literal-pathspecs" in _SCRIPT.read_text()
     skip.skip_oversize(repo, ROOT, LIMIT)
     assert sibling.exists()
+
+
+def test_new_oversize_election_with_no_committed_index_is_dropped_from_the_index(
+    repo: Path,
+) -> None:
+    other = _civix_dir(repo, "111")
+    (other / "roster_ev_111.csv").write_bytes(b"ok")
+    big = _civix_dir(repo, "53813")
+    (big / "roster_ev_53813.csv").write_bytes(b"x" * (LIMIT + 1))
+    index = _write_index(repo, [_entry("111", 5), _entry("53813", 999)])
+    # No commit has ever contained index.json, so HEAD has nothing to restore from.
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "seed")
+
+    skip.skip_oversize(repo, ROOT, LIMIT)
+
+    ids = [e["source_election_id"] for e in json.loads(index.read_text())["civix"]["elections"]]
+    assert ids == ["111"]
+    assert not big.exists()
+
+
+def test_step_summary_lists_each_held_back_election(
+    repo: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary = tmp_path_factory.mktemp("summary") / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    for election_id in ("53813", "58315"):
+        directory = _civix_dir(repo, election_id)
+        (directory / f"roster_ev_{election_id}.csv").write_bytes(b"x" * (LIMIT + 1))
+    _write_index(repo, [])
+
+    skip.skip_oversize(repo, ROOT, LIMIT)
+
+    text = summary.read_text()
+    assert "Held back" in text
+    assert "data/elections/civix/53813" in text
+    assert "data/elections/civix/58315" in text
+    assert text.index("53813") < text.index("58315")  # insertion order is kept
+    assert "not published" in text
+
+
+def test_no_step_summary_is_written_when_nothing_is_held_back(
+    repo: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary = tmp_path_factory.mktemp("summary") / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    directory = _civix_dir(repo, "7")
+    (directory / "roster_ev_7.csv").write_bytes(b"ok")
+    skip.skip_oversize(repo, ROOT, LIMIT)
+    assert not summary.exists()
+
+
+def test_corrupt_working_tree_index_is_an_error_annotation_and_reraises(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = _civix_dir(repo, "9")
+    (directory / "roster_ev_9.csv").write_bytes(b"x" * (LIMIT + 1))
+    index = repo / ROOT / "index.json"
+    index.write_text("{ not json")
+    with pytest.raises(json.JSONDecodeError):
+        skip.skip_oversize(repo, ROOT, LIMIT)
+    assert "::error::" in capsys.readouterr().out
+
+
+def test_corrupt_index_at_head_is_a_warning_and_treated_as_empty(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = _civix_dir(repo, "9")
+    (directory / "roster_ev_9.csv").write_bytes(b"x" * (LIMIT + 1))
+    index = repo / ROOT / "index.json"
+    index.write_text("{ not json")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "seed with a corrupt index")
+    _write_index(repo, [_entry("9", 3)])  # working tree is valid again
+
+    skip.skip_oversize(repo, ROOT, LIMIT)
+
+    assert "::warning::" in capsys.readouterr().out
+    ids = [e["source_election_id"] for e in json.loads(index.read_text())["civix"]["elections"]]
+    assert ids == []
