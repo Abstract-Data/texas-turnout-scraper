@@ -43,18 +43,11 @@ jobs:
           uv sync --frozen
           uv run pywrangler sync --force
           cd "${GITHUB_WORKSPACE}"
-          # Only RECORD hashes, path-dep direct_url.json, and uv_cache.json under *.dist-info
-          # are not reproducible across machines. Any other dist-info change (entry_points.txt,
-          # METADATA, ...), the importable package trees, and pylock.toml must match the committed tree.
-          drift="$(git status --porcelain -- infra/preview/worker/python_modules infra/preview/worker/pylock.toml || true)"
-          if [ -n "${drift}" ]; then
-            unexpected="$(printf '%s\n' "${drift}" | grep -vE '/python_modules/[^/]+[.]dist-info/(RECORD|direct_url[.]json|uv_cache[.]json)$' || true)"
-            if [ -n "${unexpected}" ]; then
-              echo "Unexpected pywrangler drift after sync:"
-              printf '%s\n' "${unexpected}"
-              exit 1
-            fi
-          fi
+          # Ignored: RECORD hashes, direct_url.json and uv_cache.json (not reproducible across
+          # machines) and the package's own dist-info rename and __init__ version after a release.
+          # See infra/preview/worker/scripts/filter_pywrangler_drift.py.
+          git status --porcelain -- infra/preview/worker/python_modules infra/preview/worker/pylock.toml \
+            | python3 infra/preview/worker/scripts/filter_pywrangler_drift.py
 
       - name: Preview Worker Pyodide startup smoke
         working-directory: infra/preview/worker

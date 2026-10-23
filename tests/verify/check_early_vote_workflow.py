@@ -94,7 +94,11 @@ def test_terraform_apply_passes_plan_sha_via_env() -> None:
 
 def test_terraform_drift_gate_exempts_only_reproducible_dist_info_files() -> None:
     text = (WORKFLOWS / "terraform-preview.yml").read_text()
-    assert "(RECORD|direct_url[.]json|uv_cache[.]json)$" in text
+    script = (
+        WORKFLOWS.parents[1] / "infra/preview/worker/scripts/filter_pywrangler_drift.py"
+    ).read_text()
+    assert "filter_pywrangler_drift.py" in text
+    assert "(RECORD|direct_url[.]json|uv_cache[.]json)$" in script
     assert "dist-info/' ||" not in text
 
 
