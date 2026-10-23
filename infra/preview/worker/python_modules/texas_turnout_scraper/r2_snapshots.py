@@ -200,11 +200,21 @@ class R2SnapshotStore:
 
 
 def snapshot_store_from_env() -> R2SnapshotStore | None:
-    """Build the store from environment variables, or None when any is missing."""
+    """Build the store from environment variables, or None when any is missing.
+
+    The keys default to the shared ``R2_*`` pair; ``EV_SNAPSHOT_R2_*`` overrides them with a
+    bucket-scoped pair.
+    """
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
     bucket = os.environ.get("EV_SNAPSHOT_BUCKET", "").strip()
-    key_id = os.environ.get("EV_SNAPSHOT_R2_ACCESS_KEY_ID", "").strip()
-    secret = os.environ.get("EV_SNAPSHOT_R2_SECRET_ACCESS_KEY", "").strip()
+    key_id = (
+        os.environ.get("EV_SNAPSHOT_R2_ACCESS_KEY_ID") or os.environ.get("R2_ACCESS_KEY_ID") or ""
+    ).strip()
+    secret = (
+        os.environ.get("EV_SNAPSHOT_R2_SECRET_ACCESS_KEY")
+        or os.environ.get("R2_SECRET_ACCESS_KEY")
+        or ""
+    ).strip()
     if not (account and bucket and key_id and secret):
         return None
     return R2SnapshotStore(
