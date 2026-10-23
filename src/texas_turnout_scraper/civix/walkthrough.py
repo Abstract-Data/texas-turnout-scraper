@@ -322,6 +322,19 @@ async def _activate(page: Page, selector: str) -> None:
         await page.keyboard.press("Enter")
 
 
+async def save_and_summarize(download: Any, saved: Path, *, keep: bool) -> DownloadSummary:
+    """Save a Playwright download, summarize it, and leave no file behind unless ``keep``.
+
+    The cleanup also covers a ``save_as`` that fails partway and leaves a partial file.
+    """
+    try:
+        await download.save_as(str(saved))
+        return summarize_and_discard(saved, keep=keep)
+    finally:
+        if not keep:
+            saved.unlink(missing_ok=True)
+
+
 async def download_county_file(
     page: Page,
     county: str,
@@ -345,8 +358,7 @@ async def download_county_file(
     download = await pending.value
     dest_dir.mkdir(parents=True, exist_ok=True)
     saved = dest_dir / "civix-evr-county-download.csv"
-    await download.save_as(str(saved))
-    summary = summarize_and_discard(saved, keep=keep)
+    summary = await save_and_summarize(download, saved, keep=keep)
     logger.info(
         "Downloaded county file bytes=%s rows=%s columns=%s kept=%s",
         summary.byte_count,

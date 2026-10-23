@@ -200,3 +200,16 @@ def test_trace_is_discarded_when_a_download_is_not_kept(tmp_path: Path) -> None:
     assert walkthrough.trace_destination(_config(None), tmp_path) == saved
     assert walkthrough.trace_destination(_config("GALVESTON"), tmp_path) is None
     assert walkthrough.trace_destination(_config("GALVESTON", keep=True), tmp_path) == saved
+
+
+def test_partial_file_from_a_failed_save_is_removed(tmp_path: Path) -> None:
+    saved = tmp_path / "county.csv"
+
+    class _Download:
+        async def save_as(self, path: str) -> None:
+            Path(path).write_bytes(b"partial voter data")
+            raise OSError("disk full")
+
+    with pytest.raises(OSError, match="disk full"):
+        asyncio.run(walkthrough.save_and_summarize(_Download(), saved, keep=False))
+    assert not saved.exists()
