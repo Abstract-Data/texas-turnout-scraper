@@ -176,3 +176,72 @@ def test_stream_iter_bytes_cloudscraper_adapter() -> None:
             mock_response.close.assert_called_once()
         finally:
             client.close()
+
+
+@respx.mock
+def test_get_retries_on_dropped_connection_then_succeeds() -> None:
+    """A body cut off mid-download (RemoteProtocolError) is retried like a 502."""
+    route = respx.get(f"{_BASE}/dropped").mock(
+        side_effect=[
+            httpx.RemoteProtocolError("peer closed connection"),
+            httpx.Response(200, text="ok"),
+        ]
+    )
+    client = PacedHttpClient(_BASE, backend="httpx")
+    try:
+        with patch("texas_turnout_scraper.http_transport.time.sleep"):
+            resp = client.get("/dropped")
+        assert resp.text == "ok"
+        assert route.call_count == 2
+    finally:
+        client.close()
+
+
+@respx.mock
+def test_get_gives_up_after_persistent_dropped_connections() -> None:
+    route = respx.get(f"{_BASE}/dropped").mock(side_effect=httpx.ReadError("reset"))
+    client = PacedHttpClient(_BASE, backend="httpx")
+    try:
+        with (
+            patch("texas_turnout_scraper.http_transport.time.sleep"),
+            pytest.raises(httpx.ReadError),
+        ):
+            client.get("/dropped")
+        assert route.call_count == 3
+    finally:
+        client.close()
+
+
+def test_cloudscraper_retries_chunked_encoding_error() -> None:
+    """The failure seen in the early-vote loader: 'Response ended prematurely'."""
+    from requests.exceptions import ChunkedEncodingError
+
+    ok = MagicMock(status_code=200)
+    mock_scraper = MagicMock()
+    mock_scraper.headers = {}
+    mock_scraper.request.side_effect = [ChunkedEncodingError("Response ended prematurely"), ok]
+    with patch("cloudscraper.create_scraper", return_value=mock_scraper):
+        client = PacedHttpClient(_BASE, backend="cloudscraper")
+        try:
+            with patch("texas_turnout_scraper.http_transport.time.sleep"):
+                resp = client.get("/getFile")
+            assert resp is ok
+            assert mock_scraper.request.call_count == 2
+        finally:
+            client.close()
+
+
+def test_non_transient_errors_are_not_retried() -> None:
+    from requests.exceptions import InvalidURL
+
+    mock_scraper = MagicMock()
+    mock_scraper.headers = {}
+    mock_scraper.request.side_effect = InvalidURL("bad url")
+    with patch("cloudscraper.create_scraper", return_value=mock_scraper):
+        client = PacedHttpClient(_BASE, backend="cloudscraper")
+        try:
+            with pytest.raises(InvalidURL):
+                client.get("/getFile")
+            assert mock_scraper.request.call_count == 1
+        finally:
+            client.close()

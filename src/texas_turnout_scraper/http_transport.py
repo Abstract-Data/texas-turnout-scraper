@@ -24,13 +24,22 @@ from tenacity import (
 )
 
 try:
+    from requests.exceptions import ChunkedEncodingError as _RequestsChunkedEncodingError
+    from requests.exceptions import ConnectionError as _RequestsConnectionError
     from requests.exceptions import HTTPError as _RequestsHTTPError
     from requests.exceptions import RequestException as _RequestsRequestException
+    from requests.exceptions import Timeout as _RequestsTimeout
 except ImportError:
     # requests is installed with the waf extra (cloudscraper), not the core package.
     _REQUESTS_EXCEPTIONS: tuple[type[BaseException], ...] = ()
+    _REQUESTS_TRANSIENT: tuple[type[BaseException], ...] = ()
 else:
     _REQUESTS_EXCEPTIONS = (_RequestsHTTPError, _RequestsRequestException)
+    _REQUESTS_TRANSIENT = (
+        _RequestsChunkedEncodingError,
+        _RequestsConnectionError,
+        _RequestsTimeout,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +59,11 @@ JSON_RETRY_MAX_SECONDS = 2.0
 JSON_RETRY_JITTER_SECONDS = 0.2
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
+# A connection dropped or a body cut off mid-download is as transient as a 502.
+_TRANSIENT_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.TransportError,
+    *_REQUESTS_TRANSIENT,
+)
 _MAX_HTTP_RETRIES = 2
 
 # Caps for untrusted remote payloads. A base64 envelope is ~4/3 the size of the
@@ -163,6 +177,26 @@ class PacedHttpClient:
             return path
         return f"{self._base_url}{path}"
 
+    def _send(
+        self,
+        method: str,
+        path: str,
+        data: dict[str, str] | None,
+        kwargs: dict[str, Any],
+    ) -> Any:
+        if self._httpx is not None:
+            if method.upper() == "GET":
+                return self._httpx.get(path, **kwargs)
+            return self._httpx.request(method, path, data=data, **kwargs)
+        return self._scraper.request(
+            method,
+            self._url(path),
+            data=data,
+            timeout=self._timeout,
+            allow_redirects=self._follow_redirects,
+            **kwargs,
+        )
+
     def _request_with_retry(
         self,
         method: str,
@@ -175,20 +209,20 @@ class PacedHttpClient:
     ) -> Any:
         last_response: Any = None
         for attempt in range(max_retries + 1):
-            if self._httpx is not None:
-                if method.upper() == "GET":
-                    last_response = self._httpx.get(path, **kwargs)
-                else:
-                    last_response = self._httpx.request(method, path, data=data, **kwargs)
-            else:
-                last_response = self._scraper.request(
-                    method,
-                    self._url(path),
-                    data=data,
-                    timeout=self._timeout,
-                    allow_redirects=self._follow_redirects,
-                    **kwargs,
+            try:
+                last_response = self._send(method, path, data, kwargs)
+            except _TRANSIENT_TRANSPORT_ERRORS as exc:
+                if attempt >= max_retries:
+                    raise
+                logger.warning(
+                    "transient transport error %s on %s, attempt %s of %s; retrying",
+                    type(exc).__name__,
+                    method.upper(),
+                    attempt + 1,
+                    max_retries + 1,
                 )
+                time.sleep((2**attempt) + random.uniform(0, 0.5))
+                continue
             status_code = getattr(last_response, "status_code", None)
             if status_code in retry_status_codes and attempt < max_retries:
                 time.sleep((2**attempt) + random.uniform(0, 0.5))
