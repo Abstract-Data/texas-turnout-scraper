@@ -13,6 +13,7 @@ from texas_turnout_scraper.early_vote_d1_precompute import (
     precompute_statements,
 )
 from texas_turnout_scraper.early_vote_d1_roster import (
+    day_etag,
     find_day,
     list_days,
     roster_etag,
@@ -177,4 +178,5 @@ async def test_etag_changes_when_any_day_changes(db: _Db) -> None:
     full = roster_etag(days)
     assert full == roster_etag(days)
     assert roster_etag(days[:1]) != full
-    assert roster_etag(days[:1]) != days[0].sha256
+    assert roster_etag(days[:1]) != day_etag(days[0])
+    assert day_etag(days[0]) == days[0].sha256
