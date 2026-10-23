@@ -264,6 +264,7 @@ def voterfile_match(
 
     # Save mapping sidecar after a successful match
     if save_mapping:
+        # Informational basename only; not a file locator.
         mapping.voterfile_path = voterfile.name
         if not mapping.created_at:
             mapping.created_at = dt.datetime.now(dt.timezone.utc).isoformat()
