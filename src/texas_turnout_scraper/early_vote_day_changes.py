@@ -112,3 +112,10 @@ def change_statements(
         sql = _INSERT_PREFIX + ", ".join([_ROW_PLACEHOLDERS] * len(batch))
         statements.append((sql, params))
     return statements
+
+
+def roster_row_count(decoded: bytes) -> int:
+    """Distinct VUIDs in a roster CSV, or 0 for other payloads."""
+    if detect_payload_kind(decoded) != "statewide_roster":
+        return 0
+    return len(_voters(decoded))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -20,7 +20,7 @@ from texas_turnout_scraper.r2_snapshots import (
 ACCOUNT = "acct"
 BASE = f"https://{ACCOUNT}.r2.cloudflarestorage.com/my-bucket"
 KEY = "elections/53815/2026-10-14/abc.csv.gz"
-NOW = datetime(2026, 10, 23, 10, 21, 9, tzinfo=UTC)
+NOW = datetime(2026, 10, 23, 10, 21, 9, tzinfo=timezone.utc)
 
 
 def _store(client: httpx.Client | None = None) -> R2SnapshotStore:
@@ -79,7 +79,8 @@ def test_record_version_stores_gzip_once_and_appends_manifest() -> None:
         return httpx.Response(200)
 
     respx.put(url__regex=rf"{BASE}/.*").mock(side_effect=put)
-    respx.get(manifest_url).mock(side_effect=lambda r: httpx.Response(404))
+    respx.get(manifest_url).mock(return_value=httpx.Response(404))
+    respx.head(f"{BASE}/{KEY}").mock(return_value=httpx.Response(404))
     store = _store()
     store.record_version("53815", "2026-10-14", sha256="abc", decoded=b"a,b\n1,2\n", rows=1)
     assert gzip.decompress(puts[KEY]) == b"a,b\n1,2\n"

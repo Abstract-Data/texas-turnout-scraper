@@ -58,7 +58,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -80,8 +80,15 @@ from texas_turnout_scraper.early_vote_d1_precompute_store import (
     precompute_row_count,
     precompute_statements,
 )
+from texas_turnout_scraper.early_vote_day_changes import (
+    DAY_CHANGE_TABLE_SQL,
+    change_statements,
+    diff_rosters,
+    roster_row_count,
+)
 from texas_turnout_scraper.early_vote_roster import RosterCsvSummary, redact_roster_csv
 from texas_turnout_scraper.http_transport import HttpBackend, PacedHttpClient
+from texas_turnout_scraper.r2_snapshots import R2SnapshotStore, snapshot_store_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -397,11 +404,22 @@ _DAY_UPSERT_SQL = (
     "sha256 = excluded.sha256, file_id = excluded.file_id"
 )
 _DAY_FILE_IDS_SQL = "SELECT file_id FROM early_vote_day WHERE source_election_id = ?"
+_DAY_SELECT_FILE_AND_HASH_SQL = (
+    "SELECT file_id, sha256 FROM early_vote_day WHERE source_election_id = ? AND ev_date = ?"
+)
+_FILE_CHUNK_COUNT_SQL = (
+    "SELECT chunk_count FROM early_vote_file WHERE source_election_id = ? AND file_id = ?"
+)
+_CHUNK_PAYLOAD_SQL = (
+    "SELECT payload_b64 FROM early_vote_chunk "
+    "WHERE source_election_id = ? AND file_id = ? AND chunk_index = ?"
+)
 _SCHEMA_CREATES: tuple[str, ...] = (
     _CHUNK_TABLE_SQL,
     _FILE_TABLE_SQL,
     _POINTER_TABLE_SQL,
     _DAY_TABLE_SQL,
+    DAY_CHANGE_TABLE_SQL,
     *PRECOMPUTE_SCHEMA_CREATES,
 )
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
@@ -930,6 +948,7 @@ class CloudflareEarlyVoteStore:
         api_token: str,
         kv_namespace_id: str,
         client: httpx.Client | None = None,
+        snapshots: R2SnapshotStore | None = None,
     ) -> None:
         if not account_id or not api_token or not kv_namespace_id:
             raise EarlyVoteSyncError(
@@ -937,6 +956,7 @@ class CloudflareEarlyVoteStore:
             )
         self._account_id = account_id
         self._namespace_id = kv_namespace_id
+        self._snapshots = snapshots if snapshots is not None else snapshot_store_from_env()
         self._owns_client = client is None
         self._client = client or httpx.Client(
             base_url=CLOUDFLARE_API_BASE,
@@ -1032,14 +1052,30 @@ class CloudflareEarlyVoteStore:
     ) -> None:
         rows = self._query_rows(
             database_id,
-            _DAY_SELECT_FILE_SQL,
+            _DAY_SELECT_FILE_AND_HASH_SQL,
             [election_id, ev_date_iso],
         )
         old_id: str | None = None
+        old_sha: str | None = None
         if rows:
             candidate = rows[0].get("file_id")
             if isinstance(candidate, str) and candidate:
                 old_id = candidate
+            candidate_sha = rows[0].get("sha256")
+            if isinstance(candidate_sha, str) and candidate_sha:
+                old_sha = candidate_sha
+        if old_id and old_id != plan.file_id and old_sha and old_sha != digest:
+            self._keep_replaced_version(
+                database_id, election_id, ev_date_iso, old_id, old_sha, digest, decoded
+            )
+        elif self._snapshots is not None:
+            self._snapshots.record_version(
+                election_id,
+                ev_date_iso,
+                sha256=digest,
+                decoded=decoded,
+                rows=roster_row_count(decoded),
+            )
         self._insert_chunks(database_id, plan.chunk_inserts)
         self._statements(database_id, [_statement_lists(plan.file_insert)])
         self._write_precomputed_aggregates(
@@ -1084,6 +1120,72 @@ class CloudflareEarlyVoteStore:
             len(plan.chunk_inserts),
             len(decoded),
         )
+
+    def _keep_replaced_version(
+        self,
+        database_id: str,
+        election_id: str,
+        ev_date_iso: str,
+        old_id: str,
+        old_sha: str,
+        new_sha: str,
+        decoded: bytes,
+    ) -> None:
+        """Snapshot both versions to R2, then log voters added and removed in D1.
+
+        Runs before the old file is deleted, so a failure here leaves D1 as it was.
+        """
+        old_bytes = self._load_file_bytes(database_id, election_id, old_id)
+        if self._snapshots is not None:
+            self._snapshots.record_version(
+                election_id,
+                ev_date_iso,
+                sha256=old_sha,
+                decoded=old_bytes,
+                rows=roster_row_count(old_bytes),
+            )
+            self._snapshots.record_version(
+                election_id,
+                ev_date_iso,
+                sha256=new_sha,
+                decoded=decoded,
+                rows=roster_row_count(decoded),
+            )
+        diff = diff_rosters(old_bytes, decoded)
+        if diff is None:
+            return
+        statements = change_statements(
+            election_id,
+            ev_date_iso,
+            old_sha256=old_sha,
+            new_sha256=new_sha,
+            diff=diff,
+            recorded_at=datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        for start in range(0, len(statements), _INSERT_BATCH):
+            self._statements(database_id, statements[start : start + _INSERT_BATCH])
+        logger.info(
+            "early-vote day change logged election_id=%s ev_date=%s added=%s removed=%s",
+            election_id,
+            ev_date_iso,
+            len(diff.added),
+            len(diff.removed),
+        )
+
+    def _load_file_bytes(self, database_id: str, election_id: str, file_id: str) -> bytes:
+        rows = self._query_rows(database_id, _FILE_CHUNK_COUNT_SQL, [election_id, file_id])
+        if not rows:
+            raise EarlyVoteSyncError("stored day file has no file row")
+        count = int(rows[0]["chunk_count"])
+        parts: list[bytes] = []
+        for index in range(count):
+            chunk = self._query_rows(
+                database_id, _CHUNK_PAYLOAD_SQL, [election_id, file_id, str(index)]
+            )
+            if not chunk:
+                raise EarlyVoteSyncError("stored day file is missing a chunk")
+            parts.append(base64.b64decode(str(chunk[0]["payload_b64"])))
+        return b"".join(parts)
 
     def _delete_stale_files(self, database_id: str, election_id: str) -> None:
         present = self._distinct_file_ids(database_id, election_id)

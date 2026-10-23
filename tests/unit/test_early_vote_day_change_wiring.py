@@ -77,7 +77,9 @@ def test_changed_day_snapshots_both_versions_and_logs_the_diff(
     assert "0000000002" not in params
     assert "A" not in params
     log_index = statements.index(changes[0])
-    delete_index = next(i for i, s in enumerate(statements) if s[0].startswith("DELETE FROM early_vote_file "))
+    delete_index = next(
+        i for i, s in enumerate(statements) if s[0].startswith("DELETE FROM early_vote_file ")
+    )
     assert log_index < delete_index
 
 
