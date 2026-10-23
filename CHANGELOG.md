@@ -6,6 +6,36 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.7](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.6...texas-turnout-scraper-v0.2.7) (2026-10-23)
+
+
+### Features
+
+* **civix:** EVR walkthrough with opt-in county download, in the civix package ([#11](https://github.com/Abstract-Data/texas-turnout-scraper/issues/11)) ([#55](https://github.com/Abstract-Data/texas-turnout-scraper/issues/55)) ([d5b2a53](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d5b2a53f4b541baa9b3595d8e36dd08b2933dd10))
+* **claude-code:** Add Claude Code GitHub Workflow ([#52](https://github.com/Abstract-Data/texas-turnout-scraper/issues/52)) ([9d00859](https://github.com/Abstract-Data/texas-turnout-scraper/commit/9d0085996f603a316beceb4600978cf4047a65ff))
+* **ev-api:** precompute D1 aggregates at loader write time (Option B) ([#48](https://github.com/Abstract-Data/texas-turnout-scraper/issues/48)) ([4a4cb54](https://github.com/Abstract-Data/texas-turnout-scraper/commit/4a4cb54a48ff0487a0a7901ec69eec7b07ee6b8e))
+* **preview:** consumer bearer token auth (stacked on [#22](https://github.com/Abstract-Data/texas-turnout-scraper/issues/22)) ([#32](https://github.com/Abstract-Data/texas-turnout-scraper/issues/32)) ([7ec6737](https://github.com/Abstract-Data/texas-turnout-scraper/commit/7ec6737efb3efccea0deb3076d40d6205543fa7b))
+
+
+### Bug Fixes
+
+* **api:** invalid election id is 400; read client sends a bearer token; README matrix matches reality ([#60](https://github.com/Abstract-Data/texas-turnout-scraper/issues/60)) ([4e485c3](https://github.com/Abstract-Data/texas-turnout-scraper/commit/4e485c3eed64d508f0cbb2df7cfd6672aa3b6f0f))
+* **backfill:** fail closed on unreadable aggregates, probe before paging, keep tzdata current ([#50](https://github.com/Abstract-Data/texas-turnout-scraper/issues/50) [#49](https://github.com/Abstract-Data/texas-turnout-scraper/issues/49) [#42](https://github.com/Abstract-Data/texas-turnout-scraper/issues/42)) ([#54](https://github.com/Abstract-Data/texas-turnout-scraper/issues/54)) ([d5321bd](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d5321bd82bf0df3dbac4e7a5a8618d48f1ab381e))
+* **data-refresh:** legacy pace kwarg and oversize roster push failures ([#57](https://github.com/Abstract-Data/texas-turnout-scraper/issues/57)) ([3f7524e](https://github.com/Abstract-Data/texas-turnout-scraper/commit/3f7524e0c07f90d312fd186bfa47e5c6fb5e78ff))
+* **ev-api:** D1 row coercion for live aggregate reads + preview observability ([#45](https://github.com/Abstract-Data/texas-turnout-scraper/issues/45)) ([2980c67](https://github.com/Abstract-Data/texas-turnout-scraper/commit/2980c678f5785616daa74bdb123b9187dee592f5))
+* **ev-api:** D1 run() for Python Worker aggregate reads ([#44](https://github.com/Abstract-Data/texas-turnout-scraper/issues/44)) ([d5b507f](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d5b507f2dec1faf408086aace1d26385ca8cc011))
+* **ev-api:** D1 SQL aggregates without loading full chunk payloads ([#47](https://github.com/Abstract-Data/texas-turnout-scraper/issues/47)) ([0db5b54](https://github.com/Abstract-Data/texas-turnout-scraper/commit/0db5b547dda17df8bd673a945c1612fa3db5dcbc))
+* **ev-api:** Pyodide scrypt fallback for consumer Bearer auth ([#43](https://github.com/Abstract-Data/texas-turnout-scraper/issues/43)) ([55cc72d](https://github.com/Abstract-Data/texas-turnout-scraper/commit/55cc72de108ba23185f5efbdf89461ac5251f01a))
+* **preview:** bundle tzdata for Pyodide ZoneInfo in Worker deploy ([#40](https://github.com/Abstract-Data/texas-turnout-scraper/issues/40)) ([1f8cf2c](https://github.com/Abstract-Data/texas-turnout-scraper/commit/1f8cf2c2c741c24e636ee81c5a701d3119262344))
+* **preview:** commit Pyodide wheels and CI Worker import smoke ([#38](https://github.com/Abstract-Data/texas-turnout-scraper/issues/38)) ([954b8d3](https://github.com/Abstract-Data/texas-turnout-scraper/commit/954b8d3b3d31410835c65be5f2f66cb93f149d9f))
+* **preview:** import ev-53815 D1 and wire EV_53815 worker binding ([#46](https://github.com/Abstract-Data/texas-turnout-scraper/issues/46)) ([adf3121](https://github.com/Abstract-Data/texas-turnout-scraper/commit/adf31211f1b96b87feb34c458da10bb6c03a8be5))
+* **preview:** rotate the Access service token through Terraform ([#59](https://github.com/Abstract-Data/texas-turnout-scraper/issues/59)) ([3b337df](https://github.com/Abstract-Data/texas-turnout-scraper/commit/3b337dfcbf443b466a040bf78f085195d2c3659a))
+* **preview:** route EV API Worker on custom domain behind Access ([#41](https://github.com/Abstract-Data/texas-turnout-scraper/issues/41)) ([3882242](https://github.com/Abstract-Data/texas-turnout-scraper/commit/388224228000350e7f7daade647afb9459ec3c88))
+* **preview:** sync vendored voterfile.py so Terraform preview plans can run ([#58](https://github.com/Abstract-Data/texas-turnout-scraper/issues/58)) ([3e0051b](https://github.com/Abstract-Data/texas-turnout-scraper/commit/3e0051b7122aa62dfa5ec25ee9611ad0909463b5))
+* **release:** bump the project version in uv.lock in the release PR; skip Claude review on release PRs ([#61](https://github.com/Abstract-Data/texas-turnout-scraper/issues/61)) ([f9fc908](https://github.com/Abstract-Data/texas-turnout-scraper/commit/f9fc9087c2e868a0fea6d3355dd5760135e74577))
+* **security:** security hardening work ([#51](https://github.com/Abstract-Data/texas-turnout-scraper/issues/51)) ([f29f349](https://github.com/Abstract-Data/texas-turnout-scraper/commit/f29f349d1b710bcb863cbced0a52a6146c36d629))
+* **verify:** ignore the package's own __version__ line in the vendored-bundle check ([#62](https://github.com/Abstract-Data/texas-turnout-scraper/issues/62)) ([b6998e3](https://github.com/Abstract-Data/texas-turnout-scraper/commit/b6998e38d669c2f1367e3de961a88bdba1c62ce0))
+
 ## [0.2.6](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.5...texas-turnout-scraper-v0.2.6) (2026-10-20)
 
 
