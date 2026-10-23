@@ -1,0 +1,12 @@
+{
+  "source_election_id": "56181",
+  "byte_count": 1452,
+  "row_count": 26,
+  "sha256": "bc850ade753c7d325da509af67faf3adab96a1f7bb330898084c93cac609d310",
+  "columns": [
+    "VOTER_NAME",
+    "ID_VOTER",
+    "VOTING_METHOD",
+    "PRECINCT"
+  ]
+}

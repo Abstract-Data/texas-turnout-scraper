@@ -1,0 +1,26 @@
+<!doctype html>
+<html><body>
+<h2>Cumulative Percent Early Voting</h2>
+<table>
+  <tbody>
+    <tr><td>GALVESTON</td><td>2,530</td><td><button id="dl-galveston" onclick="download()">CSV Download</button></td></tr>
+    <tr><td>CHAMBERS</td><td>38,329</td><td><button id="dl-chambers" onclick="download()">CSV Download</button></td></tr>
+    <tr><td>HARRIS</td><td>221,764</td><td><button id="dl-harris" onclick="download()">CSV Download</button></td></tr>
+    <tr><td>HARRISON</td><td>40,000</td><td><button id="dl-harrison" onclick="download()">CSV Download</button></td></tr>
+  </tbody>
+</table>
+<script>
+  // Synthetic file: fake names and ids only.
+  function download() {
+    const csv = '"VOTER_NAME","ID_VOTER","VOTING_METHOD","PRECINCT"\n' +
+      '"TEST VOTER ONE","0000000001","IN-PERSON","0001"\n' +
+      '"TEST VOTER TWO","0000000002","MAIL-IN","0002"\n';
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "county.csv";
+    document.body.appendChild(a);
+    a.click();
+  }
+</script>
+</body></html>
