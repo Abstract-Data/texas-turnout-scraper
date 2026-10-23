@@ -218,6 +218,8 @@ async def test_precomputed_parity_with_streaming_on_fixture() -> None:
         ev_date="2026-10-20",
     )
     assert streamed is not None
+    assert precomputed is not None
+    assert precomputed.pop("semantics") == "daily"
     assert precomputed == streamed
 
 

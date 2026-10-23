@@ -77,9 +77,7 @@ def _db(days: dict[str, bytes], *, skip_precompute: tuple[str, ...] = ()) -> _Sq
         conn.execute(_DAY_UPSERT_SQL, ("53815", ev_date, digest, file_id))
         if ev_date in skip_precompute:
             continue
-        body = aggregate_body_from_decoded(
-            decoded, source_election_id="53815", ev_date_iso=ev_date
-        )
+        body = aggregate_body_from_decoded(decoded, source_election_id="53815", ev_date_iso=ev_date)
         for sql, params in precompute_statements("53815", file_id, body, ev_date_iso=ev_date):
             conn.execute(sql, params)
     last = max(days)
@@ -96,9 +94,7 @@ KV = "sha-2026-10-20"
 
 
 async def _get(db: _SqliteD1, resource: str, **kw: str) -> dict:
-    result = await build_precomputed_aggregate_resource(
-        db, "53815", resource, kv_sha256=KV, **kw
-    )
+    result = await build_precomputed_aggregate_resource(db, "53815", resource, kv_sha256=KV, **kw)
     assert result is not None
     return result
 

@@ -191,23 +191,31 @@ def build_by_day_series(
     source_election_id: str,
     days: tuple[tuple[str, dict[str, object]], ...],
 ) -> dict[str, object]:
-    """Roll up per-day statewide totals already computed for each EV date."""
+    """Daily statewide totals per EV date, each with the running election-to-date totals."""
     election_id = require_election_id(source_election_id)
     series = []
+    running = MethodTotals(0, 0)
     for ev_date, day_body in days:
         statewide = day_body.get("statewide")
         if not isinstance(statewide, dict):
             continue
+        in_person = int(statewide.get("in_person") or 0)
+        mail_in = int(statewide.get("mail_in") or 0)
+        running = MethodTotals(running.in_person + in_person, running.mail_in + mail_in)
         series.append(
             {
                 "ev_date": ev_date,
                 "total": int(statewide.get("total") or 0),
-                "in_person": int(statewide.get("in_person") or 0),
-                "mail_in": int(statewide.get("mail_in") or 0),
+                "in_person": in_person,
+                "mail_in": mail_in,
+                "cumulative_total": running.total,
+                "cumulative_in_person": running.in_person,
+                "cumulative_mail_in": running.mail_in,
             }
         )
     return {
         "source_election_id": election_id,
+        "semantics": "daily_with_cumulative",
         "series": series,
     }
 
@@ -227,7 +235,62 @@ def build_county_by_day_series(
         series.append({"ev_date": ev_date, "by_county": counties})
     return {
         "source_election_id": election_id,
+        "semantics": "daily",
         "series": series,
+    }
+
+
+def build_cumulative_totals(
+    *,
+    source_election_id: str,
+    days: tuple[tuple[str, dict[str, object]], ...],
+) -> dict[str, object]:
+    """Election-to-date totals: every day's statewide and per-county counts added together."""
+    election_id = require_election_id(source_election_id)
+    statewide = MethodTotals(0, 0)
+    per_county: dict[str, MethodTotals] = {}
+    kinds: set[str] = set()
+    for _ev_date, day_body in days:
+        day_state = day_body.get("statewide")
+        if not isinstance(day_state, dict):
+            continue
+        kind = day_body.get("payload_kind")
+        if isinstance(kind, str):
+            kinds.add(kind)
+        statewide = MethodTotals(
+            statewide.in_person + int(day_state.get("in_person") or 0),
+            statewide.mail_in + int(day_state.get("mail_in") or 0),
+        )
+        counties = day_body.get("by_county")
+        for row in counties if isinstance(counties, list) else []:
+            if not isinstance(row, dict) or not row.get("county"):
+                continue
+            name = str(row["county"])
+            prior = per_county.get(name, MethodTotals(0, 0))
+            per_county[name] = MethodTotals(
+                prior.in_person + int(row.get("in_person") or 0),
+                prior.mail_in + int(row.get("mail_in") or 0),
+            )
+    return {
+        "source_election_id": election_id,
+        "payload_kind": kinds.pop() if len(kinds) == 1 else "mixed",
+        "semantics": "cumulative",
+        "through_ev_date": days[-1][0] if days else None,
+        "days": [ev_date for ev_date, _ in days],
+        "statewide": {
+            "total": statewide.total,
+            "in_person": statewide.in_person,
+            "mail_in": statewide.mail_in,
+        },
+        "by_county": [
+            {
+                "county": name,
+                "total": item.total,
+                "in_person": item.in_person,
+                "mail_in": item.mail_in,
+            }
+            for name, item in sorted(per_county.items())
+        ],
     }
 
 

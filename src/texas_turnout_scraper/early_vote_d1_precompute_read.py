@@ -14,6 +14,7 @@ from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.early_vote_aggregates import (
     build_by_day_series,
     build_county_by_day_series,
+    build_cumulative_totals,
     slice_by_method,
 )
 from texas_turnout_scraper.early_vote_d1_precompute import load_precomputed_body
@@ -111,6 +112,9 @@ async def _rollup_days(
     return rolled
 
 
+_SEMANTICS_KEYS = ("semantics", "through_ev_date", "days")
+
+
 def _slice_totals_resource(
     totals: dict[str, object],
     resource: str,
@@ -118,15 +122,20 @@ def _slice_totals_resource(
     if resource == "totals":
         return totals
     if resource == "county":
-        return {
+        sliced: dict[str, object] = {
             "source_election_id": totals.get("source_election_id"),
             "ev_date": totals.get("ev_date"),
             "payload_kind": totals.get("payload_kind"),
             "by_county": totals.get("by_county"),
         }
-    if resource == "by-method":
-        return slice_by_method(totals)
-    return None
+    elif resource == "by-method":
+        sliced = slice_by_method(totals)
+    else:
+        return None
+    for key in _SEMANTICS_KEYS:
+        if key in totals:
+            sliced[key] = totals[key]
+    return sliced
 
 
 async def _build_by_day_resource(
@@ -166,6 +175,10 @@ async def _totals_for_ev_date(
     file_id = None
     expected_sha256 = None
     resolved_ev_date = ev_date
+    if ev_date is None:
+        rolled = await _rollup_days(db, election_id, kv_sha256=kv_sha256)
+        if rolled:
+            return build_cumulative_totals(source_election_id=election_id, days=tuple(rolled))
     if ev_date is not None:
         day = await resolve_day_for_date(db, election_id, ev_date)
         if day is None:
@@ -173,7 +186,7 @@ async def _totals_for_ev_date(
         file_id = day.file_id
         expected_sha256 = day.sha256
         resolved_ev_date = day.ev_date
-    return await _precomputed_for_published(
+    body = await _precomputed_for_published(
         db,
         election_id,
         kv_sha256=kv_sha256,
@@ -181,6 +194,9 @@ async def _totals_for_ev_date(
         expected_sha256=expected_sha256,
         ev_date=resolved_ev_date,
     )
+    if body is not None and ev_date is not None:
+        body["semantics"] = "daily"
+    return body
 
 
 async def build_precomputed_aggregate_resource(
