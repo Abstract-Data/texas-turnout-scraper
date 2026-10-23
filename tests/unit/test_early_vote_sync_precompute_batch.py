@@ -19,7 +19,7 @@ def test_write_precomputed_aggregates_uses_single_d1_batch() -> None:
         b'"total_in_person_votes_for_election":1,"total_mail_votes_for_election":0}]}'
     )
     with patch.object(store, "_statements", side_effect=_record_batch):
-        store._write_precomputed_aggregates(  # noqa: SLF001
+        store._write_precomputed_aggregates(
             "db",
             "53815",
             "f1",

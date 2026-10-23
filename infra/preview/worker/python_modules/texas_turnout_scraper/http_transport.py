@@ -63,7 +63,11 @@ class PayloadTooLargeError(ValueError):
 
 
 def check_response_size(response: Any, limit: int = MAX_RESPONSE_BYTES) -> None:
-    """Raise :class:`PayloadTooLargeError` when a buffered response exceeds ``limit``."""
+    """Raise :class:`PayloadTooLargeError` when a buffered response exceeds ``limit``.
+
+    Post-hoc guard: the body is already in memory when this runs, so it rejects
+    oversized payloads but does not bound peak memory use.
+    """
     headers = getattr(response, "headers", None)
     declared = None
     if headers is not None:

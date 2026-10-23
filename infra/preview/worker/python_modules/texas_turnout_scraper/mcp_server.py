@@ -13,14 +13,12 @@ via datetime.strptime(date_str, "%Y-%m-%d").date().
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 # Root under which ``run_audit`` may read stored data. Tests may monkeypatch it.
 DATA_ROOT = Path(os.environ.get("TX_TURNOUT_DATA_ROOT", "data"))
-_ELECTION_ID_RE = re.compile(r"^[0-9A-Za-z_-]+$")
 
 mcp = FastMCP(
     "texas-turnout",
@@ -407,6 +405,7 @@ def run_audit(
         read_roster_csv,
         report_date_from_roster_csv,
         stored_roster_ev_path,
+        validate_election_id,
     )
 
     source_key = source.lower()
@@ -418,7 +417,9 @@ def run_audit(
             "source": source,
         }
 
-    if not _ELECTION_ID_RE.fullmatch(election_id):
+    try:
+        validate_election_id(election_id)
+    except ValueError:
         return {
             "error": "Invalid election_id; expected only letters, digits, '_' or '-'.",
             "ev_date": ev_date,

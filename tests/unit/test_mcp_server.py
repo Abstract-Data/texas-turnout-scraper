@@ -123,7 +123,7 @@ def test_civix_fetch_ed_turnout_tool() -> None:
 @respx.mock
 @patch(
     "texas_turnout_scraper.civix.CivixClient",
-    side_effect=lambda *args, **kwargs: CivixClient(http_backend="httpx", *args, **kwargs),
+    side_effect=lambda *args, **kwargs: CivixClient(*args, http_backend="httpx", **kwargs),
 )
 def test_civix_fetch_polling_places_tool(_mock_client: MagicMock) -> None:
     csv_text = "COUNTY,POLLING_PLACE\nHARRIS,Example Location\n"

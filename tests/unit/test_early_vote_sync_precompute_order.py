@@ -9,10 +9,10 @@ class _FinalizeStore:
     def __init__(self) -> None:
         self.events: list[str] = []
 
-    def _database_uuid_if_exists(self, election_id: str) -> str | None:  # noqa: SLF001
+    def _database_uuid_if_exists(self, election_id: str) -> str | None:
         return "db"
 
-    def _ensure_schema(self, database_id: str) -> None:  # noqa: SLF001
+    def _ensure_schema(self, database_id: str) -> None:
         return None
 
     def _query_rows(
@@ -20,10 +20,10 @@ class _FinalizeStore:
         database_id: str,
         sql: str,
         params: list[str],
-    ) -> list[dict[str, object]]:  # noqa: SLF001
+    ) -> list[dict[str, object]]:
         return []
 
-    def _write_precomputed_aggregates(  # noqa: SLF001
+    def _write_precomputed_aggregates(
         self,
         database_id: str,
         election_id: str,

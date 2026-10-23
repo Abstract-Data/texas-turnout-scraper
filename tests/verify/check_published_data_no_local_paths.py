@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-LOCAL_PATH_RE = re.compile(r"/Users/|/home/|[A-Za-z]:\\\\")
+LOCAL_PATH_RE = re.compile(r'"(?:/Users/|/home/|[A-Za-z]:\\\\)')
 
 
 def _tracked_data_json() -> list[Path]:

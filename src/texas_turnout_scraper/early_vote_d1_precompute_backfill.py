@@ -52,18 +52,18 @@ BackfillStatus = Literal["dry_run", "wrote", "unchanged"]
 
 
 class PrecomputeBackfillStore(Protocol):
-    def _database_uuid_if_exists(self, election_id: str) -> str | None: ...  # noqa: SLF001
+    def _database_uuid_if_exists(self, election_id: str) -> str | None: ...
 
-    def _ensure_schema(self, database_id: str) -> None: ...  # noqa: SLF001
+    def _ensure_schema(self, database_id: str) -> None: ...
 
     def _query_rows(
         self,
         database_id: str,
         sql: str,
         params: list[str],
-    ) -> list[dict[str, object]]: ...  # noqa: SLF001
+    ) -> list[dict[str, object]]: ...
 
-    def _write_precomputed_aggregates(  # noqa: SLF001
+    def _write_precomputed_aggregates(
         self,
         database_id: str,
         election_id: str,
