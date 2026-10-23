@@ -8,9 +8,15 @@ adapted from the Quick Results recorder `backend/scripts/record_civix_ui.py`
 The walk selects one election by `source_election_id` (a string, `56181` by default),
 picks an early-voting date, and stops on the county turnout table. With
 `--download-county <COUNTY>` it also clicks that county's "Voter Details Report" CSV
-download. That file is the early-vote / by-mail file. The run records only byte count,
-row count, SHA-256, and header field names, then deletes the file unless
-`--keep-download` is passed. Statewide reports stay blocked.
+download. County names match a whole table cell, so `HARRIS` does not match `HARRISON`.
+The file is the voter list for that county and early-voting date. For GALVESTON on
+04/20/2026 it had 26 rows: 20 `IN-PERSON` and 6 `MAIL-IN`. The 20 equals the table's
+"Number In Person" for that date. I did not reconcile the 6 mail-in rows against the
+table's cumulative mail column (87), so treat the file as one day's voters, not the
+cumulative total. The run records only byte count, row count, SHA-256, and header field
+names (and none if the first row does not look like a header), then deletes the file
+even if summarizing fails, unless `--keep-download` is passed. Statewide reports stay
+blocked.
 
 ## Run it (manual, live)
 
@@ -32,3 +38,5 @@ synthetic page from `tests/fixtures/civix_evr/` and skip when Playwright is miss
   highlighted. No voter rows appear on screen.
 - `civix-evr-download.json`: counts and field names for that county file (26 rows).
   Recorded 2026-10-22.
+- The election and date selection (`mat-select` flow) has no CI test; it is verified only by
+  the manual live run above.

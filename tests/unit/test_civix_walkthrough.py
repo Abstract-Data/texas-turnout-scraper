@@ -130,3 +130,56 @@ def test_download_county_file_keep_leaves_file(tmp_path: Path) -> None:
 def test_download_unknown_county_fails_without_clicking(tmp_path: Path) -> None:
     with pytest.raises(WalkthroughError):
         _download("NOWHERE", tmp_path, keep=False)
+
+
+def test_headerless_file_records_no_columns_and_no_row_values() -> None:
+    summary = summarize_download(b'"TEST VOTER ONE","0000000001","IN-PERSON","0001"\n"X","2"\n')
+    assert summary.columns == ()
+    assert summary.row_count == 1
+    assert "TEST VOTER" not in repr(summary)
+    assert "0000000001" not in repr(summary)
+
+
+def test_unreadable_csv_is_a_walkthrough_error() -> None:
+    with pytest.raises(WalkthroughError):
+        summarize_download(b'"' + b"x" * 200_000 + b'"\n')
+
+
+def test_downloaded_file_is_deleted_when_summarizing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = tmp_path / "county.csv"
+    saved.write_bytes(_CSV)
+
+    def boom(_data: bytes) -> None:
+        raise WalkthroughError("boom")
+
+    monkeypatch.setattr(walkthrough, "summarize_download", boom)
+    with pytest.raises(WalkthroughError):
+        walkthrough.summarize_and_discard(saved, keep=False)
+    assert not saved.exists()
+
+
+def test_keep_leaves_the_file_even_when_summarizing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = tmp_path / "county.csv"
+    saved.write_bytes(_CSV)
+    monkeypatch.setattr(
+        walkthrough, "summarize_download", lambda _d: (_ for _ in ()).throw(WalkthroughError("x"))
+    )
+    with pytest.raises(WalkthroughError):
+        walkthrough.summarize_and_discard(saved, keep=True)
+    assert saved.exists()
+
+
+def test_module_does_not_import_requests_directly() -> None:
+    source = Path(walkthrough.__file__).read_text(encoding="utf-8")
+    assert "import requests" not in source
+
+
+def test_download_matches_whole_county_cell_not_substring(tmp_path: Path) -> None:
+    assert _download("HARRIS", tmp_path, keep=False).row_count == 2
+    with pytest.raises(WalkthroughError):
+        _download("HARR", tmp_path, keep=False)
+    assert _download("harrison", tmp_path, keep=False).row_count == 2

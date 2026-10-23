@@ -7,10 +7,11 @@ in PR #20. No ENR selectors, HTML, or traces are replayed.
 
 The walk opens the EVR UI, selects one election (by ``source_election_id``) and one
 early-voting date, and stops on the county turnout table. With ``--download-county``
-it also clicks that county's "Voter Details Report" CSV download, the early-vote /
-by-mail file, and records only its byte count, row count, SHA-256, and header field
-names. The file is deleted unless ``--keep-download`` is passed. Statewide reports
-and every other roster control stay blocked.
+it also clicks that county's "Voter Details Report" CSV download for the selected
+early-voting date (the voters for that date, in-person and mail-in), and records only
+its byte count, row count, SHA-256, and header field names. The file is deleted
+unless ``--keep-download`` is passed. Statewide reports and every other roster control
+stay blocked.
 
 Playwright is not a dependency of this package. Run from the repo root:
 
@@ -43,8 +44,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import httpx
-import requests
+from texas_turnout_scraper.http_transport import HTTP_FETCH_EXCEPTIONS
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, Locator, Page, Playwright
@@ -80,6 +80,9 @@ BLOCKED_CONTROL_TEXT = re.compile(
 )
 _DIGIT_RUN = re.compile(r"\d{8,}")
 _EV_DATE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+# A header cell looks like a field name. A data row (a name or an id) never does,
+# so a file without a header row records no columns instead of its first voter row.
+_HEADER_CELL = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 
 ELEMENT_DISCOVERY_JS = """
 () => {
@@ -182,14 +185,27 @@ def resolve_election_label(source_election_id: str, elections: Iterable[CivixEle
 def summarize_download(data: bytes) -> DownloadSummary:
     """Count rows and read the header of a downloaded CSV without exposing rows."""
     reader = csv.reader(io.StringIO(data.decode("utf-8-sig", errors="replace")))
-    columns = tuple(next(reader, []))
-    row_count = sum(1 for _ in reader)
+    try:
+        first = next(reader, [])
+        row_count = sum(1 for _ in reader)
+    except csv.Error as exc:
+        raise WalkthroughError("download was not a readable CSV") from exc
+    columns = tuple(first) if first and all(_HEADER_CELL.match(cell) for cell in first) else ()
     return DownloadSummary(
         byte_count=len(data),
         row_count=row_count,
         sha256=hashlib.sha256(data).hexdigest(),
         columns=columns,
     )
+
+
+def summarize_and_discard(saved: Path, *, keep: bool) -> DownloadSummary:
+    """Summarize a saved download and delete it even when summarizing fails."""
+    try:
+        return summarize_download(saved.read_bytes())
+    finally:
+        if not keep:
+            saved.unlink(missing_ok=True)
 
 
 def _redact(value: str) -> str:
@@ -305,7 +321,8 @@ async def download_county_file(
     This is the only path that clicks a roster control, and it needs an explicit
     county. The saved file is removed unless ``keep`` is set.
     """
-    row = page.locator("tbody tr", has_text=county)
+    target = county.strip().upper()
+    row = page.locator("tbody tr").filter(has=page.get_by_role("cell", name=target, exact=True))
     if await row.count() != 1:
         raise WalkthroughError("county row was not found exactly once in the turnout table")
     link = row.get_by_text("CSV Download")
@@ -316,14 +333,12 @@ async def download_county_file(
     dest_dir.mkdir(parents=True, exist_ok=True)
     saved = dest_dir / "civix-evr-county-download.csv"
     await download.save_as(str(saved))
-    summary = summarize_download(saved.read_bytes())
-    if not keep:
-        saved.unlink()
+    summary = summarize_and_discard(saved, keep=keep)
     logger.info(
-        "Downloaded early-vote county file bytes=%s rows=%s columns=%s kept=%s",
+        "Downloaded county file bytes=%s rows=%s columns=%s kept=%s",
         summary.byte_count,
         summary.row_count,
-        list(summary.columns),
+        list(summary.columns) or "header-not-recognized",
         keep,
     )
     return summary
@@ -548,10 +563,12 @@ def main(argv: list[str] | None = None) -> int:
         WalkthroughError,
         subprocess.CalledProcessError,
         OSError,
-        httpx.HTTPError,
-        requests.RequestException,
+        ImportError,
+        *HTTP_FETCH_EXCEPTIONS,
     ) as exc:
-        logger.error("Walkthrough failed (%s)", type(exc).__name__)
+        # WalkthroughError messages are fixed strings; other errors log their type only.
+        detail = exc if isinstance(exc, WalkthroughError) else type(exc).__name__
+        logger.error("Walkthrough failed (%s)", detail)
         return 1
     return 0
 
