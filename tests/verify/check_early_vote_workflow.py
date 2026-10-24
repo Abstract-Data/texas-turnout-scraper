@@ -27,12 +27,7 @@ def test_workflow_run_scripts_do_not_interpolate_inputs() -> None:
             in_run = False
     text = "\n".join(lines)
     assert run_blocks >= 4
-    group_line = (
-        "group: early-vote-sync-${{ github.event_name == 'schedule' "
-        "&& '53815' || inputs.election_id }}"
-    )
-    assert group_line in text
-    assert "17 15,16,22,23,3,4 * * *" in text
+    assert "group: early-vote-sync-${{ inputs.election_id }}" in text
     assert "sync_mode" in text
     assert "cancel-in-progress: false" in text
     assert text.count("election_id must be digits only") == 2
@@ -104,17 +99,16 @@ def test_terraform_drift_gate_exempts_only_reproducible_dist_info_files() -> Non
     assert "dist-info/' ||" not in text
 
 
-def test_scheduled_runs_refetch_every_day_not_just_the_latest() -> None:
-    """Portal day files are daily and can gain late records.
-
-    So each scheduled run re-hashes every day.
-
-    backfill is hash-gated per day: an unchanged day writes nothing, a changed day is rewritten
-    and the KV version bumps. `latest` would only ever look at today's file.
-    """
+def test_the_schedule_lives_in_the_worker_not_in_github() -> None:
+    """The Worker cron dispatches this workflow; a GitHub schedule as well would run twice."""
     text = WORKFLOW.read_text()
-    assert text.count("github.event_name == 'schedule' && 'backfill' || inputs.sync_mode") == 4
-    assert "github.event_name == 'schedule' && 'latest'" not in text
+    triggers = text.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert "schedule:" not in triggers
+    assert "cron:" not in triggers
+    assert "github.event_name == 'schedule'" not in text
+    assert "needs: window" not in text
+    apply_if = "if: github.event_name == 'workflow_dispatch' && inputs.dry_run == 'false'"
+    assert text.count(apply_if) == 1
 
 
 def test_apply_step_names_the_snapshot_bucket() -> None:
@@ -178,56 +172,57 @@ def test_loader_jobs_install_the_loader_extra() -> None:
     assert all("--extra waf --extra loader" in line for line in syncs)
 
 
-def _window_script() -> str:
-    text = WORKFLOW.read_text()
-    block = text.split("  window:", 1)[1].split("\n  dry-run:", 1)[0]
-    script = block.split("run: |\n", 1)[1]
+def _apply_validation_script() -> str:
+    apply = WORKFLOW.read_text().split("\n  apply:\n", 1)[1]
+    step = apply.split("- name: Validate workflow inputs", 1)[1].split("\n      - ", 1)[0]
+    script = step.split("run: |\n", 1)[1]
     return "\n".join(line[10:] for line in script.splitlines())
 
 
-def _window_output(tmp_path: Path, event: str, now_utc: str, chicago_hour: str) -> str:
-    """Run the window script with a fake ``date`` so the clock is an input."""
-    shim = tmp_path / "date"
-    shim.write_text(
-        "#!/usr/bin/env python3\n"
-        "import os, sys, calendar, time\n"
-        "a = sys.argv[1:]\n"
-        "if a == ['+%H']:\n"
-        "    print(os.environ['FAKE_HOUR'])\n"
-        "elif a[:2] == ['-u', '-d']:\n"
-        "    print(calendar.timegm(time.strptime(a[2], '%Y-%m-%d %H:%M:%S')))\n"
-        "elif a == ['-u', '+%s']:\n"
-        "    print(calendar.timegm(time.strptime(os.environ['FAKE_NOW'], '%Y-%m-%d %H:%M:%S')))\n"
-        "else:\n"
-        "    sys.exit(2)\n"
+CRON_INPUTS = {
+    "SYNC_MODE": "backfill",
+    "ELECTION_ID": "53815",
+    "ELECTION_DATE": "",
+    "PAYLOAD_KIND": "statewide_roster",
+    "DRY_RUN": "false",
+    "TRIGGER": "cron",
+    "GITHUB_REF": "refs/heads/main",
+}
+
+
+def _validate(**overrides: str) -> subprocess.CompletedProcess[str]:
+    env = {"PATH": os.environ["PATH"], **CRON_INPUTS, **overrides}
+    return subprocess.run(
+        ["bash", "-c", _apply_validation_script()], env=env, capture_output=True, text=True
     )
-    shim.chmod(0o755)
-    out = tmp_path / "out"
-    out.write_text("")
-    env = {
-        **os.environ,
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        "EVENT_NAME": event,
-        "FAKE_NOW": now_utc,
-        "FAKE_HOUR": chicago_hour,
-        "GITHUB_OUTPUT": str(out),
-    }
-    subprocess.run(["bash", "-c", _window_script()], check=True, env=env, capture_output=True)
-    return out.read_text().strip()
 
 
-def test_schedule_runs_three_times_a_day_until_the_end_of_november_3(tmp_path: Path) -> None:
+def test_cron_runs_fail_fast_unless_they_are_the_scheduled_backfill_on_main() -> None:
+    apply = WORKFLOW.read_text().split("\n  apply:\n", 1)[1]
+    first_step = apply.split("steps:\n", 1)[1].split("\n      - ", 1)[0]
+    assert "- name: Validate workflow inputs" in first_step
+    assert "secrets." not in first_step
+    assert _validate().returncode == 0
+    for name, value in [
+        ("SYNC_MODE", "latest"),
+        ("ELECTION_ID", "49664"),
+        ("PAYLOAD_KIND", "turnout"),
+        ("DRY_RUN", "true"),
+        ("GITHUB_REF", "refs/heads/feature/x"),
+    ]:
+        result = _validate(**{name: value})
+        assert result.returncode == 1, name
+        assert "trigger=cron runs only" in result.stdout, name
+    manual = _validate(TRIGGER="manual", SYNC_MODE="latest", GITHUB_REF="refs/heads/feature/x")
+    assert manual.returncode == 0
+
+
+def test_cron_runs_use_the_reviewer_free_environment_and_manual_runs_keep_the_gate() -> None:
     text = WORKFLOW.read_text()
-    assert 'cron: "17 15,16,22,23,3,4 * * *"' in text
-    assert "needs: window" in text
-    assert "needs.window.outputs.proceed == 'true'" in text
-    kept = ["10", "17", "22"]
-    for hour in kept:
-        assert _window_output(tmp_path, "schedule", "2026-10-30 15:20:00", hour) == "proceed=true"
-    for hour in ("09", "11", "16", "18", "21", "23", "04"):
-        assert _window_output(tmp_path, "schedule", "2026-10-30 15:20:00", hour) == "proceed=false"
-    assert _window_output(tmp_path, "schedule", "2026-11-04 04:20:00", "22") == "proceed=true"
-    assert _window_output(tmp_path, "schedule", "2026-11-04 06:00:00", "10") == "proceed=false"
-    assert (
-        _window_output(tmp_path, "workflow_dispatch", "2026-12-01 00:00:00", "03") == "proceed=true"
-    )
+    expression = "environment: ${{ inputs.trigger == 'cron' && 'preview-scheduled' || 'preview' }}"
+    assert text.count(expression) == 1
+    assert text.count("environment:") == 1
+    trigger = text.split("      trigger:\n", 1)[1].split("\n\n", 1)[0]
+    assert 'default: "manual"' in trigger
+    assert '- "manual"' in trigger
+    assert '- "cron"' in trigger

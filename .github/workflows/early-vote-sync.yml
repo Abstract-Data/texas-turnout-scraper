@@ -7,19 +7,17 @@ name: Early vote sync
 #
 # workflow_dispatch: dry_run defaults true. Dry-run job has no secrets.
 # Apply uses GitHub Environment `preview` (required reviewers — John must approve).
-# Scheduled runs (10:00, 17:00, 22:00 Central through 11:59 PM on 2026-11-03) use sync_mode=backfill, election_id=53815, statewide_roster. The portal's
-# per-date files are daily and can gain late records, so every run re-hashes every day: an
-# unchanged day writes nothing, a changed day is rewritten and the KV version bumps.
-# dry_run=false → apply job still waits on preview approval (not unattended).
+# The schedule lives in the preview Worker's cron trigger (docs/adr/013-worker-cron-dispatches-sync.md):
+# at 10:00, 17:00 and 22:00 Central through 11:59 PM on 2026-11-03 it dispatches this workflow
+# with trigger=cron, sync_mode=backfill, election_id=53815, statewide_roster, dry_run=false. The
+# portal's per-date files are daily and can gain late records, so every run re-hashes every day:
+# an unchanged day writes nothing, a changed day is rewritten and the KV version bumps.
+# trigger=cron runs use the `preview-scheduled` environment (no reviewer, main only, same secrets)
+# so they run unattended. Manual applies and Terraform keep the reviewer gate on `preview`.
 #
 # D1/KV writes use Cloudflare REST API + op run (not the Worker read path).
 
 on:
-  schedule:
-    # 10:00, 17:00 and 22:00 America/Chicago, ending 11:59 PM on 2026-11-03. Cron is UTC only and
-    # daylight time ends 2026-11-01, so both sets of hours are listed (CDT: 15, 22, 03; CST:
-    # 16, 23, 04) and the `window` job keeps only the Chicago hours and the end time.
-    - cron: "17 15,16,22,23,3,4 * * *"
   workflow_dispatch:
     inputs:
       sync_mode:
@@ -56,55 +54,34 @@ on:
         options:
           - "statewide_roster"
           - "turnout"
+      trigger:
+        description: "manual, or cron when the preview Worker's cron trigger dispatched the run"
+        required: true
+        default: "manual"
+        type: choice
+        options:
+          - "manual"
+          - "cron"
 
 permissions:
   contents: read
 
 concurrency:
-  group: early-vote-sync-${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+  group: early-vote-sync-${{ inputs.election_id }}
   cancel-in-progress: false
 
 jobs:
-  window:
-    name: Schedule window
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      proceed: ${{ steps.check.outputs.proceed }}
-    steps:
-      - name: Keep only 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03
-        id: check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" != "schedule" ]; then
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          hour="$(TZ=America/Chicago date +%H)"
-          now="$(date -u +%s)"
-          end="$(date -u -d '2026-11-04 05:59:59' +%s)"
-          if [ "$now" -le "$end" ] && { [ "$hour" = "10" ] || [ "$hour" = "17" ] || [ "$hour" = "22" ]; }; then
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "Outside the schedule window (Chicago hour $hour); nothing to do."
-          fi
-
   dry-run:
     name: Dry run
-    if: >-
-      (github.event_name == 'schedule' && false) ||
-      (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'false')
+    if: github.event_name == 'workflow_dispatch' && inputs.dry_run != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
       - name: Validate workflow inputs
         env:
-          SYNC_MODE: ${{ github.event_name == 'schedule' && 'backfill' || inputs.sync_mode }}
-          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
-          ELECTION_DATE: ${{ github.event_name == 'schedule' && '' || inputs.election_date }}
+          SYNC_MODE: ${{ inputs.sync_mode }}
+          ELECTION_ID: ${{ inputs.election_id }}
+          ELECTION_DATE: ${{ inputs.election_date }}
         run: |
           set -euo pipefail
           if [[ ! "${ELECTION_ID}" =~ ^[0-9]+$ ]]; then
@@ -139,10 +116,10 @@ jobs:
 
       - name: Hash early-vote payload(s)
         env:
-          SYNC_MODE: ${{ github.event_name == 'schedule' && 'backfill' || inputs.sync_mode }}
-          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
-          ELECTION_DATE: ${{ github.event_name == 'schedule' && '' || inputs.election_date }}
-          PAYLOAD_KIND: ${{ github.event_name == 'schedule' && 'statewide_roster' || inputs.payload_kind }}
+          SYNC_MODE: ${{ inputs.sync_mode }}
+          ELECTION_ID: ${{ inputs.election_id }}
+          ELECTION_DATE: ${{ inputs.election_date }}
+          PAYLOAD_KIND: ${{ inputs.payload_kind }}
         run: |
           set -euo pipefail
           args=(
@@ -159,22 +136,29 @@ jobs:
 
   apply:
     name: Apply preview
-    needs: window
-    if: >-
-      needs.window.outputs.proceed == 'true' && (
-      (github.event_name == 'schedule') ||
-      (github.event_name == 'workflow_dispatch' && inputs.dry_run == 'false'))
+    if: github.event_name == 'workflow_dispatch' && inputs.dry_run == 'false'
     runs-on: ubuntu-latest
-    environment: preview
+    environment: ${{ inputs.trigger == 'cron' && 'preview-scheduled' || 'preview' }}
     timeout-minutes: 180
     steps:
       - name: Validate workflow inputs
         env:
-          SYNC_MODE: ${{ github.event_name == 'schedule' && 'backfill' || inputs.sync_mode }}
-          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
-          ELECTION_DATE: ${{ github.event_name == 'schedule' && '' || inputs.election_date }}
+          SYNC_MODE: ${{ inputs.sync_mode }}
+          ELECTION_ID: ${{ inputs.election_id }}
+          ELECTION_DATE: ${{ inputs.election_date }}
+          PAYLOAD_KIND: ${{ inputs.payload_kind }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          TRIGGER: ${{ inputs.trigger }}
         run: |
           set -euo pipefail
+          if [[ "${TRIGGER}" == "cron" ]]; then
+            if [[ "${SYNC_MODE}" != "backfill" || "${ELECTION_ID}" != "53815" \
+              || "${PAYLOAD_KIND}" != "statewide_roster" || "${DRY_RUN}" != "false" \
+              || "${GITHUB_REF}" != "refs/heads/main" ]]; then
+              echo "::error::trigger=cron runs only sync_mode=backfill election_id=53815 payload_kind=statewide_roster dry_run=false on refs/heads/main"
+              exit 1
+            fi
+          fi
           if [[ ! "${ELECTION_ID}" =~ ^[0-9]+$ ]]; then
             echo "::error::election_id must be digits only"
             exit 1
@@ -225,10 +209,10 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EV_SNAPSHOT_BUCKET: tx-turnout-ev-snapshots-preview
-          SYNC_MODE: ${{ github.event_name == 'schedule' && 'backfill' || inputs.sync_mode }}
-          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
-          ELECTION_DATE: ${{ github.event_name == 'schedule' && '' || inputs.election_date }}
-          PAYLOAD_KIND: ${{ github.event_name == 'schedule' && 'statewide_roster' || inputs.payload_kind }}
+          SYNC_MODE: ${{ inputs.sync_mode }}
+          ELECTION_ID: ${{ inputs.election_id }}
+          ELECTION_DATE: ${{ inputs.election_date }}
+          PAYLOAD_KIND: ${{ inputs.payload_kind }}
         run: |
           set -euo pipefail
           args=(
@@ -257,7 +241,7 @@ jobs:
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+          ELECTION_ID: ${{ inputs.election_id }}
         run: |
           set -euo pipefail
           precompute_args=(
@@ -275,7 +259,7 @@ jobs:
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+          ELECTION_ID: ${{ inputs.election_id }}
         run: |
           set -euo pipefail
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
@@ -285,7 +269,7 @@ jobs:
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+          ELECTION_ID: ${{ inputs.election_id }}
         run: |
           set -euo pipefail
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
@@ -295,7 +279,7 @@ jobs:
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+          ELECTION_ID: ${{ inputs.election_id }}
         run: |
           set -euo pipefail
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \

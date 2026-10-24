@@ -4,7 +4,7 @@ Single deployable Worker for preview Terraform (`tx-turnout-ev-api-preview`).
 
 | Path | Role |
 |------|------|
-| `entry.py` | `workers.asgi.entrypoint` mounting the FastAPI app |
+| `entry.py` | `WorkerEntrypoint`: `fetch` hands requests to the FastAPI app through `asgi.fetch`; `scheduled` runs the cron dispatch in `ev_api/cron.py` |
 | `src/ev_api/` | Aggregate read API (KV cache, D1 chunk reads, Access gate) |
 | `python_modules/` | Pyodide bundle from `uv run pywrangler sync` (runtime SDK, FastAPI, `tzdata`, `texas_turnout_scraper`) |
 
