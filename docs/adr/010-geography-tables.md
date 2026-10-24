@@ -37,7 +37,9 @@ precinct keys. Nothing reads these tables yet; a later Worker change joins them 
    tie goes to the lower district number. `*_share` is that area over the precinct's area, rounded
    to 4 decimals. `split_* = share < 0.99` on the rounded share: true means at least 1% of the
    precinct lies outside its assigned district, so the district is right for most but not all of
-   its voters. A precinct with no overlap gets NULL district, share and flag. Voterfile district
+   its voters. The share is over the whole precinct, so area that falls outside every district of
+   the plan (a coastline or a boundary mismatch) also counts against it: `split` means the largest
+   district covers under 99% of the precinct, not strictly that two districts share it. A precinct with no overlap gets NULL district, share and flag. Voterfile district
    columns are not used.
 6. **Determinism.** No timestamps; areas sorted by `(kind, code)`, precincts by `pctkey`; sorted
    keys; fixed rounding; one record per line. Identical inputs and library versions give

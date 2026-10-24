@@ -39,6 +39,11 @@ GEO_SCHEMA_CREATES: tuple[str, ...] = (
     META_TABLE_SQL,
 )
 
+GEO_TABLES_PRESENT_SQL = (
+    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN "
+    "('geo_area', 'geo_precinct', 'geo_precinct_alias', 'geo_meta')"
+)
+GEO_TABLE_COUNT = 4
 META_SELECT_SQL = "SELECT sha256 FROM geo_meta WHERE name = ?"
 META_UPSERT_SQL = (
     "INSERT INTO geo_meta (name, sha256) VALUES (?, ?) "

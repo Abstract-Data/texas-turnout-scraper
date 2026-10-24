@@ -18,7 +18,7 @@ import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.early_vote_roster_rows import day_number, key_ranges
@@ -37,6 +37,8 @@ from texas_turnout_scraper.geo_tables import (
     AREA_UPSERT_SQL,
     COUNTY_NAMES_SQL,
     GEO_ROWS_PER_STATEMENT,
+    GEO_TABLE_COUNT,
+    GEO_TABLES_PRESENT_SQL,
     META_NAME,
     META_SELECT_SQL,
     META_UPSERT_SQL,
@@ -229,6 +231,30 @@ def _rows(rows: Iterable[Mapping[str, object]], *columns: str) -> Iterator[tuple
         yield tuple(_text(row.get(column)) for column in columns)
 
 
+@dataclass(frozen=True)
+class GeoCatalog:
+    """County names and precinct keys read from the geography JSON instead of the tables."""
+
+    fips_by_name: dict[str, str]
+    keys: dict[tuple[str, str], str]
+
+
+def catalog_from_json(data: Mapping[str, Any]) -> GeoCatalog:
+    return GeoCatalog(
+        fips_by_name={
+            county_key(str(a["name"])): str(a["code"])
+            for a in data["areas"]
+            if a["kind"] == "county"
+        },
+        keys={(str(p["county_fips"]), str(p["prec"])): str(p["pctkey"]) for p in data["precincts"]},
+    )
+
+
+def _schema_present(store: GeoStore, database_id: str) -> bool:
+    rows = store._query_rows(database_id, GEO_TABLES_PRESENT_SQL, [])  # noqa: SLF001
+    return bool(rows) and int(_text(rows[0].get("n")) or 0) == GEO_TABLE_COUNT
+
+
 def build_aliases(
     store: GeoStore,
     database_id: str,
@@ -236,32 +262,46 @@ def build_aliases(
     *,
     dry_run: bool = False,
     batch_rows: int = GEO_ROWS_PER_STATEMENT,
+    catalog: GeoCatalog | None = None,
 ) -> AliasResult:
-    """Alias every live roster pair to a loaded precinct, or ``unmatched``. Never guesses."""
-    fips_by_name = {
-        county_key(name): code
-        for code, name in _rows(
-            store._query_rows(database_id, COUNTY_NAMES_SQL, []),  # noqa: SLF001
-            "code",
-            "name",
-        )
-    }
-    keys = {
-        (fips, prec): pctkey
-        for pctkey, fips, prec in _rows(
-            store._query_rows(database_id, PRECINCT_LOOKUP_SQL, []),  # noqa: SLF001
-            "pctkey",
-            "county_fips",
-            "prec",
-        )
-    }
+    """Alias every live roster pair to a loaded precinct, or ``unmatched``. Never guesses.
+
+    ``catalog`` stands in for the geography tables, which a dry run on a fresh database does not
+    have; then there are no stored aliases either.
+    """
+    fips_by_name = (
+        catalog.fips_by_name
+        if catalog is not None
+        else {
+            county_key(name): code
+            for code, name in _rows(
+                store._query_rows(database_id, COUNTY_NAMES_SQL, []),  # noqa: SLF001
+                "code",
+                "name",
+            )
+        }
+    )
+    keys = (
+        catalog.keys
+        if catalog is not None
+        else {
+            (fips, prec): pctkey
+            for pctkey, fips, prec in _rows(
+                store._query_rows(database_id, PRECINCT_LOOKUP_SQL, []),  # noqa: SLF001
+                "pctkey",
+                "county_fips",
+                "prec",
+            )
+        }
+    )
     counts = _pair_counts(store, database_id, election_id)
     wanted = {
         pair: resolve_precinct(fips_by_name.get(county_key(pair[0])), pair[1], keys)
         for pair in counts
     }
     existing: dict[Pair, Alias] = {}
-    for row in store._query_rows(database_id, ALIASES_SQL, []):  # noqa: SLF001
+    stored = [] if catalog is not None else store._query_rows(database_id, ALIASES_SQL, [])  # noqa: SLF001
+    for row in stored:
         pctkey = row.get("pctkey")
         existing[(_text(row.get("county")), _text(row.get("precinct")))] = (
             None if pctkey is None else str(pctkey),
@@ -315,7 +355,16 @@ def run_geo_load_on_store(
     if database_id is None:
         logger.info("geo load election_id=%s has no D1 database", election_id)
         return GeoLoadResult("unchanged"), None
-    store._ensure_schema(database_id)  # noqa: SLF001
+    if not dry_run:
+        store._ensure_schema(database_id)  # noqa: SLF001
+    elif not _schema_present(store, database_id):
+        data = json.loads(Path(json_path).read_bytes())
+        logger.info("geo load dry run: geography tables absent, nothing is created")
+        loaded = GeoLoadResult("dry_run", len(data["areas"]), len(data["precincts"]))
+        aliases = build_aliases(
+            store, database_id, election_id, dry_run=True, catalog=catalog_from_json(data)
+        )
+        return loaded, aliases
     loaded = load_geo(store, database_id, json_path, dry_run=dry_run)
     return loaded, build_aliases(store, database_id, election_id, dry_run=dry_run)
 

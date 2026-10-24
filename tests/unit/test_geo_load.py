@@ -6,6 +6,7 @@ import hashlib
 import importlib.metadata
 import json
 import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -25,6 +26,7 @@ from texas_turnout_scraper.geo_load import (
     county_key,
     load_geo,
     resolve_precinct,
+    run_geo_load_on_store,
 )
 from texas_turnout_scraper.geo_models import GeoArea, GeoMeta, GeoPrecinct, GeoPrecinctAlias
 from texas_turnout_scraper.geo_tables import (
@@ -383,3 +385,85 @@ def test_the_loader_imports_no_geo_libraries() -> None:
         "assert not bad, bad"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+class _FreshStore(_SqliteStore):
+    """A database that has the roster tables but none of the geography tables yet."""
+
+    def __init__(self) -> None:
+        self.conn = sqlite3.connect(":memory:")
+        for sql in (ROW_TABLE_SQL, VERSION_TABLE_SQL):
+            self.conn.execute(sql)
+        self.statements = []
+        self.schema_calls = 0
+
+    def _database_uuid_if_exists(self, election_id: str) -> str | None:
+        return "db"
+
+    def _ensure_schema(self, database_id: str) -> None:
+        self.schema_calls += 1
+        for sql in GEO_SCHEMA_CREATES:
+            self.conn.execute(sql)
+
+
+def _geo_tables(store: _SqliteStore) -> list[tuple[Any, ...]]:
+    return store.rows("SELECT name FROM sqlite_master WHERE name LIKE 'geo_%'")
+
+
+def test_a_dry_run_on_a_fresh_database_creates_nothing_and_still_reports_the_match(
+    tmp_path: Path,
+) -> None:
+    path = _write(tmp_path, _geo(PRECINCTS))
+    fresh = _FreshStore()
+    _roster(fresh, ROSTER)
+    loaded, aliases = run_geo_load_on_store(fresh, "53815", path, dry_run=True)
+    assert fresh.schema_calls == 0
+    assert fresh.statements == []
+    assert _geo_tables(fresh) == []
+    assert loaded.status == "dry_run"
+    assert (loaded.areas, loaded.precincts) == (len(PRECINCTS) + 4, len(PRECINCTS))
+
+    applied = _FreshStore()
+    _roster(applied, ROSTER)
+    _, expected = run_geo_load_on_store(applied, "53815", path, dry_run=False)
+    assert applied.schema_calls == 1
+    assert aliases is not None and expected is not None
+    assert (
+        aliases.pairs,
+        aliases.matched_pairs,
+        aliases.unmatched_pairs,
+        aliases.rows,
+        aliases.matched_rows,
+    ) == (
+        expected.pairs,
+        expected.matched_pairs,
+        expected.unmatched_pairs,
+        expected.rows,
+        expected.matched_rows,
+    )
+    assert (aliases.written, aliases.removed) == (0, 0)
+
+
+def test_a_dry_run_on_a_loaded_database_runs_no_schema_step_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    path = _write(tmp_path, _geo(PRECINCTS))
+    loaded_store = _FreshStore()
+    _roster(loaded_store, ROSTER)
+    run_geo_load_on_store(loaded_store, "53815", path, dry_run=False)
+    schema_calls, statements = loaded_store.schema_calls, len(loaded_store.statements)
+    run_geo_load_on_store(loaded_store, "53815", path, dry_run=True)
+    assert loaded_store.schema_calls == schema_calls
+    assert len(loaded_store.statements) == statements
+
+
+def test_the_worker_app_import_graph_loads_no_geo_libraries_and_no_sqlmodel() -> None:
+    worker_src = Path(__file__).resolve().parents[2] / "infra" / "preview" / "worker" / "src"
+    code = (
+        "import sys, ev_api.app;"
+        "bad = [m for m in ('shapely', 'pyproj', 'shapefile', 'numpy', 'sqlmodel', 'sqlalchemy')"
+        " if m in sys.modules];"
+        "assert not bad, bad"
+    )
+    env = {**os.environ, "PYTHONPATH": str(worker_src)}
+    subprocess.run([sys.executable, "-c", code], check=True, env=env)
