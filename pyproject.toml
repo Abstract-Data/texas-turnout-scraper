@@ -63,7 +63,8 @@ line-length = 100
 target-version = "py310"
 # Pywrangler-vendored workers-runtime-sdk (regenerated via `pywrangler sync`).
 # Not our code; CI runs `ruff check . --select E,W,F,I`, which surfaces upstream E501.
-extend-exclude = ["infra/preview/worker/python_modules"]
+# Pinned submodule (voterfile-audit-pipeline): provenance and fetch scripts, not our code.
+extend-exclude = ["infra/preview/worker/python_modules", "vendor"]
 
 [tool.ruff.lint]
 # Selector additions (2026-05-25, post review-suite):
@@ -114,6 +115,7 @@ known-first-party = ["texas_turnout_scraper"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["vendor", ".git", "node_modules"]
 asyncio_mode = "auto"
 python_files = ["test_*.py", "check_*.py"]
 
