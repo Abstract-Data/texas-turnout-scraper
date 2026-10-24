@@ -141,6 +141,20 @@ def _run(store: Any, voterfile: Path, **kwargs: Any) -> Any:
     return run_voter_link_on_store(store, "53815", voterfile, today=TODAY, **kwargs)
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_voterfile_that_repeats_a_vuid_stops_the_link_before_the_meta_is_written(
+    store: _Store, tmp_path: Path, dry_run: bool
+) -> None:
+    from texas_turnout_scraper.early_vote_errors import EarlyVoteSyncError
+
+    people = [*PEOPLE, _person("1000000001", GEN22="VE")]
+    repeated = _write_voterfile(tmp_path / "repeats.csv", people)
+    with pytest.raises(EarlyVoteSyncError, match="repeats a VUID") as excinfo:
+        _run(store, repeated, dry_run=dry_run)
+    assert "1000000001" not in str(excinfo.value)
+    assert store.rows("SELECT name FROM early_vote_voter_meta") == []
+
+
 def test_the_query_selects_exactly_the_21_columns() -> None:
     sql = voterfile_sql()
     select_list = sql.split(" FROM ", 1)[0].removeprefix("SELECT ")

@@ -449,8 +449,13 @@ def link_voters(
     changed_rejects = _Buffer(writes, REJECT_UPSERT_SQL)
     cleared = _Buffer(writes, REJECT_DELETE_SQL)
     voters = rejects = invalid_dob = invalid_edr = 0
+    seen: set[str] = set()
     for raw in read_voterfile(voterfile, order):
         key = _vuid_key(raw["VUID"])
+        if key in seen:
+            # Which of two rows would win depends on read order, so refuse before meta is written.
+            raise EarlyVoteSyncError("voterfile repeats a VUID; nothing marked complete")
+        seen.add(key)
         entries = {k: dated.days[k].get(key) for k in DATED_KEYS} if dated else {}
         parsed = parse_voter(raw, entries, today=inputs.today)
         if isinstance(parsed, Voter):

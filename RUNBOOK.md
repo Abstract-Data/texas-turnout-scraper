@@ -171,6 +171,8 @@ A dry run reads D1 and the voterfile, fetches the dated days, and reports; it cr
 
 **After a scoring change**, bump `SCORE_VERSION` in `voter_tables.py`. It is part of `src_hash`, so the next apply rewrites every voter.
 
+The voterfile must hold each VUID once (the September 2026 file does: 18,932,927 rows, 18,932,927 distinct). If a file repeats a VUID, the link stops with `voterfile repeats a VUID; nothing marked complete` before the meta rows are written, because which row would win depends on read order. Fix the file and rerun.
+
 ### An election has stopped updating on Pages (held back for size)
 
 `data-refresh.yml` runs `.github/scripts/skip_oversize_data.py` before it commits. GitHub rejects any single file over 100 MiB, so a file over 95 MiB holds back its whole election: the election folder goes back to its last published state (or is removed if it was never published) and its `index.json` entry is restored. Other elections still publish.
