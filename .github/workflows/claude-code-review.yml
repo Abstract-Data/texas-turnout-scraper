@@ -18,11 +18,6 @@ jobs:
     #   github.event.pull_request.user.login == 'new-developer' ||
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
 
-    # Release Please PRs are generated (version bump and changelog) and come from the
-    # github-actions bot, which the review action rejects ("non-human actor"). Skip them
-    # so they do not show a failed check on every release PR.
-    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,13 +27,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
