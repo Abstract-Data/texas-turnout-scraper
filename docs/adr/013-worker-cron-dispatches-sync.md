@@ -65,3 +65,7 @@ waited for approval and was not unattended.
   drift.
 - **Cloudflare cron triggers fire at most once per schedule entry**, and trigger changes take up to
   15 minutes to propagate after apply.
+
+## Where the token lives
+
+The GitHub token is a `preview` environment secret. It is copied into the saved Terraform plan and into the Terraform state, both in the private state bucket, and into the Worker's `secret_text` binding. The plan summary redacts it. Rotating it means changing the secret and running the Terraform workflow.
