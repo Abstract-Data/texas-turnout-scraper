@@ -72,6 +72,7 @@ import httpx
 from texas_turnout_scraper.civix.envelope import _decode_envelope
 from texas_turnout_scraper.civix.evr import API_PREFIX, BASE_URL
 from texas_turnout_scraper.civix.ids import require_election_id
+from texas_turnout_scraper.early_vote_aggregates import detect_payload_kind
 from texas_turnout_scraper.early_vote_d1_precompute_store import (
     PRECOMPUTE_SCHEMA_CREATES,
     aggregate_body_from_decoded,
@@ -86,7 +87,17 @@ from texas_turnout_scraper.early_vote_day_changes import (
     diff_rosters,
     roster_row_count,
 )
-from texas_turnout_scraper.early_vote_roster import RosterCsvSummary, redact_roster_csv
+from texas_turnout_scraper.early_vote_errors import EarlyVoteSyncError
+from texas_turnout_scraper.early_vote_roster import RosterCsvSummary, canonicalize_roster_csv
+from texas_turnout_scraper.early_vote_roster_rows import (
+    MAX_ROW_SQL,
+    ROW_SCHEMA_CREATES,
+    check_roster_header,
+    delete_statements,
+    insert_statements,
+    marker_statement,
+    reject_statements,
+)
 from texas_turnout_scraper.http_transport import HttpBackend, PacedHttpClient
 from texas_turnout_scraper.r2_snapshots import R2SnapshotStore, snapshot_store_from_env
 
@@ -178,10 +189,6 @@ class EarlyVoteCapError(RuntimeError):
     """The load would pass the 10 GB D1 per-database cap."""
 
 
-class EarlyVoteSyncError(RuntimeError):
-    """The sync could not finish. KV was not bumped after a failed D1 write."""
-
-
 @dataclass(frozen=True)
 class D1Plan:
     """SQL text a dry run prints. Bound file bytes are omitted."""
@@ -195,7 +202,6 @@ class D1Plan:
     within_cap: bool
     payload_kind: EarlyVotePayloadKind
     csv_columns: tuple[str, ...] | None = None
-    dropped_columns: tuple[str, ...] | None = None
     voting_method_counts: tuple[tuple[str, int], ...] | None = None
     aggregate_rows: int | None = None
 
@@ -387,7 +393,8 @@ _DELETE_FILE_SQL = "DELETE FROM early_vote_file WHERE source_election_id = ? AND
 _POINTER_SELECT_SQL = "SELECT file_id FROM early_vote_pointer WHERE source_election_id = ?"
 _FILE_IDS_SQL = (
     "SELECT file_id FROM early_vote_chunk WHERE source_election_id = ? "
-    "UNION SELECT file_id FROM early_vote_file WHERE source_election_id = ?"
+    "UNION SELECT file_id FROM early_vote_file WHERE source_election_id = ? "
+    "UNION SELECT file_id FROM early_vote_roster_rows WHERE source_election_id = ?"
 )
 _FILE_ID_FOR_HASH_SQL = (
     "SELECT file_id FROM early_vote_file WHERE source_election_id = ? AND sha256 = ?"
@@ -421,6 +428,7 @@ _SCHEMA_CREATES: tuple[str, ...] = (
     _DAY_TABLE_SQL,
     DAY_CHANGE_TABLE_SQL,
     *PRECOMPUTE_SCHEMA_CREATES,
+    *ROW_SCHEMA_CREATES,
 )
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
 _FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"
@@ -599,11 +607,10 @@ def prepare_payload_bytes(
     decoded: bytes,
     payload_kind: EarlyVotePayloadKind,
 ) -> tuple[bytes, RosterCsvSummary | None]:
-    """Decode envelope bytes are prepared for hash + D1 (roster redaction when needed)."""
+    """Decode envelope bytes are prepared for hash + D1 (roster canonicalization when needed)."""
     if payload_kind == "turnout":
         return decoded, None
-    redacted, summary = redact_roster_csv(decoded, statewide=True)
-    return redacted, summary
+    return canonicalize_roster_csv(decoded)
 
 
 def summarize_d1_plan(
@@ -656,7 +663,6 @@ def summarize_d1_plan(
         within_cap=estimated_stored_bytes(len(decoded)) <= D1_DATABASE_CAP_BYTES,
         payload_kind=payload_kind,
         csv_columns=roster_summary.columns if roster_summary else None,
-        dropped_columns=roster_summary.dropped_columns if roster_summary else None,
         voting_method_counts=roster_summary.voting_method_counts if roster_summary else None,
         aggregate_rows=aggregate_rows,
     )
@@ -781,8 +787,6 @@ def format_sync_report(result: SyncResult) -> str:
         row_fields = [f"election_id={result.election_id}"]
         if plan.csv_columns:
             row_fields.append(f"csv_columns={','.join(plan.csv_columns)}")
-        if plan.dropped_columns:
-            row_fields.append(f"dropped_columns={','.join(plan.dropped_columns)}")
         if plan.voting_method_counts:
             rollups = ",".join(f"{name}:{count}" for name, count in plan.voting_method_counts)
             row_fields.append(f"voting_method_counts={rollups}")
@@ -1050,6 +1054,9 @@ class CloudflareEarlyVoteStore:
         *,
         update_pointer: bool = False,
     ) -> None:
+        roster = detect_payload_kind(decoded) == "statewide_roster"
+        if roster:
+            check_roster_header(decoded)
         rows = self._query_rows(
             database_id,
             _DAY_SELECT_FILE_AND_HASH_SQL,
@@ -1085,6 +1092,8 @@ class CloudflareEarlyVoteStore:
             decoded,
             ev_date_iso=ev_date_iso,
         )
+        if roster:
+            self._write_roster_rows(database_id, election_id, plan.file_id, decoded)
         self._statements(
             database_id,
             [
@@ -1100,6 +1109,7 @@ class CloudflareEarlyVoteStore:
                 [_statement_lists(plan.pointer_update)],
             )
         if old_id and old_id != plan.file_id:
+            self._delete_roster_rows(database_id, election_id, old_id)
             repoint: list[tuple[str, list[str]]] = []
             if not update_pointer and self._pointer_file_id(database_id, election_id) == old_id:
                 repoint.append(_statement_lists(plan.pointer_update))
@@ -1209,6 +1219,8 @@ class CloudflareEarlyVoteStore:
             return
         rows: list[tuple[str, list[str]]] = []
         for file_id in stale:
+            # Rows go first: a crash then leaves the chunks, which keep the id findable here.
+            self._delete_roster_rows(database_id, election_id, file_id)
             for stmt in delete_precompute_statements(election_id, file_id):
                 rows.append(_statement_lists(stmt))
             rows.append((_DELETE_CHUNK_SQL, [election_id, file_id]))
@@ -1222,7 +1234,7 @@ class CloudflareEarlyVoteStore:
         )
 
     def _distinct_file_ids(self, database_id: str, election_id: str) -> list[str]:
-        rows = self._query_rows(database_id, _FILE_IDS_SQL, [election_id, election_id])
+        rows = self._query_rows(database_id, _FILE_IDS_SQL, [election_id, election_id, election_id])
         return _string_column(rows, "file_id")
 
     def _file_ids_for_hash(
@@ -1431,6 +1443,43 @@ class CloudflareEarlyVoteStore:
             file_id,
             precompute_row_count(body),
         )
+
+    def _write_roster_rows(
+        self, database_id: str, election_id: str, file_id: str, decoded: bytes
+    ) -> None:
+        """Insert a roster file's rows and rejects under its file id, then the marker."""
+        from texas_turnout_scraper.roster_models import parse_roster_batches
+
+        rows = rejects = 0
+        for batch in parse_roster_batches(decoded, file_id):
+            statements = (
+                *insert_statements(file_id, batch.rows),
+                *reject_statements(file_id, batch.rejects),
+            )
+            for statement in statements:
+                self._statements(database_id, [_statement_lists(statement)])
+            rows += len(batch.rows)
+            rejects += len(batch.rejects)
+        self._statements(
+            database_id,
+            [_statement_lists(marker_statement(election_id, file_id, rows, rejects))],
+        )
+        log = logger.warning if rejects else logger.info
+        log(
+            "early-vote D1 roster rows election_id=%s file_id=%s rows=%s rejects=%s",
+            election_id,
+            file_id,
+            rows,
+            rejects,
+        )
+
+    def _delete_roster_rows(self, database_id: str, election_id: str, file_id: str) -> None:
+        """Drop a replaced version's marker, rejects, then rows. Each step is safe to repeat."""
+        found = self._query_rows(database_id, MAX_ROW_SQL, [file_id])
+        last = found[0].get("max_row") if found else None
+        row_count = 0 if last is None else int(last) + 1
+        for statement in delete_statements(election_id, file_id, row_count):
+            self._statements(database_id, [_statement_lists(statement)])
 
     def _record_aggregate_meta(
         self,

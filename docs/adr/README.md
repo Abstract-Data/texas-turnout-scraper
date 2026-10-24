@@ -31,3 +31,4 @@ What are the trade-offs and outcomes?
 | [003](./003-github-pages-static-api.md) | GitHub Pages as static JSON/CSV API | Accepted | 2026-05-24 |
 | [004](./004-civix-evr-source.md) | Add Civix EVR API as second data source | Accepted | 2026-05-24 |
 | [005](./005-release-please.md) | Automated releases with Release Please | Accepted | 2026-05-25 |
+| [009](./009-sqlmodel-roster-models.md) | SQLModel models for D1 roster rows | Accepted | 2026-10-23 |

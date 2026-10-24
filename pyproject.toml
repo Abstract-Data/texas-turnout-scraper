@@ -23,6 +23,7 @@ cli = [
 mcp = ["mcp[cli]>=1.3.0"]
 voterfile = ["duckdb>=1.0.0"]
 waf = ["cloudscraper>=1.2.71"]
+loader = ["sqlmodel>=0.0.48"]
 
 [project.scripts]
 tx-turnout = "texas_turnout_scraper.cli:app"
@@ -47,6 +48,7 @@ dev = [
     "mcp[cli]>=1.3.0",
     "duckdb>=1.0.0",
     "cloudscraper>=1.2.71",
+    "sqlmodel>=0.0.48",
 ]
 
 [build-system]

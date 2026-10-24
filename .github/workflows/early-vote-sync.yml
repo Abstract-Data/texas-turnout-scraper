@@ -106,7 +106,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install package
-        run: uv sync --locked --extra waf
+        run: uv sync --locked --extra waf --extra loader
 
       - name: Hash early-vote payload(s)
         env:
@@ -172,7 +172,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install package
-        run: uv sync --locked --extra waf
+        run: uv sync --locked --extra waf --extra loader
 
       - name: Install 1Password CLI
         uses: 1password/install-cli-action@1a3160d5e9de1ae0803eaa08a88746f5ae3daa50 # v4.1.0
@@ -240,3 +240,13 @@ jobs:
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
             uv run python -m texas_turnout_scraper.early_vote_d1_precompute_backfill \
             "${precompute_args[@]}"
+      - name: Backfill roster rows for stored days (idempotent)
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+        run: |
+          set -euo pipefail
+          op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
+            uv run python -m texas_turnout_scraper.early_vote_roster_rows_backfill \
+            --election-id "${ELECTION_ID}" --apply

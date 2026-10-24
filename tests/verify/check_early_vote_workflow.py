@@ -128,3 +128,19 @@ def test_tflint_plugin_download_is_authenticated() -> None:
         for index in [i for i in range(len(text)) if text.startswith("tflint --init", i)]:
             window = text[max(0, index - 300) : index]
             assert "GITHUB_TOKEN: ${{ github.token }}" in window, workflow.name
+
+
+def test_roster_rows_backfill_runs_after_the_aggregate_backfill() -> None:
+    """Days stored before the row table existed get rows from this idempotent step."""
+    text = WORKFLOW.read_text()
+    aggregates = text.index("early_vote_d1_precompute_backfill")
+    rows = text.index("early_vote_roster_rows_backfill")
+    assert aggregates < rows
+    assert text.count("early_vote_roster_rows_backfill") == 1
+
+
+def test_loader_jobs_install_the_loader_extra() -> None:
+    """The roster-row loader imports sqlmodel, which only the loader extra installs."""
+    syncs = [line for line in WORKFLOW.read_text().splitlines() if "uv sync" in line]
+    assert len(syncs) == 2
+    assert all("--extra waf --extra loader" in line for line in syncs)

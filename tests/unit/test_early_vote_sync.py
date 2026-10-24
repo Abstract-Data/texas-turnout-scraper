@@ -282,8 +282,11 @@ def test_statewide_roster_dry_run_reports_columns_not_rows(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "payload_kind=statewide_roster" in captured.out
-    assert "csv_columns=COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT" in captured.out
-    assert "dropped_columns=POLL_PLACE_NAME" in captured.out
+    assert (
+        "csv_columns=COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT,POLL_PLACE_NAME"
+        in captured.out
+    )
+    assert "dropped_columns" not in captured.out
     assert "voting_method_counts=IN-PERSON:1,MAIL-IN:2" in captured.out
     assert "source_rows=3" in captured.out
     assert "SMITH" not in captured.out
@@ -823,7 +826,7 @@ class _MemoryD1:
         batch = body["batch"]
         sqls = [item["sql"] for item in batch]
         self.batches.append(sqls)
-        if any(sql.startswith("DELETE") for sql in sqls) and self.fail_deletes:
+        if _DELETE_CHUNK_SQL in sqls and self.fail_deletes:
             attempted = [
                 str(item["params"][1]) for item in batch if item["sql"] == _DELETE_CHUNK_SQL
             ]
@@ -855,6 +858,10 @@ class _MemoryD1:
             self.selections.append(found)
             self.order.append("file-ids")
             return {"success": True, "results": [{"file_id": file_id} for file_id in found]}
+        if "MAX(row_id)" in sql:
+            return {"success": True, "results": [{"max_row": None}]}
+        if sql.startswith("DELETE FROM early_vote_roster_"):
+            return {"success": True, "results": []}
         if sql == _DAY_FILE_IDS_SQL:
             self.order.append("day-file-ids")
             return {"success": True, "results": []}
