@@ -136,7 +136,7 @@ def store() -> _Store:
     return s
 
 
-def _run(store: _Store, voterfile: Path, **kwargs: Any) -> Any:
+def _run(store: Any, voterfile: Path, **kwargs: Any) -> Any:
     kwargs.setdefault("dry_run", False)
     return run_voter_link_on_store(store, "53815", voterfile, today=TODAY, **kwargs)
 
@@ -408,3 +408,141 @@ def test_an_apply_with_dated_history_stores_days_and_earliness(
         "SELECT ro26_day, pri26_day FROM early_vote_voter WHERE vuid = '1000000005'"
     ) == [(3, None)]
     assert not re.search(r"\b1000000\d{3}\b", caplog.text)
+
+
+# --- streaming -----------------------------------------------------------------------------
+
+_CODES = ("", "V", "VE", "VA")
+_PRIMARY = ("", "R", "D", "RE", "DE", "RA", "DA")
+
+
+def _many(path: Path, count: int) -> list[str]:
+    """A synthetic voterfile of ``count`` valid voters with varied history; returns the VUIDs."""
+    header = _header()
+    vuids = [f"{3_000_000_000 + n:010d}" for n in range(count)]
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(header)
+        for n, vuid in enumerate(vuids):
+            row = _person(
+                vuid,
+                DOB=f"19{40 + n % 60:02d}0{1 + n % 9}1{n % 9}",
+                GEN24=_CODES[n % 4],
+                GEN20=_CODES[n // 4 % 4],
+                PRI26=_PRIMARY[n % 7],
+                RO24=_PRIMARY[n // 7 % 7],
+            )
+            writer.writerow([row[c] for c in header])
+    return vuids
+
+
+class _CountingStore:
+    """Answers the link's reads from a VUID list and keeps only the size of each write."""
+
+    def __init__(self, vuids: Sequence[str], *, stored_every: int = 2) -> None:
+        from texas_turnout_scraper.early_vote_roster_rows import key_ranges
+        from texas_turnout_scraper.voter_link import TARGET_KEY_RANGES
+
+        self.vuids = sorted(vuids)
+        # Every ``stored_every``-th voter is already in D1 with a hash that no longer matches.
+        self.stored = self.vuids[::stored_every]
+        self.first_low = key_ranges(TARGET_KEY_RANGES)[0][0]
+        self.writes: list[tuple[str, int, int]] = []
+        self.consumed = 0
+
+    def _database_uuid_if_exists(self, election_id: str) -> str | None:
+        return "db"
+
+    def _ensure_schema(self, database_id: str) -> None:
+        return None
+
+    def _query_rows(self, database_id: str, sql: str, params: list[str]) -> list[dict[str, Any]]:
+        if "early_vote_roster_version" in sql:
+            return [{"ev_date": "2026-10-20"}]
+        if "FROM early_vote_roster_row" in sql:
+            if params[1] != self.first_low:
+                return []
+            return [{"id_voter": vuid} for vuid in self.vuids]
+        if "CAST(src_hash AS TEXT)" in sql:
+            low, high = params
+            return [{"vuid": v, "src_hash": "-1"} for v in self.stored if low <= v <= high]
+        return []
+
+    def _statements(self, database_id: str, statements: list[tuple[str, list[str]]]) -> None:
+        for sql, params in statements:
+            self.writes.append((sql, len(json.loads(params[0])), self.consumed))
+
+
+def _spy_on_reads(monkeypatch: pytest.MonkeyPatch, store: _CountingStore) -> None:
+    import texas_turnout_scraper.voter_link as voter_link
+
+    original = voter_link.read_voterfile
+
+    def counting(path: Path, targets: Any) -> Any:
+        for row in original(path, targets):
+            store.consumed += 1
+            yield row
+
+    monkeypatch.setattr(voter_link, "read_voterfile", counting)
+
+
+def _peak(tmp_path: Path, count: int) -> tuple[int, Any]:
+    import gc
+    import tracemalloc
+
+    vuids = _many(tmp_path / f"voters{count}.csv", count)
+    store = _CountingStore(vuids)
+    gc.collect()
+    tracemalloc.start()
+    try:
+        result = _run(store, tmp_path / f"voters{count}.csv", batch_rows=1000)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert (result.status, result.matched, result.written) == ("wrote", count, count)
+    return peak, store
+
+
+def test_memory_does_not_grow_with_the_changed_voters(tmp_path: Path) -> None:
+    small, _ = _peak(tmp_path, 20_000)
+    large, store = _peak(tmp_path, 60_000)
+    assert large / 60_000 < 1_500, f"peak {large / 60_000:.0f} bytes per voter"
+    # The target set, the sorted targets and the stored hashes grow by design; nothing else may.
+    assert large < 2.5 * small + 4_000_000, f"peak {large} for 60k against {small} for 20k"
+    # Measured about 120 bytes per extra voter; a retained Voter costs about 4,700.
+    assert (large - small) / 40_000 < 400, f"{(large - small) / 40_000:.0f} bytes per extra voter"
+    voter_writes = [
+        n for sql, n, _ in store.writes if sql.startswith("INSERT INTO early_vote_voter ")
+    ]
+    assert sum(voter_writes) == 60_000
+
+
+def test_writes_flush_while_the_voterfile_streams_and_never_exceed_batch_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "voters.csv"
+    store = _CountingStore(_many(path, 5_000))
+    _spy_on_reads(monkeypatch, store)
+    result = _run(store, path, batch_rows=1000)
+    voter_writes = [
+        (n, at) for sql, n, at in store.writes if sql.startswith("INSERT INTO early_vote_voter ")
+    ]
+    assert result.written == sum(n for n, _ in voter_writes) == 5_000
+    assert max(n for n, _ in voter_writes) <= 1000
+    assert voter_writes[0][1] < 5_000, "first voter flush waited for the whole voterfile"
+    assert "early_vote_election_calendar" in store.writes[0][0]
+    assert "early_vote_voter_meta" in store.writes[-1][0]
+    assert all("early_vote_voter_meta" not in sql for sql, _, _ in store.writes[:-1])
+
+
+def test_a_dry_run_streams_and_counts_without_writing(tmp_path: Path) -> None:
+    path = tmp_path / "voters.csv"
+    store = _CountingStore(_many(path, 3_000), stored_every=3)
+    result = _run(store, path, dry_run=True, batch_rows=1000)
+    assert store.writes == []
+    assert (result.status, result.written, result.pending, result.unchanged) == (
+        "dry_run",
+        0,
+        3_000,
+        0,
+    )

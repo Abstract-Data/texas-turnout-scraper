@@ -75,7 +75,11 @@ Nothing in the Worker reads these tables yet; a later change joins them to roste
    deleted from the reject table. Voters are never deleted. The meta rows (voterfile name, size
    and sha256, election id, score version, a hash of the seeds, counts) are written last; when
    nothing changed and the meta matches, an apply sends no statement at all. A dry run reads, and
-   compares when the tables exist, but never runs the schema step and never writes.
+   compares when the tables exist, but never runs the schema step and never writes. The link is
+   one streaming pass: each voter becomes a payload row the moment its hash differs and a batch
+   is sent as soon as it is full, so memory holds only the target VUIDs, the stored hashes (as
+   integers), an 8-byte fingerprint per stored reject and one batch (about 120 bytes per target
+   voter on synthetic data, against about 5.5 KB when every parsed voter was kept).
 9. **No PII in logs.** Logs, output, reasons and exceptions carry counts, field names and error
    types. DuckDB errors are re-raised with their type name only, since their messages can quote a
    line of the file.

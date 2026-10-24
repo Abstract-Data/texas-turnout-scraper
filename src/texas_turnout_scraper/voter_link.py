@@ -46,7 +46,7 @@ from texas_turnout_scraper.early_vote_sync import (
 )
 from texas_turnout_scraper.geo_tables import ROSTER_DAYS_SQL
 from texas_turnout_scraper.models import CivixElection
-from texas_turnout_scraper.voter_models import Voter, VoterReject, parse_voter, voter_row
+from texas_turnout_scraper.voter_models import Voter, parse_voter, voter_row
 from texas_turnout_scraper.voter_tables import (
     CALENDAR_BY_KEY,
     DATED_KEYS,
@@ -179,7 +179,9 @@ def read_voterfile(path: Path, targets: Iterable[str]) -> Iterator[dict[str, str
 
     with tempfile.TemporaryDirectory() as folder:
         target_file = Path(folder) / "targets.csv"
-        target_file.write_text("vuid\n" + "".join(f"{vuid}\n" for vuid in targets))
+        with target_file.open("w") as handle:
+            handle.write("vuid\n")
+            handle.writelines(f"{vuid}\n" for vuid in targets)
         connection = duckdb.connect()
         try:
             try:
@@ -352,22 +354,50 @@ def _tables_present(store: VoterStore, database_id: str) -> bool:
     return bool(rows) and int(_text(rows[0].get("n")) or 0) == VOTER_TABLE_COUNT
 
 
-def _parse_all(
-    voterfile: Path, targets: set[str], dated: DatedHistory | None, today: date
-) -> tuple[dict[str, Voter], dict[str, VoterReject]]:
-    voters: dict[str, Voter] = {}
-    rejects: dict[str, VoterReject] = {}
-    for raw in read_voterfile(voterfile, sorted(targets)):
-        key = _vuid_key(raw["VUID"])
-        entries = {k: dated.days[k].get(key) for k in DATED_KEYS} if dated else {}
-        parsed = parse_voter(raw, entries, today=today)
-        if isinstance(parsed, Voter):
-            voters[parsed.vuid] = parsed
-            rejects.pop(parsed.vuid, None)
-        else:
-            rejects[parsed.vuid] = parsed
-            voters.pop(parsed.vuid, None)
-    return voters, rejects
+def _reject_digest(reason: str, raw: object) -> bytes:
+    """A short fingerprint of a reject, so the stored rejects need not stay decoded in memory."""
+    text = reason + "\0" + json.dumps(raw, sort_keys=True, separators=(",", ":"))
+    return hashlib.blake2b(text.encode(), digest_size=8).digest()
+
+
+class _Writes:
+    """Bounded writes in arrival order, the seed statements before the first. A dry run counts."""
+
+    def __init__(
+        self, store: VoterStore, database_id: str, *, dry_run: bool, batch_rows: int
+    ) -> None:
+        self.store, self.database_id = store, database_id
+        self.dry_run, self.batch_rows = dry_run, batch_rows
+        self.sent = False
+
+    def send(self, sql: str, rows: Sequence[object]) -> None:
+        if self.dry_run or not rows:
+            return
+        if not self.sent:
+            self.store._statements(self.database_id, list(seed_statements()))  # noqa: SLF001
+            self.sent = True
+        _write(self.store, self.database_id, sql, rows, self.batch_rows)
+
+
+class _Buffer:
+    """Rows for one statement, flushed the moment ``batch_rows`` of them are waiting."""
+
+    def __init__(self, writes: _Writes, sql: str) -> None:
+        self.writes, self.sql = writes, sql
+        self.rows: list[object] = []
+        self.count = 0
+
+    def add(self, row: object) -> None:
+        self.count += 1
+        if self.writes.dry_run:
+            return
+        self.rows.append(row)
+        if len(self.rows) >= self.writes.batch_rows:
+            self.flush()
+
+    def flush(self) -> None:
+        self.writes.send(self.sql, self.rows)
+        self.rows = []
 
 
 @dataclass(frozen=True)
@@ -390,20 +420,23 @@ def link_voters(
     tables_present: bool = True,
     batch_rows: int = VOTER_ROWS_PER_STATEMENT,
 ) -> LinkResult:
-    """Bring ``early_vote_voter`` to the voterfile for this election's voters; see the module."""
+    """Bring ``early_vote_voter`` to the voterfile for this election's voters; see the module.
+
+    One pass over the voterfile: each voter is parsed, compared with its stored hash and, when it
+    changed, turned into a payload row at once. Only the target VUIDs, the stored hashes and
+    reject fingerprints, and one batch of rows per statement stay in memory.
+    """
     voterfile, targets, dated = inputs.voterfile, inputs.targets, inputs.dated
-    voters, rejects = _parse_all(voterfile, targets, dated, inputs.today)
     order = sorted(targets)
-    hashes: dict[str, str] = {}
-    stored_rejects: dict[str, tuple[str, object]] = {}
+    hashes: dict[str, int] = {}
+    stored_rejects: dict[str, bytes] = {}
     stored_meta: dict[str, str] = {}
     if tables_present:
         for row in _stored(store, database_id, VOTER_HASHES_SQL, order):
-            hashes[_text(row.get("vuid"))] = _text(row.get("src_hash"))
+            hashes[_text(row.get("vuid"))] = int(_text(row.get("src_hash")))
         for row in _stored(store, database_id, REJECTS_SQL, order):
-            stored_rejects[_text(row.get("vuid"))] = (
-                _text(row.get("reason")),
-                json.loads(_text(row.get("raw")) or "null"),
+            stored_rejects[_text(row.get("vuid"))] = _reject_digest(
+                _text(row.get("reason")), json.loads(_text(row.get("raw")) or "null")
             )
         stored_meta = {
             _text(row.get("name")): _text(row.get("value"))
@@ -411,17 +444,35 @@ def link_voters(
                 database_id, META_SELECT_SQL, []
             )
         }
-    changed = [v for vuid, v in sorted(voters.items()) if hashes.get(vuid) != str(v.src_hash)]
-    changed_rejects = [
-        r for vuid, r in sorted(rejects.items()) if stored_rejects.get(vuid) != (r.reason, r.raw)
-    ]
-    cleared = sorted(vuid for vuid in stored_rejects if vuid in voters)
+    writes = _Writes(store, database_id, dry_run=dry_run, batch_rows=batch_rows)
+    changed = _Buffer(writes, VOTER_UPSERT_SQL)
+    changed_rejects = _Buffer(writes, REJECT_UPSERT_SQL)
+    cleared = _Buffer(writes, REJECT_DELETE_SQL)
+    voters = rejects = invalid_dob = invalid_edr = 0
+    for raw in read_voterfile(voterfile, order):
+        key = _vuid_key(raw["VUID"])
+        entries = {k: dated.days[k].get(key) for k in DATED_KEYS} if dated else {}
+        parsed = parse_voter(raw, entries, today=inputs.today)
+        if isinstance(parsed, Voter):
+            voters += 1
+            invalid_dob += bool(parsed.flags & FLAG_DOB_INVALID)
+            invalid_edr += bool(parsed.flags & FLAG_EDR_INVALID)
+            if hashes.get(parsed.vuid) != parsed.src_hash:
+                changed.add(voter_row(parsed))
+            if parsed.vuid in stored_rejects:
+                cleared.add(parsed.vuid)
+        else:
+            rejects += 1
+            if stored_rejects.get(parsed.vuid) != _reject_digest(parsed.reason, parsed.raw):
+                changed_rejects.add([parsed.vuid, parsed.reason, parsed.raw])
+    for buffer in (changed, changed_rejects, cleared):
+        buffer.flush()
     counts = {
         "targets": len(targets),
-        "matched": len(voters) + len(rejects),
-        "rejects": len(rejects),
-        "invalid_dob": sum(bool(v.flags & FLAG_DOB_INVALID) for v in voters.values()),
-        "invalid_edr": sum(bool(v.flags & FLAG_EDR_INVALID) for v in voters.values()),
+        "matched": voters + rejects,
+        "rejects": rejects,
+        "invalid_dob": invalid_dob,
+        "invalid_edr": invalid_edr,
     }
     meta = {
         "voterfile": _dump(_file_identity(voterfile)),
@@ -431,20 +482,9 @@ def link_voters(
         "counts": _dump(counts),
         "dated_found": _dump(dated.found if dated else {}),
     }
-    work = bool(changed or changed_rejects or cleared or stored_meta != meta)
-    status: LinkStatus = "dry_run" if dry_run else ("wrote" if work else "unchanged")
-    if status == "wrote":
-        store._statements(database_id, [(sql, p) for sql, p in seed_statements()])  # noqa: SLF001
-        _write(store, database_id, VOTER_UPSERT_SQL, [voter_row(v) for v in changed], batch_rows)
-        _write(
-            store,
-            database_id,
-            REJECT_UPSERT_SQL,
-            [[r.vuid, r.reason, r.raw] for r in changed_rejects],
-            batch_rows,
-        )
-        _write(store, database_id, REJECT_DELETE_SQL, cleared, batch_rows)
-        _write(store, database_id, META_UPSERT_SQL, sorted(meta.items()), batch_rows)
+    if stored_meta != meta:
+        writes.send(META_UPSERT_SQL, sorted(meta.items()))
+    status: LinkStatus = "dry_run" if dry_run else ("wrote" if writes.sent else "unchanged")
     result = LinkResult(
         status=status,
         targets=counts["targets"],
@@ -452,10 +492,10 @@ def link_voters(
         rejects=counts["rejects"],
         invalid_dob=counts["invalid_dob"],
         invalid_edr=counts["invalid_edr"],
-        written=len(changed) if status == "wrote" else 0,
-        unchanged=len(voters) - len(changed),
-        pending=len(changed),
-        rejects_written=len(changed_rejects) if status == "wrote" else 0,
+        written=changed.count if status == "wrote" else 0,
+        unchanged=voters - changed.count,
+        pending=changed.count,
+        rejects_written=changed_rejects.count if status == "wrote" else 0,
         dated_found=dated.found if dated else {},
     )
     logger.info(
@@ -475,7 +515,7 @@ def link_voters(
         result.unchanged,
         result.pending,
         result.rejects_written,
-        len(cleared) if status == "wrote" else 0,
+        cleared.count if status == "wrote" else 0,
         json.dumps(result.dated_found, sort_keys=True),
     )
     return result
