@@ -173,6 +173,50 @@ A dry run reads D1 and the voterfile, fetches the dated days, and reports; it cr
 
 The voterfile must hold each VUID once (the September 2026 file does: 18,932,927 rows, 18,932,927 distinct). If a file repeats a VUID, the link stops with `voterfile repeats a VUID; nothing marked complete` before the meta rows are written, because which row would win depends on read order. Fix the file and rerun.
 
+### Repeat VUIDs (`early_vote_vuid_repeat`, `early_vote_repeat_excess`, `early_vote_repeat_meta`)
+
+The roster can list one voter more than once. On 2026-10-24 we observed that every repeated VUID
+appeared exactly twice. In most cases the second listing was early day 11 (2026-10-24), whose file
+re-lists voters from earlier days, mostly day 6. That is an observation about the portal's files,
+not a known cause. The portal served exactly the file we stored. See
+`docs/adr/012-repeat-vuids.md`.
+
+**What the tables mean.**
+
+- `early_vote_vuid_repeat` has one row per VUID that the live roster counts more than once, or
+  that the change log (`early_vote_day_change`, `change_kind = 'removed'`) shows removed at least
+  once. `counted_days` and `removed_days` are distinct dates ascending. `appearances` lists every
+  live row in first-to-last order. `flags` is 1 for a same-day repeat, 2 for a cross-day repeat, 4
+  for a cross-method repeat and 8 for removed at least once. A VUID with no row was counted exactly
+  once and never removed.
+- `early_vote_repeat_excess` gives, per day, county and voting method, how many live rows there
+  are not the voter's first appearance.
+- `early_vote_repeat_meta` holds the build signature and the totals.
+
+**First-appearance rule.** A voter belongs to their earliest day. Within one day they belong to
+the row with the lowest `(row_hash, occ)` key. Every other live row of that voter is excess.
+
+**Reading the counts.** Raw row counts stay as they are. The distinct voters of any slice are
+`raw rows in the slice - excess in the slice`. For example, distinct voters on a day are that day's
+live rows minus the day's `SUM(n)` in `early_vote_repeat_excess`. `raw_rows - excess_rows` in
+meta equals `distinct_voters`.
+
+**Running it.** The scheduled sync runs it after the geography step. By hand:
+
+```bash
+# Cloudflare credentials as for the sync: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_KV_NAMESPACE_ID
+uv run python -m texas_turnout_scraper.repeat_build --election-id 53815 --dry-run
+uv run python -m texas_turnout_scraper.repeat_build --election-id 53815 --apply
+```
+
+An apply whose signature matches the stored one reports `status=unchanged` and reads no roster
+rows. The signature covers the roster version rows and the change log's row count and last
+`recorded_at`. Otherwise the build reads every live row, writes only rows whose `src_hash`
+changed, deletes rows that no longer qualify, and writes meta last. An interrupted apply is redone
+in full by the next run. A dry run reports `rows_pending`, `rows_stale`, `excess_pending` and
+`excess_stale` and writes nothing. After a change to how rows are derived, bump `REPEAT_VERSION`
+in `repeat_tables.py` so the next apply rebuilds.
+
 ### An election has stopped updating on Pages (held back for size)
 
 `data-refresh.yml` runs `.github/scripts/skip_oversize_data.py` before it commits. GitHub rejects any single file over 100 MiB, so a file over 95 MiB holds back its whole election: the election folder goes back to its last published state (or is removed if it was never published) and its `index.json` entry is restored. Other elections still publish.

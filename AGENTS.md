@@ -1,5 +1,5 @@
 # AGENTS.md
-# Version: 1.6.0
+# Version: 1.7.0
 # Last Updated: 2026-10-24
 # Environment: dev
 # Model: claude-sonnet-4-6
@@ -147,7 +147,7 @@ pytest tests/integration -q   # hits live SOS site; needs network
 
 - **httpx + cloudscraper (no Selenium)** — Default HTTP backend is `cloudscraper` for WAF bypass; unit tests use `http_backend="httpx"`. Legacy session: `GET getElectionDetails.do` → `POST getElectionEVDates.do` → `POST getEVDetails.do`, carrying `JSESSIONID` forward.
 - **No `election_utils` dependency** — all models are Pydantic v2, defined in this package. ✅ Use `from texas_turnout_scraper.models import ...`
-- **SQLModel only for the D1 loaders** — public output models stay database-agnostic Pydantic. SQLModel is allowed only in the loader-only modules `roster_models.py`, `geo_models.py`, `geo_load.py`, `voter_models.py` and `voter_link.py` (the `loader` extra; `voter_link` also imports duckdb inside the function that reads the voterfile), never imported at import time by `early_vote_sync` or anything the Worker imports; those import the committed DDL in `early_vote_roster_rows.py`, `geo_tables.py` and `voter_tables.py`. Ingest uses `Model.model_validate(...)`, never the `table=True` constructor. See [`docs/adr/009-sqlmodel-roster-models.md`](docs/adr/009-sqlmodel-roster-models.md). ✅ Use DuckDB for large-file queries; Pydantic for all other models.
+- **SQLModel only for the D1 loaders** — public output models stay database-agnostic Pydantic. SQLModel is allowed only in the loader-only modules `roster_models.py`, `geo_models.py`, `geo_load.py`, `voter_models.py`, `voter_link.py`, `repeat_models.py` and `repeat_build.py` (the `loader` extra; `voter_link` also imports duckdb inside the function that reads the voterfile), never imported at import time by `early_vote_sync` or anything the Worker imports; those import the committed DDL in `early_vote_roster_rows.py`, `geo_tables.py`, `voter_tables.py` and `repeat_tables.py`. Ingest uses `Model.model_validate(...)`, never the `table=True` constructor. See [`docs/adr/009-sqlmodel-roster-models.md`](docs/adr/009-sqlmodel-roster-models.md). ✅ Use DuckDB for large-file queries; Pydantic for all other models.
 - **Geo build libraries are offline-only** — shapely, pyproj and pyshp (the `geo` extra) are imported only by `geo_build.py`. The loader, CI and the Worker read the committed `data/geo/tx_geo.json` and must not need `--extra geo`. See [`docs/adr/010-geography-tables.md`](docs/adr/010-geography-tables.md).
 - **Strategy A is default** — per-county roster loop (~255 requests per date, ≥1.0 s pacing). Strategy B (bulk ZIP) available via `--strategy B` flag.
 - **`source_election_id` is the canonical key** — always a string (SOS numeric ID e.g. `"49664"`). ✅ Keep as `str`; validate at parse time with `str(raw_id)`.
@@ -372,6 +372,7 @@ Full reference: `docs/GITBUTLER.md`. Rationale for adoption: `docs/adr/006-gitbu
 
 | Version | Date | Change |
 |---------|------|--------|
+| 1.7.0 | 2026-10-24 | Repeat VUIDs (ADR-012): SQLModel rule names the loader-only `repeat_models`/`repeat_build`; `repeat_tables` holds the Worker-safe DDL; the sync workflow runs the build after the geography step |
 | 1.6.0 | 2026-10-24 | Voter attributes (ADR-011): SQLModel rule names the loader-only `voter_models`/`voter_link`; `voter_tables` holds the Worker-safe DDL; the voter link runs locally only (voterfile is PII) |
 | 1.5.0 | 2026-10-24 | Geography tables (ADR-010): SQLModel rule names the loader-only `geo_models`/`geo_load`; new `geo` extra is offline-only (`geo_build`) |
 | 1.4.0 | 2026-10-23 | Replaced the "No SQLModel / SQLAlchemy" constraint with a scoped rule: SQLModel for D1 roster rows only, loader extra, lazy import, `model_validate` on ingest (ADR-009) |

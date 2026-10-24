@@ -34,3 +34,4 @@ What are the trade-offs and outcomes?
 | [009](./009-sqlmodel-roster-models.md) | SQLModel models for D1 roster rows | Accepted | 2026-10-23 |
 | [010](./010-geography-tables.md) | Geography tables in D1 | Accepted | 2026-10-24 |
 | [011](./011-voter-attributes.md) | Voter attributes, history and scores in D1 | Accepted | 2026-10-24 |
+| [012](./012-repeat-vuids.md) | Repeat VUIDs and excess counts in D1 | Accepted | 2026-10-24 |
