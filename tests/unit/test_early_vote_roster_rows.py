@@ -202,3 +202,72 @@ def test_logs_carry_counts_never_names(
     text = caplog.text
     assert "A B" not in text
     assert "C D" not in text
+
+
+def test_a_replaced_versions_rows_go_before_its_chunks_so_a_crash_leaves_it_findable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, statements = _store(monkeypatch, old_rows=5)
+    _write(store)
+    rows_gone = next(
+        i
+        for i, s in enumerate(statements)
+        if s[0].startswith("DELETE FROM early_vote_roster_row") and "old-file" in s[1]
+    )
+    chunks_gone = _index(statements, "DELETE FROM early_vote_chunk")
+    assert rows_gone < chunks_gone
+
+
+def _sqlite_store(conn: sqlite3.Connection) -> CloudflareEarlyVoteStore:
+    store = CloudflareEarlyVoteStore(
+        account_id="a", api_token="t", kv_namespace_id="n", client=httpx.Client(), snapshots=None
+    )
+
+    def query_rows(database_id: str, sql: str, params: list[str]) -> list[dict]:
+        cur = conn.execute(sql, params)
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
+
+    def statements(database_id: str, stmts: list[tuple[str, list[str]]]) -> None:
+        for sql, params in stmts:
+            conn.execute(sql, params)
+
+    store._query_rows = query_rows  # type: ignore[method-assign]
+    store._statements = statements  # type: ignore[method-assign]
+    store.stored_hash = lambda election_id, **kw: None  # type: ignore[method-assign]
+    return store
+
+
+def _stage_version(conn: sqlite3.Connection, file_id: str, *, chunks: bool, marker: bool) -> None:
+    if chunks:
+        conn.execute(
+            "INSERT INTO early_vote_chunk VALUES ('53815', ?, 0, 'QQ==')",
+            (file_id,),
+        )
+        conn.execute(
+            "INSERT INTO early_vote_file VALUES ('53815', ?, 'sha', 1, 1)",
+            (file_id,),
+        )
+    for statement in insert_statements(file_id, CSV, rows_per_statement=2):
+        conn.execute(*statement)
+    if marker:
+        conn.execute(*marker_statement("53815", file_id, 3))
+
+
+def test_stale_cleanup_removes_unreferenced_rows_and_markers_but_keeps_live_ones() -> None:
+    from texas_turnout_scraper.early_vote_sync import _SCHEMA_CREATES
+
+    conn = sqlite3.connect(":memory:")
+    for sql in _SCHEMA_CREATES:
+        conn.execute(sql)
+    _stage_version(conn, "live", chunks=True, marker=True)
+    conn.execute("INSERT INTO early_vote_day VALUES ('53815', '2026-10-19', 'sha', 'live')")
+    _stage_version(conn, "failed-midway", chunks=True, marker=False)
+    _stage_version(conn, "moved-on", chunks=True, marker=True)
+    _stage_version(conn, "marker-only", chunks=False, marker=True)
+    store = _sqlite_store(conn)
+    store._delete_stale_files("db", "53815")
+    left = conn.execute("SELECT DISTINCT file_id FROM early_vote_roster_row").fetchall()
+    assert left == [("live",)]
+    assert conn.execute("SELECT file_id FROM early_vote_roster_rows").fetchall() == [("live",)]
+    assert conn.execute("SELECT file_id FROM early_vote_chunk").fetchall() == [("live",)]

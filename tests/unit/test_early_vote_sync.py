@@ -855,6 +855,8 @@ class _MemoryD1:
             self.selections.append(found)
             self.order.append("file-ids")
             return {"success": True, "results": [{"file_id": file_id} for file_id in found]}
+        if "MAX(row_id)" in sql:
+            return {"success": True, "results": [{"max_row": None}]}
         if sql == _DAY_FILE_IDS_SQL:
             self.order.append("day-file-ids")
             return {"success": True, "results": []}

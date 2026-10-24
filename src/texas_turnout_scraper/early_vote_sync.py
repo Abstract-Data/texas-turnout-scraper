@@ -396,7 +396,8 @@ _DELETE_FILE_SQL = "DELETE FROM early_vote_file WHERE source_election_id = ? AND
 _POINTER_SELECT_SQL = "SELECT file_id FROM early_vote_pointer WHERE source_election_id = ?"
 _FILE_IDS_SQL = (
     "SELECT file_id FROM early_vote_chunk WHERE source_election_id = ? "
-    "UNION SELECT file_id FROM early_vote_file WHERE source_election_id = ?"
+    "UNION SELECT file_id FROM early_vote_file WHERE source_election_id = ? "
+    "UNION SELECT file_id FROM early_vote_roster_rows WHERE source_election_id = ?"
 )
 _FILE_ID_FOR_HASH_SQL = (
     "SELECT file_id FROM early_vote_file WHERE source_election_id = ? AND sha256 = ?"
@@ -1111,6 +1112,7 @@ class CloudflareEarlyVoteStore:
                 [_statement_lists(plan.pointer_update)],
             )
         if old_id and old_id != plan.file_id:
+            self._delete_roster_rows(database_id, election_id, old_id)
             repoint: list[tuple[str, list[str]]] = []
             if not update_pointer and self._pointer_file_id(database_id, election_id) == old_id:
                 repoint.append(_statement_lists(plan.pointer_update))
@@ -1126,7 +1128,6 @@ class CloudflareEarlyVoteStore:
                     (_DELETE_FILE_SQL, [election_id, old_id]),
                 ],
             )
-            self._delete_roster_rows(database_id, election_id, old_id)
         logger.info(
             "early-vote D1 day upsert election_id=%s ev_date=%s database=%s "
             "chunks=%s decoded_bytes=%s",
@@ -1221,6 +1222,8 @@ class CloudflareEarlyVoteStore:
             return
         rows: list[tuple[str, list[str]]] = []
         for file_id in stale:
+            # Rows go first: a crash then leaves the chunks, which keep the id findable here.
+            self._delete_roster_rows(database_id, election_id, file_id)
             for stmt in delete_precompute_statements(election_id, file_id):
                 rows.append(_statement_lists(stmt))
             rows.append((_DELETE_CHUNK_SQL, [election_id, file_id]))
@@ -1234,7 +1237,7 @@ class CloudflareEarlyVoteStore:
         )
 
     def _distinct_file_ids(self, database_id: str, election_id: str) -> list[str]:
-        rows = self._query_rows(database_id, _FILE_IDS_SQL, [election_id, election_id])
+        rows = self._query_rows(database_id, _FILE_IDS_SQL, [election_id, election_id, election_id])
         return _string_column(rows, "file_id")
 
     def _file_ids_for_hash(
