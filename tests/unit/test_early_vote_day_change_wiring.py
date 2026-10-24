@@ -51,6 +51,8 @@ def _store(
             return [{"file_id": pointer}] if pointer else []
         if "FROM early_vote_day" in sql and old:
             return [{"file_id": "old-file", "sha256": "oldsha"}]
+        if sql.startswith("SELECT (SELECT COUNT(*)"):
+            return [{"row_count": 2, "reject_count": 0}]
         return []
 
     monkeypatch.setattr(CloudflareEarlyVoteStore, "_query_rows", query_rows)
