@@ -124,7 +124,9 @@ class GeoData:
         """Sorted keys, one record per line, so a rebuild diffs by place."""
 
         def dump(value: object) -> str:
-            return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            return json.dumps(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+            )
 
         data = self.to_dict()
         lines = ["{", f'"provenance":{dump(data["provenance"])},']

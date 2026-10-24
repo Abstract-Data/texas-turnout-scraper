@@ -25,6 +25,7 @@ from shapely.geometry import Point, Polygon, shape  # noqa: E402
 from texas_turnout_scraper import geo_build  # noqa: E402
 from texas_turnout_scraper.geo_build import (  # noqa: E402
     AREA_EPSG,
+    Area,
     EXPECTED_COUNTS,
     GeoBuildError,
     GeoData,
@@ -296,6 +297,25 @@ def test_area_codes_are_fips_and_plain_district_numbers(reference: Path) -> None
     keys = set(_areas(_build(reference)))
     assert {code for kind, code in keys if kind == "county"} == {"453", "491"}
     assert {code for kind, code in keys if kind == "cd"} == {"1", "2"}
+
+
+def test_codes_and_keys_are_strings_on_the_data_objects(reference: Path) -> None:
+    data = _build(reference)
+    assert all(isinstance(area.code, str) for area in data.areas)
+    for precinct in data.precincts:
+        assert isinstance(precinct.pctkey, str)
+        assert isinstance(precinct.county_fips, str)
+        assert isinstance(precinct.prec, str)
+        for district in (precinct.cd, precinct.sd, precinct.hd):
+            assert district is None or isinstance(district, str)
+    assert data.to_dict()["precincts"] == GOLDEN_PRECINCTS
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_value_never_reaches_the_json(bad: float) -> None:
+    data = GeoData(provenance={}, areas=(Area("county", "001", "X", bad, 0.0),), precincts=())
+    with pytest.raises(ValueError, match="Out of range float values"):
+        data.to_json()
 
 
 def test_two_builds_are_byte_identical(reference: Path) -> None:
