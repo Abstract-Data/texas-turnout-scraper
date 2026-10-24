@@ -93,13 +93,16 @@ def test_a_partial_earlier_attempt_is_replaced_not_duplicated(store: _SqliteStor
     )
     run_roster_rows_backfill_on_store(store, "53815", dry_run=False)
     names = store.conn.execute(
-        "SELECT voter_name FROM early_vote_roster_row WHERE file_id = 'f-2026-10-19' ORDER BY row_id"
+        "SELECT voter_name FROM early_vote_roster_row "
+        "WHERE file_id = 'f-2026-10-19' ORDER BY row_id"
     ).fetchall()
     assert [n[0] for n in names] == [r.voter_name for r in iter_roster_rows(DAY1)]
 
 
 def test_an_incomplete_file_is_skipped_not_written(store: _SqliteStore) -> None:
-    store.conn.execute("DELETE FROM early_vote_chunk WHERE file_id = 'f-2026-10-19' AND chunk_index = 1")
+    store.conn.execute(
+        "DELETE FROM early_vote_chunk WHERE file_id = 'f-2026-10-19' AND chunk_index = 1"
+    )
     result = run_roster_rows_backfill_on_store(store, "53815", dry_run=False)
     assert (result.files_written, result.files_skipped) == (1, 1)
     assert "f-2026-10-19" not in _row_counts(store)

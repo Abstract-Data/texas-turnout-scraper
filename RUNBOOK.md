@@ -98,6 +98,12 @@ When a day's file changes on reload, the loader first writes both the old and ne
 
 The Civix portal's per-date files for an election are **daily** (consecutive days share no voter IDs) and a day's file can gain late records after it is first published. The scheduled `early-vote-sync.yml` therefore runs `sync_mode=backfill`: it re-fetches every day, hashes each file, skips days whose hash matches what is stored, rewrites days that changed, and bumps the KV version only when something changed. `sync_mode=latest` (dispatch only) looks at today's file alone and will not repair earlier days. If a day is missing from the API, check that the scheduled runs were approved and not cancelled; a dry-run `backfill` dispatch shows what the portal serves.
 
+### Early-vote roster rows (`early_vote_roster_row`)
+
+Each day's roster rows are stored in the election's D1, keyed by the day file's `file_id` and numbered in file order (`row_id`). The loader inserts a version's rows, then writes its `early_vote_roster_rows` marker, then moves the day pointer, and finally deletes the replaced version's rows. Rows without a marker are invisible, so a failed load leaves nothing a reader can see; the next run replaces those rows. The chunk store stays the source of truth for the hash and the byte-exact CSV.
+
+Days stored before this table existed get their rows from the `Backfill roster rows` step in `early-vote-sync.yml` (`python -m texas_turnout_scraper.early_vote_roster_rows_backfill --election-id <id> --dry-run|--apply`). It skips files that already have a marker, so reruns write nothing. The first run for a full election writes about 2.25M rows and takes on the order of 15 minutes. Check a day with `SELECT row_count FROM early_vote_roster_rows` against its `early_vote_file_aggregate.statewide_total`. The two can differ by rows the aggregates skip (empty county or an unrecognized voting method).
+
 ### An election has stopped updating on Pages (held back for size)
 
 `data-refresh.yml` runs `.github/scripts/skip_oversize_data.py` before it commits. GitHub rejects any single file over 100 MiB, so a file over 95 MiB holds back its whole election: the election folder goes back to its last published state (or is removed if it was never published) and its `index.json` entry is restored. Other elections still publish.

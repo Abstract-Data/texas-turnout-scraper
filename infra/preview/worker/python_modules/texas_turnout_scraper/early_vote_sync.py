@@ -72,6 +72,7 @@ import httpx
 from texas_turnout_scraper.civix.envelope import _decode_envelope
 from texas_turnout_scraper.civix.evr import API_PREFIX, BASE_URL
 from texas_turnout_scraper.civix.ids import require_election_id
+from texas_turnout_scraper.early_vote_aggregates import detect_payload_kind
 from texas_turnout_scraper.early_vote_d1_precompute_store import (
     PRECOMPUTE_SCHEMA_CREATES,
     aggregate_body_from_decoded,
@@ -87,6 +88,14 @@ from texas_turnout_scraper.early_vote_day_changes import (
     roster_row_count,
 )
 from texas_turnout_scraper.early_vote_roster import RosterCsvSummary, redact_roster_csv
+from texas_turnout_scraper.early_vote_roster_rows import (
+    MAX_ROW_SQL,
+    ROW_SCHEMA_CREATES,
+    count_roster_rows,
+    delete_statements,
+    insert_statements,
+    marker_statement,
+)
 from texas_turnout_scraper.http_transport import HttpBackend, PacedHttpClient
 from texas_turnout_scraper.r2_snapshots import R2SnapshotStore, snapshot_store_from_env
 
@@ -421,6 +430,7 @@ _SCHEMA_CREATES: tuple[str, ...] = (
     _DAY_TABLE_SQL,
     DAY_CHANGE_TABLE_SQL,
     *PRECOMPUTE_SCHEMA_CREATES,
+    *ROW_SCHEMA_CREATES,
 )
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
 _FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"
@@ -1085,6 +1095,7 @@ class CloudflareEarlyVoteStore:
             decoded,
             ev_date_iso=ev_date_iso,
         )
+        self._write_roster_rows(database_id, election_id, plan.file_id, decoded)
         self._statements(
             database_id,
             [
@@ -1115,6 +1126,7 @@ class CloudflareEarlyVoteStore:
                     (_DELETE_FILE_SQL, [election_id, old_id]),
                 ],
             )
+            self._delete_roster_rows(database_id, election_id, old_id)
         logger.info(
             "early-vote D1 day upsert election_id=%s ev_date=%s database=%s "
             "chunks=%s decoded_bytes=%s",
@@ -1431,6 +1443,35 @@ class CloudflareEarlyVoteStore:
             file_id,
             precompute_row_count(body),
         )
+
+    def _write_roster_rows(
+        self, database_id: str, election_id: str, file_id: str, decoded: bytes
+    ) -> None:
+        """Insert a roster file's rows under its file id, then the marker that publishes them."""
+        if detect_payload_kind(decoded) != "statewide_roster":
+            return
+        for statement in insert_statements(file_id, decoded):
+            self._statements(database_id, [_statement_lists(statement)])
+        count = count_roster_rows(decoded)
+        self._statements(
+            database_id, [_statement_lists(marker_statement(election_id, file_id, count))]
+        )
+        logger.info(
+            "early-vote D1 roster rows election_id=%s file_id=%s rows=%s",
+            election_id,
+            file_id,
+            count,
+        )
+
+    def _delete_roster_rows(self, database_id: str, election_id: str, file_id: str) -> None:
+        """Drop a replaced version's rows (marker first). A version with no rows needs nothing."""
+        found = self._query_rows(database_id, MAX_ROW_SQL, [file_id])
+        last = found[0].get("max_row") if found else None
+        if last is None:
+            return
+        statements = delete_statements(election_id, file_id, int(last) + 1)
+        for statement in statements:
+            self._statements(database_id, [_statement_lists(statement)])
 
     def _record_aggregate_meta(
         self,

@@ -92,7 +92,7 @@ def test_delete_removes_one_versions_rows_and_marker_only() -> None:
     for file_id in ("old", "keep"):
         _run(conn, insert_statements(file_id, CSV, rows_per_statement=2))
         conn.execute(*marker_statement("53815", file_id, 3))
-    _run(conn, delete_statements("53815", "old", 2, rows_per_statement=2))
+    _run(conn, delete_statements("53815", "old", 3, rows_per_statement=2))
     left = conn.execute("SELECT file_id, COUNT(*) FROM early_vote_roster_row GROUP BY 1").fetchall()
     assert left == [("keep", 3)]
     assert conn.execute("SELECT file_id FROM early_vote_roster_rows").fetchall() == [("keep",)]
@@ -134,7 +134,9 @@ def _store(monkeypatch: pytest.MonkeyPatch, *, old_rows: int | None = 5):
     monkeypatch.setattr(
         CloudflareEarlyVoteStore, "_write_precomputed_aggregates", lambda self, *a, **k: None
     )
-    monkeypatch.setattr(CloudflareEarlyVoteStore, "_load_file_bytes", lambda self, *a: HEADER_ONLY_NEW)
+    monkeypatch.setattr(
+        CloudflareEarlyVoteStore, "_load_file_bytes", lambda self, *a: HEADER_ONLY_NEW
+    )
     return store, statements
 
 
@@ -188,7 +190,7 @@ def test_a_replaced_version_with_no_rows_needs_no_row_cleanup(
 def test_turnout_json_payloads_store_no_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     store, statements = _store(monkeypatch)
     _write(store, b'{"turnout_by_county":[]}')
-    assert not any("early_vote_roster_row" in s[0] for s in statements)
+    assert not any("INTO early_vote_roster_row" in s[0] for s in statements)
 
 
 def test_logs_carry_counts_never_names(
