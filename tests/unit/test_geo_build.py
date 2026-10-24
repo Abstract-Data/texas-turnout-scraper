@@ -25,8 +25,8 @@ from shapely.geometry import Point, Polygon, shape  # noqa: E402
 from texas_turnout_scraper import geo_build  # noqa: E402
 from texas_turnout_scraper.geo_build import (  # noqa: E402
     AREA_EPSG,
-    Area,
     EXPECTED_COUNTS,
+    Area,
     GeoBuildError,
     GeoData,
     build_geo,
