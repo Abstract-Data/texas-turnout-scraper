@@ -126,6 +126,30 @@ GROUP BY reason;
 
 The loader needs the `loader` extra (`uv sync --extra loader`; the `dev` group includes it). The Worker does not.
 
+### Geography tables (`geo_area`, `geo_precinct`, `geo_precinct_alias`, `geo_meta`)
+
+`data/geo/tx_geo.json` holds a point (`lat`, `lon`) inside every county, state precinct, and congressional, state senate and state house district, plus each precinct's district per plan with its overlap `*_share` and `split_*` flag (`split` means the largest district covers less than 99% of the precinct, which includes area outside every district of the plan). The `Load geography and precinct aliases` step in `early-vote-sync.yml` loads it into the election's D1 and maps roster precincts to state precincts. See `docs/adr/010-geography-tables.md`.
+
+**Rebuild after a plan or precinct change.** The layers come from the voterfile-audit-pipeline checkout's `data/reference/` (its setup downloads them; the submodule at `vendor/voterfile-audit-pipeline` holds only the fetch scripts). Each district folder (`tiger/congressional`, `tiger/state_senate`, `tiger/state_house`) and `tiger/county` must hold exactly one `.shp`; the precinct file is the one `tx_election/precincts/current.json` names. Replace the old plan's files with the new ones (the build refuses a folder with two plans), update `EXPECTED_COUNTS` in `geo_build.py` if a plan's district count changed, then:
+
+```bash
+uv sync --extra geo
+uv run python -m texas_turnout_scraper.geo_build \
+  --reference-dir /path/to/voterfile-audit-pipeline/data/reference --out data/geo/tx_geo.json
+TX_REFERENCE_DIR=/path/to/voterfile-audit-pipeline/data/reference uv run pytest tests/unit/test_geo_build.py -q
+```
+
+The build takes about 40 seconds and logs the byte size, sha256, counts per kind, split precincts per plan and precincts with no overlap. The last test checks every point lies inside its polygon. A rebuild from the same files is byte-identical, so a diff in the JSON is a real change. Commit the JSON; the next scheduled run loads it (rows the file no longer has are deleted, `geo_meta` is written last). An unchanged file writes nothing. If a source file disagrees with the pipeline's `.checksums.json`, the build stops: refetch the layer.
+
+**Reading the alias report.** The step logs `pairs`, `matched_pairs`, `unmatched_pairs`, `rows`, `matched_rows`, `matched_row_share` and the pair count per rule (`exact`, `zfill4`, `alnum_zfill4`, `unmatched`), counts only. Roster `COUNTY` is compared with county names by letters only (`DE WITT` = `DeWitt`); the precinct text is tried as is, zero-padded to 4, then with non-alphanumerics removed and zero-padded to 4, always within the same county. A pair that matches none is stored with `rule = 'unmatched'` and no `pctkey`; nothing is guessed. When these tables were designed, about 99.3% of roster rows matched. To list the unmatched pairs:
+
+```sql
+SELECT county, precinct FROM geo_precinct_alias WHERE rule = 'unmatched' ORDER BY county, precinct;
+SELECT rule, COUNT(*) FROM geo_precinct_alias GROUP BY rule;
+```
+
+A sharp drop in `matched_row_share` after a precinct rebuild usually means a county renumbered its precincts or the portal changed the precinct format.
+
 ### An election has stopped updating on Pages (held back for size)
 
 `data-refresh.yml` runs `.github/scripts/skip_oversize_data.py` before it commits. GitHub rejects any single file over 100 MiB, so a file over 95 MiB holds back its whole election: the election folder goes back to its last published state (or is removed if it was never published) and its `index.json` entry is restored. Other elections still publish.

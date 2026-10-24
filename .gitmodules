@@ -1,0 +1,5 @@
+[submodule "vendor/voterfile-audit-pipeline"]
+	path = vendor/voterfile-audit-pipeline
+	url = https://github.com/Abstract-Data/voterfile-audit-pipeline.git
+	branch = main
+	shallow = true

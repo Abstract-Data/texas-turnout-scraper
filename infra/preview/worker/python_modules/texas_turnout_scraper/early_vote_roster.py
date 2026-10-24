@@ -7,6 +7,8 @@ as it did under the earlier allowlist redaction.
 Row-level bytes are never logged. Callers use :func:`summarize_roster_csv` for aggregates only
 (counts, column names, method rollups). This module does not import or join voterfile data
 (Tex. Elec. Code §18.066).
+The geography tables (``geo_load``) place roster precincts on the state's precinct map; they
+read only the roster's county and precinct columns and do not use voterfile data either.
 """
 
 from __future__ import annotations

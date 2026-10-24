@@ -139,6 +139,22 @@ def test_roster_rows_backfill_runs_after_the_aggregate_backfill() -> None:
     assert text.count("early_vote_roster_rows_backfill") == 1
 
 
+def test_geography_load_runs_once_after_the_roster_rows_backfill() -> None:
+    """Aliases resolve the live roster pairs, so the rows must be loaded first."""
+    text = WORKFLOW.read_text()
+    assert text.count("Load geography and precinct aliases (idempotent)") == 1
+    assert text.count("texas_turnout_scraper.geo_load") == 1
+    assert text.index("early_vote_roster_rows_backfill") < text.index("geo_load")
+    step = text.split("Load geography and precinct aliases (idempotent)", 1)[1]
+    assert "op run --environment s6tljdcafkgqxfuxhcnj3m5x5a" in step
+    assert '--election-id "${ELECTION_ID}" --apply' in step
+
+
+def test_loader_jobs_do_not_install_the_geo_extra() -> None:
+    """The geo libraries are for the offline build only; the loader reads the committed JSON."""
+    assert "--extra geo" not in WORKFLOW.read_text()
+
+
 def test_loader_jobs_install_the_loader_extra() -> None:
     """The roster-row loader imports sqlmodel, which only the loader extra installs."""
     syncs = [line for line in WORKFLOW.read_text().splitlines() if "uv sync" in line]

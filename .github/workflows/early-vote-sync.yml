@@ -250,3 +250,13 @@ jobs:
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
             uv run python -m texas_turnout_scraper.early_vote_roster_rows_backfill \
             --election-id "${ELECTION_ID}" --apply
+      - name: Load geography and precinct aliases (idempotent)
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ELECTION_ID: ${{ github.event_name == 'schedule' && '53815' || inputs.election_id }}
+        run: |
+          set -euo pipefail
+          op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
+            uv run python -m texas_turnout_scraper.geo_load \
+            --election-id "${ELECTION_ID}" --apply
