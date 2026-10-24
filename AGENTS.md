@@ -1,6 +1,6 @@
 # AGENTS.md
-# Version: 1.3.0
-# Last Updated: 2026-05-25
+# Version: 1.4.0
+# Last Updated: 2026-10-23
 # Environment: dev
 # Model: claude-sonnet-4-6
 # Fallback Model: claude-haiku-4-5-20251001
@@ -147,7 +147,7 @@ pytest tests/integration -q   # hits live SOS site; needs network
 
 - **httpx + cloudscraper (no Selenium)** — Default HTTP backend is `cloudscraper` for WAF bypass; unit tests use `http_backend="httpx"`. Legacy session: `GET getElectionDetails.do` → `POST getElectionEVDates.do` → `POST getEVDetails.do`, carrying `JSESSIONID` forward.
 - **No `election_utils` dependency** — all models are Pydantic v2, defined in this package. ✅ Use `from texas_turnout_scraper.models import ...`
-- **No SQLModel / SQLAlchemy** — output models are database-agnostic Pydantic. ✅ Use DuckDB for large-file queries; Pydantic for all output models.
+- **SQLModel only for the D1 roster-row loader** — public output models stay database-agnostic Pydantic. SQLModel is allowed only in `roster_models.py` (the `loader` extra), imported lazily inside loader functions, never at import time by `early_vote_sync` or anything the Worker imports. Ingest uses `Model.model_validate(...)`, never the `table=True` constructor. See [`docs/adr/009-sqlmodel-roster-models.md`](docs/adr/009-sqlmodel-roster-models.md). ✅ Use DuckDB for large-file queries; Pydantic for all other models.
 - **Strategy A is default** — per-county roster loop (~255 requests per date, ≥1.0 s pacing). Strategy B (bulk ZIP) available via `--strategy B` flag.
 - **`source_election_id` is the canonical key** — always a string (SOS numeric ID e.g. `"49664"`). ✅ Keep as `str`; validate at parse time with `str(raw_id)`.
 - **`ID_VOTER` is always a string** — 10-digit Texas VUID, may have leading zeros. ✅ Use `.zfill(10)` when normalising; store as `str`.
@@ -371,6 +371,7 @@ Full reference: `docs/GITBUTLER.md`. Rationale for adoption: `docs/adr/006-gitbu
 
 | Version | Date | Change |
 |---------|------|--------|
+| 1.4.0 | 2026-10-23 | Replaced the "No SQLModel / SQLAlchemy" constraint with a scoped rule: SQLModel for D1 roster rows only, loader extra, lazy import, `model_validate` on ingest (ADR-009) |
 | 1.3.0 | 2026-05-25 | Post-alignment pass: real Notion References (Project + Client + Tasks DB + Docs DB + Skill Run Log); added `## Tool Permissions by Mode`, `## Anti-Pattern Warnings`, `## GitButler` sections; Context7 promoted to top of Documentation Priority + NEVER DO; added ty `# type: ignore` rationale rule and GitButler raw-git prohibition to NEVER DO; documented 8 stack anti-patterns surfaced in the 5/25 review with their guardrails |
 | 1.2.0 | 2026-05-24 | Added `legacy_api` facades, `LegacySession.prime_election`, `fetch_ev_details_html`; CLI/MCP wired to facades; RUNBOOK.md; cloudscraper ops documented |
 | 1.1.0 | 2026-05-24 | Added version header, Agent Scope, Model Configuration, Session Management archive pattern, paired NEVER DO alternatives, 6-field Notion References; added voterfile/writer modules to layout |

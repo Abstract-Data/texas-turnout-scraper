@@ -126,10 +126,10 @@ def find_election_ev_dates(
 
 
 def roster_day_has_rows(redacted: bytes) -> bool:
-    """True when redacted statewide CSV has at least one data row."""
+    """True when canonical statewide CSV has at least one data row."""
     if not redacted.strip():
         return False
-    summary = summarize_roster_csv(redacted, statewide=True)
+    summary = summarize_roster_csv(redacted)
     return summary.est_rows > 0
 
 

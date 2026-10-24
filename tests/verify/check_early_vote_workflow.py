@@ -137,3 +137,10 @@ def test_roster_rows_backfill_runs_after_the_aggregate_backfill() -> None:
     rows = text.index("early_vote_roster_rows_backfill")
     assert aggregates < rows
     assert text.count("early_vote_roster_rows_backfill") == 1
+
+
+def test_loader_jobs_install_the_loader_extra() -> None:
+    """The roster-row loader imports sqlmodel, which only the loader extra installs."""
+    syncs = [line for line in WORKFLOW.read_text().splitlines() if "uv sync" in line]
+    assert len(syncs) == 2
+    assert all("--extra waf --extra loader" in line for line in syncs)

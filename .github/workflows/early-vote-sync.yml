@@ -106,7 +106,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install package
-        run: uv sync --locked --extra waf
+        run: uv sync --locked --extra waf --extra loader
 
       - name: Hash early-vote payload(s)
         env:
@@ -172,7 +172,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install package
-        run: uv sync --locked --extra waf
+        run: uv sync --locked --extra waf --extra loader
 
       - name: Install 1Password CLI
         uses: 1password/install-cli-action@1a3160d5e9de1ae0803eaa08a88746f5ae3daa50 # v4.1.0

@@ -7,10 +7,9 @@ from typing import Any
 
 import pytest
 
-from tests.unit.test_early_vote_roster_stream import DAY1, DAY2, _store_day
+from tests.unit.test_early_vote_roster_stream import DAY1, DAY2, HEADER, _store_day
 from texas_turnout_scraper import early_vote_sync
 from texas_turnout_scraper.early_vote_d1_precompute import PRECOMPUTE_SCHEMA_CREATES
-from texas_turnout_scraper.early_vote_roster_rows import iter_roster_rows
 from texas_turnout_scraper.early_vote_roster_rows_backfill import (
     run_roster_rows_backfill_on_store,
 )
@@ -63,14 +62,12 @@ def _row_counts(store: _SqliteStore) -> dict[str, int]:
 def test_files_without_a_marker_get_their_rows(store: _SqliteStore) -> None:
     result = run_roster_rows_backfill_on_store(store, "53815", dry_run=False)
     assert (result.files_considered, result.files_written, result.status) == (2, 2, "wrote")
-    assert _row_counts(store) == {
-        "f-2026-10-19": len(list(iter_roster_rows(DAY1))),
-        "f-2026-10-20": len(list(iter_roster_rows(DAY2))),
-    }
+    assert (result.rows_written, result.rejects) == (3, 0)
+    assert _row_counts(store) == {"f-2026-10-19": 2, "f-2026-10-20": 1}
     markers = store.conn.execute(
-        "SELECT file_id, row_count FROM early_vote_roster_rows ORDER BY file_id"
+        "SELECT file_id, row_count, reject_count FROM early_vote_roster_rows ORDER BY file_id"
     ).fetchall()
-    assert markers == [("f-2026-10-19", 2), ("f-2026-10-20", 1)]
+    assert markers == [("f-2026-10-19", 2, 0), ("f-2026-10-20", 1, 0)]
 
 
 def test_a_second_run_writes_nothing(store: _SqliteStore) -> None:
@@ -89,14 +86,16 @@ def test_dry_run_reports_without_writing(store: _SqliteStore) -> None:
 
 def test_a_partial_earlier_attempt_is_replaced_not_duplicated(store: _SqliteStore) -> None:
     store.conn.execute(
-        "INSERT INTO early_vote_roster_row VALUES ('f-2026-10-19', 0, 'X', 'STALE', '1', 'M', '1')"
+        "INSERT INTO early_vote_roster_row (file_id, row_id, county, voter_name, id_voter, "
+        "voting_method, precinct, extra) "
+        "VALUES ('f-2026-10-19', 0, 'X', 'STALE', '1', 'M', '1', '{}')"
     )
     run_roster_rows_backfill_on_store(store, "53815", dry_run=False)
     names = store.conn.execute(
         "SELECT voter_name FROM early_vote_roster_row "
         "WHERE file_id = 'f-2026-10-19' ORDER BY row_id"
     ).fetchall()
-    assert [n[0] for n in names] == [r.voter_name for r in iter_roster_rows(DAY1)]
+    assert [n[0] for n in names] == ["DOE, JANE", "JOHN Q PUBLIC"]
 
 
 def test_an_incomplete_file_is_skipped_not_written(store: _SqliteStore) -> None:
@@ -106,3 +105,32 @@ def test_an_incomplete_file_is_skipped_not_written(store: _SqliteStore) -> None:
     result = run_roster_rows_backfill_on_store(store, "53815", dry_run=False)
     assert (result.files_written, result.files_skipped) == (1, 1)
     assert "f-2026-10-19" not in _row_counts(store)
+
+
+def test_rejected_rows_are_quarantined_counted_and_a_rerun_is_a_no_op(
+    store: _SqliteStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    _store_day(
+        store.conn,
+        "2026-10-21",
+        (HEADER + "0000000004,ZEBEDIAH QUINCEWORTH,EARLY,7,HARRIS\n").encode(),
+    )
+    with caplog.at_level("INFO"):
+        result = run_roster_rows_backfill_on_store(store, "53815", dry_run=False)
+    assert (result.files_written, result.rows_written, result.rejects) == (3, 3, 1)
+    assert "rejects=1" in caplog.text
+    assert "ZEBEDIAH" not in caplog.text
+    marker = store.conn.execute(
+        "SELECT row_count, reject_count FROM early_vote_roster_rows WHERE file_id = 'f-2026-10-21'"
+    ).fetchall()
+    assert marker == [(0, 1)]
+    calls = store.statement_calls
+    again = run_roster_rows_backfill_on_store(store, "53815", dry_run=False)
+    assert (again.files_written, again.rejects, store.statement_calls) == (0, 0, calls)
+
+
+def test_a_file_whose_header_fails_the_schema_is_skipped(store: _SqliteStore) -> None:
+    _store_day(store.conn, "2026-10-21", b"ID_VOTER,COUNTY\n1,HARRIS\n")
+    result = run_roster_rows_backfill_on_store(store, "53815", dry_run=False)
+    assert (result.files_written, result.files_skipped) == (2, 1)
+    assert "f-2026-10-21" not in _row_counts(store)

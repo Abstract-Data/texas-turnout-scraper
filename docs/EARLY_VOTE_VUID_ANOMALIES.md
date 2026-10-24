@@ -35,7 +35,7 @@ keeps only the current file for a day, and treat `dropped_from_later` as the sam
 
 A future job will:
 
-1. Decode roster CSV (same allowlist as `early_vote_roster.redact_roster_csv`).
+1. Decode roster CSV (same canonicalization as `early_vote_roster.canonicalize_roster_csv`).
 2. Load the prior and current `file_id` for one `ev_date` from `early_vote_day`.
 3. Call `compare_early_vote_rosters` and bulk-insert into `early_vote_vuid_dup`.
 
