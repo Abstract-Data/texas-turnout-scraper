@@ -150,6 +150,20 @@ def test_geography_load_runs_once_after_the_roster_rows_backfill() -> None:
     assert '--election-id "${ELECTION_ID}" --apply' in step
 
 
+def test_repeat_build_runs_once_after_the_geography_load() -> None:
+    """The repeat flags read the live roster rows, so they run after every roster step."""
+    text = WORKFLOW.read_text()
+    name = "Build repeat VUID flags (idempotent)"
+    assert text.count(name) == 1
+    assert text.count("texas_turnout_scraper.repeat_build") == 1
+    assert text.index("Load geography and precinct aliases (idempotent)") < text.index(name)
+    step = text.split(name, 1)[1]
+    assert "op run --environment s6tljdcafkgqxfuxhcnj3m5x5a" in step
+    assert '--election-id "${ELECTION_ID}" --apply' in step
+    secrets = step.split("run: |", 1)[0]
+    assert "OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" in secrets
+
+
 def test_loader_jobs_do_not_install_the_geo_extra() -> None:
     """The geo libraries are for the offline build only; the loader reads the committed JSON."""
     assert "--extra geo" not in WORKFLOW.read_text()
