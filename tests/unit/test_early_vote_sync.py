@@ -844,6 +844,8 @@ class _MemoryD1:
 
     def _apply_sql(self, sql: str, params: list[str]) -> dict[str, object] | None:
         sql = sql.strip()
+        if "pragma_table_info('early_vote_roster_row')" in sql:
+            return {"success": True, "results": [{"name": "day"}, {"name": "row_hash"}]}
         if "pragma_table_info" in sql:
             self.order.append("schema")
             if "early_vote_chunk" in sql:
@@ -858,10 +860,6 @@ class _MemoryD1:
             self.selections.append(found)
             self.order.append("file-ids")
             return {"success": True, "results": [{"file_id": file_id} for file_id in found]}
-        if "MAX(row_id)" in sql:
-            return {"success": True, "results": [{"max_row": None}]}
-        if sql.startswith("DELETE FROM early_vote_roster_"):
-            return {"success": True, "results": []}
         if sql == _DAY_FILE_IDS_SQL:
             self.order.append("day-file-ids")
             return {"success": True, "results": []}

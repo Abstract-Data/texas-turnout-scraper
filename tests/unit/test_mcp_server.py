@@ -57,7 +57,16 @@ def _civix_csv_response(csv_text: str) -> httpx.Response:
     return httpx.Response(200, json={"upload": encoded})
 
 
+def _httpx_civix_client(*args, **kwargs) -> CivixClient:
+    """respx intercepts httpx only; the default cloudscraper backend would reach the live portal."""
+    return CivixClient(*args, http_backend="httpx", **kwargs)
+
+
+_USE_HTTPX = patch("texas_turnout_scraper.civix.CivixClient", new=_httpx_civix_client)
+
+
 @respx.mock
+@_USE_HTTPX
 def test_civix_list_elections_tool() -> None:
     respx.get(
         f"{BASE_URL}{API_PREFIX}/getFile",
@@ -71,6 +80,7 @@ def test_civix_list_elections_tool() -> None:
 
 
 @respx.mock
+@_USE_HTTPX
 def test_civix_fetch_turnout_tool() -> None:
     respx.get(
         f"{BASE_URL}{API_PREFIX}/getFile",
@@ -87,6 +97,7 @@ def test_civix_fetch_turnout_tool() -> None:
 
 
 @respx.mock
+@_USE_HTTPX
 def test_civix_fetch_county_roster_tool() -> None:
     csv_text = _load_text("civix_roster_harris_sample.csv")
     respx.get(f"{BASE_URL}{API_PREFIX}/getFileByFormat").mock(
@@ -106,6 +117,7 @@ def test_civix_fetch_county_roster_tool() -> None:
 
 
 @respx.mock
+@_USE_HTTPX
 def test_civix_fetch_ed_turnout_tool() -> None:
     respx.get(
         f"{BASE_URL}{API_PREFIX}/getFile",
