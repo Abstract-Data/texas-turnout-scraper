@@ -90,10 +90,13 @@ from texas_turnout_scraper.early_vote_day_changes import (
 from texas_turnout_scraper.early_vote_errors import EarlyVoteSyncError
 from texas_turnout_scraper.early_vote_roster import RosterCsvSummary, canonicalize_roster_csv
 from texas_turnout_scraper.early_vote_roster_rows import (
+    LEGACY_DRAIN_TABLES,
     LEGACY_ROW_COLUMNS_SQL,
     LEGACY_ROW_DROPS,
     ROW_SCHEMA_CREATES,
     check_roster_header,
+    legacy_drain_sql,
+    legacy_remaining_sql,
 )
 from texas_turnout_scraper.http_transport import HttpBackend, PacedHttpClient
 from texas_turnout_scraper.r2_snapshots import R2SnapshotStore, snapshot_store_from_env
@@ -133,6 +136,8 @@ PEAK_STORED_COPIES = 3
 # https://developers.cloudflare.com/d1/platform/limits/
 CHUNK_RAW_BYTES = 32_768
 _INSERT_BATCH = 20
+LEGACY_DRAIN_BATCH = 50_000
+_LEGACY_DRAIN_MAX_BATCHES = 400
 
 CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4"
 
@@ -1322,6 +1327,17 @@ class CloudflareEarlyVoteStore:
     def _ensure_schema(self, database_id: str) -> None:
         if "file_id" in self._column_names(database_id, LEGACY_ROW_COLUMNS_SQL):
             # The file_id-keyed roster tables of the first loader. Rows come back from the chunks.
+            # Emptied in bounded slices first, so one oversized DROP cannot time out and block
+            # every later run; an interrupted run resumes from what is left.
+            for table in LEGACY_DRAIN_TABLES:
+                for _ in range(_LEGACY_DRAIN_MAX_BATCHES):
+                    if not self._query_rows(database_id, legacy_remaining_sql(table), []):
+                        break
+                    self._statements(
+                        database_id, [(legacy_drain_sql(table, LEGACY_DRAIN_BATCH), [])]
+                    )
+                else:
+                    raise EarlyVoteSyncError(f"{table} did not drain; rerun to continue")
             self._statements(database_id, [(sql, []) for sql in LEGACY_ROW_DROPS])
             logger.info("early-vote D1 dropped file-keyed roster row tables")
         self._statements(

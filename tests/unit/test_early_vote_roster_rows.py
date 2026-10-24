@@ -12,6 +12,7 @@ import httpx
 import pytest
 from typing_extensions import override
 
+from texas_turnout_scraper import early_vote_sync
 from texas_turnout_scraper.early_vote_roster_rows import (
     ROW_SCHEMA_CREATES,
     VISIBLE_AT_SQL,
@@ -586,3 +587,53 @@ def test_a_visible_count_that_disagrees_with_the_file_stops_before_the_version_f
         store.load(_csv(A, B, C), "f2")
     assert "STRAY" not in str(excinfo.value)
     assert store.version()[:2] == (1, "f1")
+
+
+def _legacy_store(rows: int) -> _SqliteCloudflareStore:
+    conn = sqlite3.connect(":memory:")
+    for sql in LEGACY_DDL:
+        conn.execute(sql)
+    for index in range(rows):
+        conn.execute(
+            "INSERT INTO early_vote_roster_row VALUES ('C', 'N', '1', 'MAIL-IN', '', 'f', ?, '{}')",
+            (index,),
+        )
+    return _SqliteCloudflareStore(conn)
+
+
+def test_the_file_keyed_tables_are_emptied_in_bounded_batches_before_they_are_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(early_vote_sync, "LEGACY_DRAIN_BATCH", 3)
+    store = _legacy_store(7)
+    store._ensure_schema("db")
+    drains = [s for s in store.sent if s.startswith("DELETE FROM early_vote_roster_row")]
+    assert len(drains) == 3
+    drops = [i for i, s in enumerate(store.sent) if s.startswith("DROP TABLE")]
+    last_drain = max(i for i, s in enumerate(store.sent) if s in drains)
+    assert drops and min(drops) > last_drain
+    assert "file_id" not in _columns(store.conn, "early_vote_roster_row")
+
+
+def test_an_interrupted_migration_resumes_where_it_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(early_vote_sync, "LEGACY_DRAIN_BATCH", 3)
+    store = _legacy_store(7)
+    original = store._statements
+    calls = {"n": 0}
+
+    def flaky(database_id: str, statements: list[tuple[str, list[str]]]) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("d1 timeout")
+        original(database_id, statements)
+
+    monkeypatch.setattr(store, "_statements", flaky)
+    with pytest.raises(RuntimeError):
+        store._ensure_schema("db")
+    left = store.conn.execute("SELECT COUNT(*) FROM early_vote_roster_row").fetchone()[0]
+    assert 0 < left < 7
+    monkeypatch.setattr(store, "_statements", original)
+    store._ensure_schema("db")
+    assert "file_id" not in _columns(store.conn, "early_vote_roster_row")

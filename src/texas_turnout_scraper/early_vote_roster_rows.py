@@ -73,6 +73,21 @@ ROW_SCHEMA_CREATES: tuple[str, ...] = (ROW_TABLE_SQL, REJECT_TABLE_SQL, VERSION_
 
 # The file_id-keyed tables of the first loader. Their content is rebuilt from the chunks.
 LEGACY_ROW_COLUMNS_SQL = "SELECT name FROM pragma_table_info('early_vote_roster_row')"
+LEGACY_DRAIN_TABLES: tuple[str, ...] = ("early_vote_roster_row", "early_vote_roster_reject")
+
+
+def legacy_remaining_sql(table: str) -> str:
+    return f"SELECT 1 AS n FROM {table} LIMIT 1"
+
+
+def legacy_drain_sql(table: str, batch: int) -> str:
+    """Delete one bounded slice of a file-keyed table; D1 limits how long one statement may run."""
+    return (
+        f"DELETE FROM {table} WHERE (file_id, row_id) IN "
+        f"(SELECT file_id, row_id FROM {table} LIMIT {int(batch)})"
+    )
+
+
 LEGACY_ROW_DROPS: tuple[str, ...] = (
     "DROP TABLE IF EXISTS early_vote_roster_rows",
     "DROP TABLE IF EXISTS early_vote_roster_reject",
