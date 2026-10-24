@@ -1,6 +1,8 @@
 """Structural checks for the early-vote sync workflow. Run with pytest tests/verify/."""
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
@@ -30,7 +32,7 @@ def test_workflow_run_scripts_do_not_interpolate_inputs() -> None:
         "&& '53815' || inputs.election_id }}"
     )
     assert group_line in text
-    assert "0 3,15 * * *" in text
+    assert "17 15,16,22,23,3,4 * * *" in text
     assert "sync_mode" in text
     assert "cancel-in-progress: false" in text
     assert text.count("election_id must be digits only") == 2
@@ -174,3 +176,58 @@ def test_loader_jobs_install_the_loader_extra() -> None:
     syncs = [line for line in WORKFLOW.read_text().splitlines() if "uv sync" in line]
     assert len(syncs) == 2
     assert all("--extra waf --extra loader" in line for line in syncs)
+
+
+def _window_script() -> str:
+    text = WORKFLOW.read_text()
+    block = text.split("  window:", 1)[1].split("\n  dry-run:", 1)[0]
+    script = block.split("run: |\n", 1)[1]
+    return "\n".join(line[10:] for line in script.splitlines())
+
+
+def _window_output(tmp_path: Path, event: str, now_utc: str, chicago_hour: str) -> str:
+    """Run the window script with a fake ``date`` so the clock is an input."""
+    shim = tmp_path / "date"
+    shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys, calendar, time\n"
+        "a = sys.argv[1:]\n"
+        "if a == ['+%H']:\n"
+        "    print(os.environ['FAKE_HOUR'])\n"
+        "elif a[:2] == ['-u', '-d']:\n"
+        "    print(calendar.timegm(time.strptime(a[2], '%Y-%m-%d %H:%M:%S')))\n"
+        "elif a == ['-u', '+%s']:\n"
+        "    print(calendar.timegm(time.strptime(os.environ['FAKE_NOW'], '%Y-%m-%d %H:%M:%S')))\n"
+        "else:\n"
+        "    sys.exit(2)\n"
+    )
+    shim.chmod(0o755)
+    out = tmp_path / "out"
+    out.write_text("")
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "EVENT_NAME": event,
+        "FAKE_NOW": now_utc,
+        "FAKE_HOUR": chicago_hour,
+        "GITHUB_OUTPUT": str(out),
+    }
+    subprocess.run(["bash", "-c", _window_script()], check=True, env=env, capture_output=True)
+    return out.read_text().strip()
+
+
+def test_schedule_runs_three_times_a_day_until_the_end_of_november_3(tmp_path: Path) -> None:
+    text = WORKFLOW.read_text()
+    assert 'cron: "17 15,16,22,23,3,4 * * *"' in text
+    assert "needs: window" in text
+    assert "needs.window.outputs.proceed == 'true'" in text
+    kept = ["10", "17", "22"]
+    for hour in kept:
+        assert _window_output(tmp_path, "schedule", "2026-10-30 15:20:00", hour) == "proceed=true"
+    for hour in ("09", "11", "16", "18", "21", "23", "04"):
+        assert _window_output(tmp_path, "schedule", "2026-10-30 15:20:00", hour) == "proceed=false"
+    assert _window_output(tmp_path, "schedule", "2026-11-04 04:20:00", "22") == "proceed=true"
+    assert _window_output(tmp_path, "schedule", "2026-11-04 06:00:00", "10") == "proceed=false"
+    assert (
+        _window_output(tmp_path, "workflow_dispatch", "2026-12-01 00:00:00", "03") == "proceed=true"
+    )
