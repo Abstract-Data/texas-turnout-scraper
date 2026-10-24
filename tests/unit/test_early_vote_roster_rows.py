@@ -261,6 +261,29 @@ def test_logs_carry_counts_never_names(
         assert name not in text
 
 
+def _roster_log_levels(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.levelname for r in caplog.records if "roster rows election_id" in r.getMessage()]
+
+
+def test_a_day_with_rejects_is_logged_as_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    store, _ = _store(monkeypatch)
+    with caplog.at_level("INFO"):
+        _write(store)
+    assert _roster_log_levels(caplog) == ["WARNING"]
+
+
+def test_a_clean_day_is_logged_as_info(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    store, _ = _store(monkeypatch)
+    clean = (HEADER + "TRAVIS,A B,1,MAIL-IN,1,SCHOOL\n").encode()
+    with caplog.at_level("INFO"):
+        _write(store, clean)
+    assert _roster_log_levels(caplog) == ["INFO"]
+
+
 def test_a_replaced_versions_rows_go_before_its_chunks_so_a_crash_leaves_it_findable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

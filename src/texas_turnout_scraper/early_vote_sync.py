@@ -1464,7 +1464,8 @@ class CloudflareEarlyVoteStore:
             database_id,
             [_statement_lists(marker_statement(election_id, file_id, rows, rejects))],
         )
-        logger.info(
+        log = logger.warning if rejects else logger.info
+        log(
             "early-vote D1 roster rows election_id=%s file_id=%s rows=%s rejects=%s",
             election_id,
             file_id,
