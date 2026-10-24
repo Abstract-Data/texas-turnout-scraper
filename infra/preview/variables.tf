@@ -63,3 +63,16 @@ variable "preview_api_hostname" {
     error_message = "preview_api_hostname must be a hostname without a scheme or path."
   }
 }
+
+variable "github_dispatch_token" {
+  type        = string
+  description = "Fine-grained GitHub token with only Actions: write on Abstract-Data/texas-turnout-scraper. The Worker cron uses it to dispatch early-vote-sync.yml. Empty leaves the binding off and the cron skips. From the EV_DISPATCH_GITHUB_TOKEN preview environment secret."
+  default     = ""
+  sensitive   = true
+  nullable    = false
+
+  validation {
+    condition     = var.github_dispatch_token == "" || can(regex("^[^[:space:]]+$", var.github_dispatch_token))
+    error_message = "github_dispatch_token must be empty or a token without whitespace."
+  }
+}

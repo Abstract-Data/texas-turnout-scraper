@@ -96,7 +96,17 @@ When a day's file changes on reload, the loader first writes both the old and ne
 
 ### Early-vote loader: why scheduled runs use `backfill`
 
-The Civix portal's per-date files for an election are **daily** (consecutive days share no voter IDs) and a day's file can gain late records after it is first published. The scheduled `early-vote-sync.yml` therefore runs `sync_mode=backfill`: it re-fetches every day, hashes each file, skips days whose hash matches what is stored, rewrites days that changed, and bumps the KV version only when something changed. `sync_mode=latest` (dispatch only) looks at today's file alone and will not repair earlier days. If a day is missing from the API, check that the scheduled runs were approved and not cancelled; a dry-run `backfill` dispatch shows what the portal serves.
+The Civix portal's per-date files for an election are **daily** (consecutive days share no voter IDs) and a day's file can gain late records after it is first published. The scheduled `early-vote-sync.yml` therefore runs `sync_mode=backfill`: it re-fetches every day, hashes each file, skips days whose hash matches what is stored, rewrites days that changed, and bumps the KV version only when something changed. `sync_mode=latest` (dispatch only) looks at today's file alone and will not repair earlier days. If a day is missing from the API, check that the scheduled runs succeeded and were not cancelled; a dry-run `backfill` dispatch shows what the portal serves.
+
+### Early-vote schedule (Worker cron)
+
+The preview Worker's cron trigger dispatches `early-vote-sync.yml` at 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 (`docs/adr/013-worker-cron-dispatches-sync.md`). Those runs have `trigger=cron` and apply in the `preview-scheduled` environment with no reviewer. Manual dispatches keep `trigger=manual` and the `preview` reviewer gate.
+
+- **See a run.** GitHub Actions → Early vote sync: cron runs are `workflow_dispatch` runs whose `trigger` input is `cron`. The Worker side is in Workers Logs for `tx-turnout-ev-api-preview`: a cron invocation logs `early-vote dispatch accepted: HTTP 204`, `early-vote dispatch skipped: GITHUB_DISPATCH_TOKEN is not set`, or fails with `DispatchError` and the HTTP status. Hours outside 10, 17 and 22 Central log nothing.
+- **Stop it now.** Revoke the fine-grained token in GitHub (Settings → Developer settings → Fine-grained tokens). Dispatches then fail with 401 and nothing runs. To stop it for good, remove `cloudflare_workers_cron_trigger.ev_sync` from `infra/preview/main.tf` and apply through the Terraform workflow. Trigger changes take up to 15 minutes to reach Cloudflare.
+- **It ends by itself.** After 2026-11-04 05:59:59 UTC the trigger still fires but sends nothing.
+- **Set or rotate the token.** Create a fine-grained token for `Abstract-Data/texas-turnout-scraper` with only Actions: write, store it as the `preview` environment secret `EV_DISPATCH_GITHUB_TOKEN`, and run the Terraform workflow. The Worker binding `GITHUB_DISPATCH_TOKEN` exists only when that secret is non-empty. Never log or print the token.
+- **`preview-scheduled` environment.** Settings → Environments: no required reviewers, deployment branches `main` only, and the same secrets as `preview` (`OP_SERVICE_ACCOUNT_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`). This is a settings step; the repository does not configure it.
 
 ### Early-vote roster rows (`early_vote_roster_row`)
 
