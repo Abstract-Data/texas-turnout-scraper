@@ -98,6 +98,7 @@ from texas_turnout_scraper.early_vote_roster_rows import (
     legacy_drain_sql,
     legacy_remaining_sql,
 )
+from texas_turnout_scraper.geo_tables import GEO_SCHEMA_CREATES
 from texas_turnout_scraper.http_transport import HttpBackend, PacedHttpClient
 from texas_turnout_scraper.r2_snapshots import R2SnapshotStore, snapshot_store_from_env
 
@@ -430,6 +431,7 @@ _SCHEMA_CREATES: tuple[str, ...] = (
     DAY_CHANGE_TABLE_SQL,
     *PRECOMPUTE_SCHEMA_CREATES,
     *ROW_SCHEMA_CREATES,
+    *GEO_SCHEMA_CREATES,
 )
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
 _FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"

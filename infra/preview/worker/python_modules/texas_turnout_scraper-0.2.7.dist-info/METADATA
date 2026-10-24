@@ -14,6 +14,10 @@ Provides-Extra: cli
 Requires-Dist: questionary>=2.1.1; extra == 'cli'
 Requires-Dist: rich>=13.9.0; extra == 'cli'
 Requires-Dist: typer>=0.12.0; extra == 'cli'
+Provides-Extra: geo
+Requires-Dist: pyproj>=3.6; extra == 'geo'
+Requires-Dist: pyshp>=2.3; extra == 'geo'
+Requires-Dist: shapely>=2.0; extra == 'geo'
 Provides-Extra: loader
 Requires-Dist: sqlmodel>=0.0.48; extra == 'loader'
 Provides-Extra: mcp

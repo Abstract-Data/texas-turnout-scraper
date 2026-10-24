@@ -24,6 +24,8 @@ mcp = ["mcp[cli]>=1.3.0"]
 voterfile = ["duckdb>=1.0.0"]
 waf = ["cloudscraper>=1.2.71"]
 loader = ["sqlmodel>=0.0.48"]
+# Offline geography build only (geo_build). Nothing the loader or Worker imports needs it.
+geo = ["shapely>=2.0", "pyproj>=3.6", "pyshp>=2.3"]
 
 [project.scripts]
 tx-turnout = "texas_turnout_scraper.cli:app"
@@ -49,6 +51,9 @@ dev = [
     "duckdb>=1.0.0",
     "cloudscraper>=1.2.71",
     "sqlmodel>=0.0.48",
+    "shapely>=2.0",
+    "pyproj>=3.6",
+    "pyshp>=2.3",
 ]
 
 [build-system]
