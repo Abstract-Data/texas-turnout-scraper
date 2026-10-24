@@ -128,6 +128,9 @@ LIVE_ROWS_SQL = (
     "SELECT id_voter, voting_method, county FROM early_vote_roster_row "
     "WHERE day = ? AND row_hash BETWEEN ? AND ? AND removed_in IS NULL ORDER BY row_hash, occ"
 )
+# Roster rows no longer live. Compared with the logged removals to show a removal that has no
+# change-log event, which flag 8 cannot see.
+REMOVED_ROWS_SQL = "SELECT COUNT(*) AS n FROM early_vote_roster_row WHERE removed_in IS NOT NULL"
 # The change log's days, one primary-key seek each. Parameters: source_election_id, the last
 # day already read ('' to start).
 NEXT_CHANGE_DAY_SQL = (

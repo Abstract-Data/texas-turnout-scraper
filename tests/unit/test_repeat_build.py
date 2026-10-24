@@ -692,3 +692,28 @@ def test_peak_memory_stays_under_600_bytes_per_roster_row_and_writes_are_bounded
     logging.getLogger(__name__).warning(
         "repeat build 150k rows: %.2f s, %.0f bytes per row", seconds, peak / rows
     )
+
+
+def test_removed_rows_counts_roster_removals_without_a_logged_event(store: _Store) -> None:
+    store.add(D1, _v(1))
+    store.add(D2, _v(2), removed_in=1)
+    store.add(D2, _v(3), removed_in=1)
+    store.removal(D2, _v(3))
+    result = _run(store)
+    assert result.removed_rows == 2
+    assert result.removed_voters == 1
+
+
+def test_validation_failures_are_counted_and_nothing_is_written(store: _Store) -> None:
+    for n in (1, 2, 3):
+        store.add(D1, f"{n}2345ABCDE")
+        store.add(D2, f"{n}2345ABCDE")
+    store.add(D1, _v(9))
+    store.add(D2, _v(9))
+    store.bump(D2)
+    with pytest.raises(EarlyVoteSyncError) as excinfo:
+        _run(store)
+    message = str(excinfo.value)
+    assert message.startswith("3 repeat rows failed validation; first: ")
+    assert "2345ABCDE" not in message
+    assert store.rows("SELECT COUNT(*) FROM early_vote_vuid_repeat") == [(0,)]

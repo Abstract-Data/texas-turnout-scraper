@@ -56,6 +56,7 @@ from texas_turnout_scraper.repeat_tables import (
     NEXT_CHANGE_DAY_SQL,
     PAGE_ROWS,
     REMOVALS_SQL,
+    REMOVED_ROWS_SQL,
     REPEAT_COLUMNS,
     REPEAT_DELETE_SQL,
     REPEAT_TABLE_COUNT,
@@ -105,6 +106,7 @@ class RepeatResult:
     repeat_voters: int = 0
     excess_rows: int = 0
     removed_voters: int = 0
+    removed_rows: int | None = None
     rows_pending: int = 0
     rows_stale: int = 0
     excess_pending: int = 0
@@ -353,14 +355,22 @@ def build_repeats(
     stored_excess = _stored_excess(store, database_id) if tables_present else {}
     writes = _Writes(store, database_id, dry_run=dry_run, batch_rows=batch_rows)
     upserts = _Buffer(writes, REPEAT_UPSERT_SQL)
+    failed, first_failure = 0, ""
     for vuid in sorted(scan.repeats.keys() | removed.keys()):
         appearances = scan.repeats.get(vuid)
         if appearances is None:
             first = scan.first.get(vuid)
             appearances = [] if first is None else [first]
-        record = repeat_record(vuid, appearances, removed.get(vuid, ()))
+        try:
+            record = repeat_record(vuid, appearances, removed.get(vuid, ()))
+        except EarlyVoteSyncError as error:
+            failed += 1
+            first_failure = first_failure or str(error)
+            continue
         if hashes.pop(vuid, None) != record.src_hash:
             upserts.add([getattr(record, column) for column in REPEAT_COLUMNS])
+    if failed:
+        raise EarlyVoteSyncError(f"{failed} repeat rows failed validation; first: {first_failure}")
     upserts.flush()
     stale = sorted(hashes)
     writes.send(REPEAT_DELETE_SQL, stale)
@@ -381,14 +391,21 @@ def build_repeats(
     for name, value in meta.items():
         RepeatMeta.model_validate({"name": name, "value": value})
     writes.send(META_UPSERT_SQL, sorted([name, value] for name, value in meta.items()))
+    removed_rows = _query_count(store, database_id, REMOVED_ROWS_SQL)
     return RepeatResult(
         "dry_run" if dry_run else "wrote",
         **counts,
+        removed_rows=removed_rows,
         rows_pending=upserts.count,
         rows_stale=len(stale),
         excess_pending=len(changed_excess),
         excess_stale=len(stale_excess),
     )
+
+
+def _query_count(store: RepeatStore, database_id: str, sql: str) -> int:
+    rows = store._query_rows(database_id, sql, [])  # noqa: SLF001
+    return int(rows[0].get("n") or 0) if rows else 0
 
 
 def _counts_from_meta(meta: Mapping[str, str]) -> dict[str, int]:
@@ -431,8 +448,8 @@ def run_repeat_build_on_store(
         )
     logger.info(
         "repeat build election_id=%s status=%s raw_rows=%s distinct_voters=%s repeat_voters=%s "
-        "excess_rows=%s removed_voters=%s rows_pending=%s rows_stale=%s excess_pending=%s "
-        "excess_stale=%s",
+        "excess_rows=%s removed_voters=%s removed_rows=%s rows_pending=%s rows_stale=%s "
+        "excess_pending=%s excess_stale=%s",
         election_id,
         result.status,
         result.raw_rows,
@@ -440,6 +457,7 @@ def run_repeat_build_on_store(
         result.repeat_voters,
         result.excess_rows,
         result.removed_voters,
+        result.removed_rows,
         result.rows_pending,
         result.rows_stale,
         result.excess_pending,
