@@ -150,6 +150,29 @@ SELECT rule, COUNT(*) FROM geo_precinct_alias GROUP BY rule;
 
 A sharp drop in `matched_row_share` after a precinct rebuild usually means a county renumbered its precincts or the portal changed the precinct format.
 
+### Voter attributes (`early_vote_voter`, `early_vote_voter_age`, `early_vote_election_calendar`, `age_tier`)
+
+For every voter in the election's live roster, `early_vote_voter` holds `sex`, `dob`, `edr`, the 17 history codes, the early day they voted in the 2025 amendment election and the 2026 primary and runoff, and derived scores. `early_vote_voter_age` gives their age and age tier today and on the current election day. Nothing in the Worker reads these yet. See `docs/adr/011-voter-attributes.md`.
+
+**Run it locally, never in CI.** The voterfile is PII and stays on the owner's machine. The early-vote sync creates the tables; the link fills them:
+
+```bash
+export TX_VOTERFILE="/path/to/texas2026september.csv"   # or pass --voterfile
+# Cloudflare credentials as for the sync: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_KV_NAMESPACE_ID
+uv run python -m texas_turnout_scraper.voter_link --election-id 53815 --dated-history --dry-run
+uv run python -m texas_turnout_scraper.voter_link --election-id 53815 --dated-history --apply
+```
+
+A dry run reads D1 and the voterfile, fetches the dated days, and reports; it creates and writes nothing. `--apply` writes only voters whose `src_hash` changed, then the `early_vote_voter_meta` rows last; a rerun with the same inputs writes nothing. Voters are never deleted.
+
+**Dated history.** `--dated-history` fetches every early day of elections 51031, 53813, 53814, 58314 and 58315 from the Civix portal (about 44 files, paced at 1 s or more) and caches each under `--cache-dir` (default `~/.cache/texas-turnout-scraper/statewide`) as `<civix id>/<date>.<sha256>.bin`. A rerun reads the cache and fetches nothing. The cached files hold names and VUIDs: keep them on the local machine and delete the folder when done. If the portal's dates or day counts disagree with `ELECTION_CALENDAR` in `voter_tables.py`, the run logs a `calendar` warning (counts and dates only); fix the constant and its test before trusting the day columns.
+
+**Reading the report.** Counts only: `targets` (live roster VUIDs), `matched` and `matched_share` (found in the voterfile), `unmatched`, `rejects` (an unknown history code or sex; the row is kept in `early_vote_voter_reject` with a value-free reason), `invalid_dob` and `invalid_edr` (stored as NULL, `flags` bit 1 or 2), `written`, `unchanged`, `pending` (what an apply would write) and `dated_<KEY>` (target voters found in that election's day files).
+
+**After a scoring change**, bump `SCORE_VERSION` in `voter_tables.py`. It is part of `src_hash`, so the next apply rewrites every voter.
+
+The voterfile must hold each VUID once (the September 2026 file does: 18,932,927 rows, 18,932,927 distinct). If a file repeats a VUID, the link stops with `voterfile repeats a VUID; nothing marked complete` before the meta rows are written, because which row would win depends on read order. Fix the file and rerun.
+
 ### An election has stopped updating on Pages (held back for size)
 
 `data-refresh.yml` runs `.github/scripts/skip_oversize_data.py` before it commits. GitHub rejects any single file over 100 MiB, so a file over 95 MiB holds back its whole election: the election folder goes back to its last published state (or is removed if it was never published) and its `index.json` entry is restored. Other elections still publish.
