@@ -95,7 +95,6 @@ def _fixture_plan(ev_dates: tuple[date, ...]) -> BackfillDatePlan:
         calendar_first_iso=ev_dates[0].isoformat(),
         calendar_last_iso=ev_dates[-1].isoformat(),
         skipped_future_dates=(),
-        skipped_empty_dates=(),
         load_dates=ev_dates,
     )
 
@@ -152,21 +151,16 @@ def _envelope_response() -> httpx.Response:
     return httpx.Response(200, content=body)
 
 
-def test_plan_backfill_skips_future_and_empty() -> None:
+def test_plan_backfill_skips_future_dates_without_pulling() -> None:
     calendar = (
         date(2026, 10, 14),
         date(2026, 10, 15),
         date(2026, 10, 21),
     )
 
-    def fake_probe(_eid: str, ev_day: date, **_: object) -> tuple[bool, int, int]:
-        if ev_day == date(2026, 10, 15):
-            return False, 0, 0
-        return True, 100, 5
-
     with patch(
-        "texas_turnout_scraper.early_vote_backfill.probe_statewide_roster_day",
-        side_effect=fake_probe,
+        "texas_turnout_scraper.early_vote_backfill.pull_statewide_roster_file",
+        side_effect=AssertionError("planning must not pull"),
     ):
         plan = plan_backfill_load_dates(
             DEFAULT_NOV_2026_GENERAL_ID,
@@ -174,9 +168,8 @@ def test_plan_backfill_skips_future_and_empty() -> None:
             today=date(2026, 10, 20),
         )
     assert plan.calendar_ev_days_total == 3
-    assert plan.load_dates == (date(2026, 10, 14),)
+    assert plan.load_dates == (date(2026, 10, 14), date(2026, 10, 15))
     assert plan.skipped_future_dates == ("2026-10-21",)
-    assert plan.skipped_empty_dates == ("2026-10-15",)
 
 
 def test_backfill_dry_run_lists_days_without_pii(capsys: pytest.CaptureFixture[str]) -> None:
