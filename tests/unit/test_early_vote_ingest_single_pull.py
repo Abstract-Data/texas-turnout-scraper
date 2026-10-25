@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+import respx
 from typing_extensions import override
 
 from texas_turnout_scraper import early_vote_roster, early_vote_sync, r2_snapshots
@@ -280,23 +281,26 @@ class _CloudflareFake:
         self.lists = 0
         self.creates = 0
 
-    def handle(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/d1/database") and request.method == "GET":
-            self.lists += 1
-            return httpx.Response(
-                200,
-                json={
-                    "success": True,
-                    "result": self.databases,
-                    "result_info": {"total_count": len(self.databases)},
-                },
-            )
-        if request.url.path.endswith("/d1/database") and request.method == "POST":
-            self.creates += 1
-            uuid = f"db-created-{self.creates}"
-            self.databases.append({"name": early_vote_sync.database_name(ELECTION), "uuid": uuid})
-            return httpx.Response(200, json={"success": True, "result": {"uuid": uuid}})
-        return httpx.Response(500, json={"success": False})
+    def mount(self, router: respx.MockRouter) -> None:
+        router.get(path__regex=r".*/d1/database$").mock(side_effect=self._list)
+        router.post(path__regex=r".*/d1/database$").mock(side_effect=self._create)
+
+    def _list(self, _request: httpx.Request) -> httpx.Response:
+        self.lists += 1
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "result": self.databases,
+                "result_info": {"total_count": len(self.databases)},
+            },
+        )
+
+    def _create(self, _request: httpx.Request) -> httpx.Response:
+        self.creates += 1
+        uuid = f"db-created-{self.creates}"
+        self.databases.append({"name": early_vote_sync.database_name(ELECTION), "uuid": uuid})
+        return httpx.Response(200, json={"success": True, "result": {"uuid": uuid}})
 
 
 class _SqliteStore(CloudflareEarlyVoteStore):
@@ -305,9 +309,7 @@ class _SqliteStore(CloudflareEarlyVoteStore):
             account_id="a",
             api_token="t",
             kv_namespace_id="n",
-            client=httpx.Client(
-                base_url=CLOUDFLARE_API_BASE, transport=httpx.MockTransport(cloudflare.handle)
-            ),
+            client=httpx.Client(base_url=CLOUDFLARE_API_BASE),
         )
         self.conn = conn
         self.schema_batches = 0
@@ -332,9 +334,12 @@ class _SqliteStore(CloudflareEarlyVoteStore):
 ELEVEN = tuple(date(2026, 10, 9 + offset) for offset in range(11))
 
 
-def _eleven_days(store: _SqliteStore) -> Any:
+def _eleven_days(fake: _CloudflareFake, conn: sqlite3.Connection) -> tuple[_SqliteStore, Any]:
     counts = _Counts({day: _roster(1 + index % 3) for index, day in enumerate(ELEVEN)})
-    return _backfill(counts, store, ELEVEN)
+    with respx.mock(assert_all_called=False) as router:
+        fake.mount(router)
+        store = _SqliteStore(fake, conn)
+        return store, _backfill(counts, store, ELEVEN)
 
 
 @pytest.fixture
@@ -347,15 +352,13 @@ def _no_r2(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_eleven_days_list_databases_and_run_the_schema_batch_once_per_store() -> None:
     conn = sqlite3.connect(":memory:")
     first_fake = _CloudflareFake(exists=True)
-    first = _SqliteStore(first_fake, conn)
-    wrote = _eleven_days(first)
+    first, wrote = _eleven_days(first_fake, conn)
     assert wrote.days_wrote == 11
     assert first_fake.lists == 1
     assert first.schema_batches == 1
 
     second_fake = _CloudflareFake(exists=True)
-    second = _SqliteStore(second_fake, conn)
-    unchanged = _eleven_days(second)
+    second, unchanged = _eleven_days(second_fake, conn)
     assert unchanged.days_unchanged == 11
     assert second_fake.lists == 1
     assert second.schema_batches == 1
@@ -365,8 +368,7 @@ def test_eleven_days_list_databases_and_run_the_schema_batch_once_per_store() ->
 def test_a_database_created_mid_run_is_used_by_every_later_day() -> None:
     conn = sqlite3.connect(":memory:")
     fake = _CloudflareFake(exists=False)
-    store = _SqliteStore(fake, conn)
-    result = _eleven_days(store)
+    store, result = _eleven_days(fake, conn)
     assert result.days_wrote == 11
     assert fake.creates == 1
     assert fake.lists == 2
@@ -384,7 +386,7 @@ def test_missing_r2_settings_warn_once_by_name_in_apply_mode(
     monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct-sentinel-value")
     monkeypatch.setenv("R2_ACCESS_KEY_ID", "key-sentinel-value")
     with caplog.at_level(logging.INFO):
-        _eleven_days(_SqliteStore(_CloudflareFake(exists=True), sqlite3.connect(":memory:")))
+        _eleven_days(_CloudflareFake(exists=True), sqlite3.connect(":memory:"))
     warnings = [
         r for r in caplog.records if r.levelno == logging.WARNING and "R2" in r.getMessage()
     ]
@@ -405,3 +407,18 @@ def test_missing_r2_settings_are_silent_in_a_dry_run(
     with caplog.at_level(logging.INFO):
         _backfill(counts, EmptyHashStore(), PAST, dry_run=True)
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_a_whitespace_only_primary_key_falls_back_to_the_secondary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in R2_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("EV_SNAPSHOT_BUCKET", "bucket")
+    monkeypatch.setenv("EV_SNAPSHOT_R2_ACCESS_KEY_ID", "   ")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", " fallback-id ")
+    monkeypatch.setenv("EV_SNAPSHOT_R2_SECRET_ACCESS_KEY", "")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", " fallback-secret ")
+    assert r2_snapshots.snapshot_store_from_env() is not None
+    assert r2_snapshots._snapshot_env() == ["acct", "bucket", "fallback-id", "fallback-secret"]

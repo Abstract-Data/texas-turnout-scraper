@@ -213,8 +213,8 @@ def _snapshot_env() -> list[str]:
     """One value per ``_SNAPSHOT_ENV`` entry: the first set name wins, '' when none is."""
     values = []
     for names in _SNAPSHOT_ENV:
-        set_values = [os.environ.get(name, "") for name in names]
-        values.append(next((value for value in set_values if value), "").strip())
+        set_values = [os.environ.get(name, "").strip() for name in names]
+        values.append(next((value for value in set_values if value), ""))
     return values
 
 
