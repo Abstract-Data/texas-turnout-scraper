@@ -214,6 +214,30 @@ def test_an_empty_day_in_a_dry_run_is_skipped_without_a_write() -> None:
     assert counts.prepares == 3
 
 
+def test_blank_and_whitespace_only_days_are_skipped_like_header_only_days() -> None:
+    payloads = {PAST[0]: b"", PAST[1]: b"  \n", PAST[2]: _roster(1)}
+    counts = _Counts(payloads)
+    store = _DayStore()
+
+    result = _backfill(counts, store, PAST)
+
+    assert store.writes == ["2026-10-16"]
+    assert result.days_skipped_empty == 2
+    assert result.days_wrote == 1
+
+
+def test_all_days_empty_writes_nothing_and_leaves_no_manifest() -> None:
+    payloads = {PAST[0]: HEADER, PAST[1]: b"", PAST[2]: b"  \n"}
+    counts = _Counts(payloads)
+    store = _DayStore()
+
+    result = _backfill(counts, store, PAST)
+
+    assert store.writes == []
+    assert result.days_skipped_empty == 3
+    assert result.days_wrote == 0
+
+
 def test_prepared_bytes_give_the_same_digest_without_a_second_parse() -> None:
     response = _response(_roster(3).replace(b"\n", b"\r\n"))
     plain = sync_early_vote(
