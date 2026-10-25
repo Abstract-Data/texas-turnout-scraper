@@ -26,6 +26,12 @@ Pull requests run `terraform fmt`, `terraform validate`, and `tflint` only. They
 
 A push to `main` or `workflow_dispatch` on `main` runs two jobs in the GitHub Environment `preview`. Plan is John's first approval. Apply is the second. John sees the plan before anything applies. Do not run `terraform plan` or `terraform apply` on a laptop.
 
+## Early-vote cron trigger
+
+`cloudflare_workers_cron_trigger.ev_sync` runs the Worker's `scheduled` handler on `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 the handler dispatches `early-vote-sync.yml` on `main` with `trigger=cron`; at every other firing it does nothing. It does not scrape and does not write D1 or KV. See `docs/adr/013-worker-cron-dispatches-sync.md` and the runbook section "Early-vote schedule (Worker cron)".
+
+The dispatch token comes from the `preview` environment secret `EV_DISPATCH_GITHUB_TOKEN` (a fine-grained token with only Actions: write on this repository). The plan step passes it as `TF_VAR_github_dispatch_token`; the variable is `sensitive` and defaults to empty, and the `GITHUB_DISPATCH_TOKEN` `secret_text` binding is added only when it is non-empty. The saved plan carries the value, so the apply step does not need it. The token also lands in the Terraform state in the same private bucket and in the Worker binding; rotate it by changing the secret and running the Terraform workflow.
+
 ## Routing and Access
 
 Hostname choice: **Workers custom domain** on `abstractdata.io` (personal Cloudflare account), not `workers.dev`. Custom domain keeps preview off the shared `workers.dev` surface, matches production-like hostnames for Quick Results, and pairs with hostname-based Access. Cloudflare documents protecting Workers on custom domains via Access ([Cloudflare Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/), [custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/#require-sign-in-for-a-custom-domain)).
@@ -56,7 +62,7 @@ Do the GitHub settings before adding secrets. Do not try to apply from this pull
 4. In GitHub, open Settings → Environments → `preview` for `Abstract-Data/texas-turnout-scraper`. This is a settings step, not something this repository configures.
    - Deployment branches: selected branch `main` only.
    - Required reviewers: at least one.
-5. Add these four values as Environment secrets on `preview`. Do not add them as repository secrets. `CLOUDFLARE_API_TOKEN`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` are not GitHub secrets.
+5. Add these values as Environment secrets on `preview`. Do not add them as repository secrets. `CLOUDFLARE_API_TOKEN`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` are not GitHub secrets.
 
 | `preview` environment secret | Value |
 | --- | --- |
@@ -64,6 +70,7 @@ Do the GitHub settings before adding secrets. Do not try to apply from this pull
 | `TF_STATE_BUCKET` | State bucket name, such as `tx-turnout-tfstate-preview`. |
 | `TF_STATE_ENDPOINT` | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
 | `OP_SERVICE_ACCOUNT_TOKEN` | 1Password service account token that can read Environment `s6tljdcafkgqxfuxhcnj3m5x5a`. |
+| `EV_DISPATCH_GITHUB_TOKEN` | Optional. Fine-grained GitHub token, this repository only, Actions: write only. The Worker cron uses it to dispatch the early-vote sync. |
 
 6. In that 1Password Environment, name these variables exactly:
 

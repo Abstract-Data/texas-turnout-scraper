@@ -35,3 +35,4 @@ What are the trade-offs and outcomes?
 | [010](./010-geography-tables.md) | Geography tables in D1 | Accepted | 2026-10-24 |
 | [011](./011-voter-attributes.md) | Voter attributes, history and scores in D1 | Accepted | 2026-10-24 |
 | [012](./012-repeat-vuids.md) | Repeat VUIDs and excess counts in D1 | Accepted | 2026-10-24 |
+| [013](./013-worker-cron-dispatches-sync.md) | Worker cron dispatches the early-vote sync | Accepted | 2026-10-24 |

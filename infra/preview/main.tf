@@ -102,7 +102,9 @@ resource "cloudflare_worker_version" "preview" {
 
   modules = local.preview_worker_modules
 
-  bindings = [
+  # GITHUB_DISPATCH_TOKEN is bound only once the owner sets it; until then the cron
+  # handler logs and skips (docs/adr/013-worker-cron-dispatches-sync.md).
+  bindings = concat([
     {
       type        = "d1"
       name        = "DB"
@@ -133,7 +135,13 @@ resource "cloudflare_worker_version" "preview" {
       name = "EV_D1_BINDINGS"
       text = local.ev_d1_bindings
     },
-  ]
+    ], var.github_dispatch_token == "" ? [] : [
+    {
+      type = "secret_text"
+      name = "GITHUB_DISPATCH_TOKEN"
+      text = var.github_dispatch_token
+    },
+  ])
 }
 
 resource "cloudflare_workers_deployment" "preview" {
@@ -149,6 +157,19 @@ resource "cloudflare_workers_deployment" "preview" {
     percentage = 100
     version_id = cloudflare_worker_version.preview.id
   }]
+}
+
+# 10:00, 17:00 and 22:00 America/Chicago in both CDT and CST, as UTC hours. The handler
+# (worker/src/ev_api/cron.py CRON_SCHEDULE) keeps the three that match the date and stops
+# after 11:59 PM Central on 2026-11-03. It only dispatches the early-vote-sync workflow.
+resource "cloudflare_workers_cron_trigger" "ev_sync" {
+  account_id  = var.account_id
+  script_name = cloudflare_worker.ev_api.name
+  schedules = [{
+    cron = "0 15,16,22,23,3,4 * * *"
+  }]
+
+  depends_on = [cloudflare_workers_deployment.preview]
 }
 
 resource "cloudflare_zero_trust_access_service_token" "preview" {
