@@ -199,22 +199,32 @@ class R2SnapshotStore:
         )
 
 
+_SNAPSHOT_ENV: tuple[tuple[str, ...], ...] = (
+    ("CLOUDFLARE_ACCOUNT_ID",),
+    ("EV_SNAPSHOT_BUCKET",),
+    ("EV_SNAPSHOT_R2_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID"),
+    ("EV_SNAPSHOT_R2_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY"),
+)
+
+_missing_env_warned = False
+
+
+def _snapshot_env() -> list[str]:
+    """One value per ``_SNAPSHOT_ENV`` entry: the first set name wins, '' when none is."""
+    values = []
+    for names in _SNAPSHOT_ENV:
+        set_values = [os.environ.get(name, "") for name in names]
+        values.append(next((value for value in set_values if value), "").strip())
+    return values
+
+
 def snapshot_store_from_env() -> R2SnapshotStore | None:
     """Build the store from environment variables, or None when any is missing.
 
     The keys default to the shared ``R2_*`` pair; ``EV_SNAPSHOT_R2_*`` overrides them with a
     bucket-scoped pair.
     """
-    account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
-    bucket = os.environ.get("EV_SNAPSHOT_BUCKET", "").strip()
-    key_id = (
-        os.environ.get("EV_SNAPSHOT_R2_ACCESS_KEY_ID") or os.environ.get("R2_ACCESS_KEY_ID") or ""
-    ).strip()
-    secret = (
-        os.environ.get("EV_SNAPSHOT_R2_SECRET_ACCESS_KEY")
-        or os.environ.get("R2_SECRET_ACCESS_KEY")
-        or ""
-    ).strip()
+    account, bucket, key_id, secret = _snapshot_env()
     if not (account and bucket and key_id and secret):
         return None
     return R2SnapshotStore(
@@ -222,4 +232,23 @@ def snapshot_store_from_env() -> R2SnapshotStore | None:
         bucket=bucket,
         access_key_id=key_id,
         secret_access_key=secret,
+    )
+
+
+def warn_missing_snapshot_env() -> None:
+    """Log, once per process, which variable names keep snapshot history off. Never values."""
+    global _missing_env_warned
+    if _missing_env_warned:
+        return
+    missing = [
+        " or ".join(names)
+        for names, value in zip(_SNAPSHOT_ENV, _snapshot_env(), strict=True)
+        if not value
+    ]
+    if not missing:
+        return
+    _missing_env_warned = True
+    logger.warning(
+        "r2 snapshot history is off: R2 settings missing: %s",
+        ", ".join(missing),
     )

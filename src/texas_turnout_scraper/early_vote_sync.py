@@ -100,7 +100,11 @@ from texas_turnout_scraper.early_vote_roster_rows import (
 )
 from texas_turnout_scraper.geo_tables import GEO_SCHEMA_CREATES
 from texas_turnout_scraper.http_transport import HttpBackend, PacedHttpClient
-from texas_turnout_scraper.r2_snapshots import R2SnapshotStore, snapshot_store_from_env
+from texas_turnout_scraper.r2_snapshots import (
+    R2SnapshotStore,
+    snapshot_store_from_env,
+    warn_missing_snapshot_env,
+)
 from texas_turnout_scraper.repeat_tables import REPEAT_SCHEMA_CREATES
 from texas_turnout_scraper.voter_tables import VOTER_SCHEMA_CREATES
 
@@ -684,16 +688,19 @@ def sync_early_vote(
     payload_kind: EarlyVotePayloadKind = "turnout",
     ev_date_iso: str | None = None,
     defer_kv_bump: bool = False,
+    prepared: tuple[bytes, RosterCsvSummary | None] | None = None,
 ) -> SyncResult:
     """Hash the unwrapped file and write D1, then KV, only when the hash is new.
 
     ``response`` is a Civix HTTP response (``.text`` and ``.json()``). The hash
     covers decoded bytes after roster redaction (when ``payload_kind`` is
-    ``statewide_roster``), not the JSON envelope text.
+    ``statewide_roster``), not the JSON envelope text. ``prepared`` is the
+    ``prepare_payload_bytes`` result for ``response`` when the caller already has it.
     """
     election_id = require_election_id(election_id)
-    raw = _decode_envelope(response)
-    decoded, roster_summary = prepare_payload_bytes(raw, payload_kind)
+    if prepared is None:
+        prepared = prepare_payload_bytes(_decode_envelope(response), payload_kind)
+    decoded, roster_summary = prepared
     digest = sha256_decoded(decoded)
     prior = store.stored_hash(election_id, ev_date_iso=ev_date_iso)
     if prior == digest:
@@ -968,6 +975,9 @@ class CloudflareEarlyVoteStore:
         self._account_id = account_id
         self._namespace_id = kv_namespace_id
         self._snapshots = snapshots if snapshots is not None else snapshot_store_from_env()
+        # Per instance, so one process lists databases and runs the schema DDL once per election.
+        self._database_ids: dict[str, str] = {}
+        self._schema_ready: set[str] = set()
         self._owns_client = client is None
         self._client = client or httpx.Client(
             base_url=CLOUDFLARE_API_BASE,
@@ -1061,6 +1071,8 @@ class CloudflareEarlyVoteStore:
         *,
         update_pointer: bool = False,
     ) -> None:
+        if self._snapshots is None:
+            warn_missing_snapshot_env()
         roster = detect_payload_kind(decoded) == "statewide_roster"
         if roster:
             check_roster_header(decoded)
@@ -1316,6 +1328,9 @@ class CloudflareEarlyVoteStore:
         return version
 
     def _database_uuid_if_exists(self, election_id: str) -> str | None:
+        cached = self._database_ids.get(election_id)
+        if cached is not None:
+            return cached
         name = database_name(election_id)
         matches = self._list_exact_names(name)
         if len(matches) > 1:
@@ -1328,9 +1343,12 @@ class CloudflareEarlyVoteStore:
         uuid = matches[0].get("uuid")
         if not isinstance(uuid, str) or not uuid:
             raise EarlyVoteSyncError("D1 database is missing a uuid")
+        self._database_ids[election_id] = uuid
         return uuid
 
     def _ensure_schema(self, database_id: str) -> None:
+        if database_id in self._schema_ready:
+            return
         if "file_id" in self._column_names(database_id, LEGACY_ROW_COLUMNS_SQL):
             # The file_id-keyed roster tables of the first loader. Rows come back from the chunks.
             # Emptied in bounded slices first, so one oversized DROP cannot time out and block
@@ -1350,12 +1368,16 @@ class CloudflareEarlyVoteStore:
             database_id,
             [(sql, []) for sql in _SCHEMA_CREATES],
         )
+        self._schema_ready.add(database_id)
 
     def _day_scoped_file_ids(self, database_id: str, election_id: str) -> tuple[str, ...]:
         rows = self._query_rows(database_id, _DAY_FILE_IDS_SQL, [election_id])
         return tuple(_string_column(rows, "file_id"))
 
     def _ensure_one_database(self, election_id: str) -> str:
+        cached = self._database_ids.get(election_id)
+        if cached is not None:
+            return cached
         name = database_name(election_id)
         matches = self._list_exact_names(name)
         if len(matches) > 1:
@@ -1367,11 +1389,13 @@ class CloudflareEarlyVoteStore:
             uuid = matches[0].get("uuid")
             if not isinstance(uuid, str) or not uuid:
                 raise EarlyVoteSyncError("D1 database is missing a uuid")
-            return uuid
-        created = self._api(
-            "POST", f"/accounts/{self._account_id}/d1/database", json={"name": name}
-        )
-        return _created_uuid(created)
+        else:
+            created = self._api(
+                "POST", f"/accounts/{self._account_id}/d1/database", json={"name": name}
+            )
+            uuid = _created_uuid(created)
+        self._database_ids[election_id] = uuid
+        return uuid
 
     def _list_exact_names(self, name: str) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
@@ -1780,11 +1804,7 @@ def main(argv: list[str] | None = None) -> int:
         store = _build_store(apply=args.apply, stored_hash=args.stored_hash)
         if sync_mode == "backfill":
             _name, _election_day, ev_dates = find_election_ev_dates(args.election_id)
-            plan = plan_backfill_load_dates(
-                args.election_id,
-                ev_dates,
-                http_backend=args.http_backend,
-            )
+            plan = plan_backfill_load_dates(args.election_id, ev_dates)
             backfill = run_backfill(
                 args.election_id,
                 store,
