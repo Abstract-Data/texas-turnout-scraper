@@ -189,7 +189,7 @@ To rotate: raise `client_secret_version` in `main.tf` above the version Cloudfla
 Internal callers keep using Cloudflare Access service token headers. External consumers use minted tokens in addition to Access:
 
 - `Authorization: Bearer <token>` or `X-API-Key: <token>` on aggregate routes and `/health`.
-- Only HMAC-SHA256 digests (`v2:<hex>`, never plaintext) are stored. KV key prefix `consumer_token:<digest>` mirrors active rows in preview shell D1 table `consumer_api_token` (created on first `tx-turnout tokens mint`). Re-mint after digest scheme changes; legacy scrypt rows fail closed (401).
+- Only HMAC-SHA256 digests (`v2:<hex>`, never plaintext) are stored. KV key prefix `consumer_token:<digest>` mirrors active rows in preview shell D1 table `consumer_api_token` (created on first `tx-turnout api generate`). Re-mint after digest scheme changes; legacy scrypt rows fail closed (401).
 
 John manages tokens locally (1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a` plus Terraform outputs):
 
@@ -201,10 +201,13 @@ John manages tokens locally (1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a` 
 | `CLOUDFLARE_KV_NAMESPACE_ID` | `terraform output -raw kv_namespace_id` |
 
 ```bash
-tx-turnout tokens mint --label "partner name"   # prints plaintext once
-tx-turnout tokens list
-tx-turnout tokens revoke <token_id>
+tx-turnout api generate --name "Partner Name" --email partner@example.org   # key stored in 1Password
+tx-turnout api extend <token_id> --days 30
+tx-turnout api list
+tx-turnout api revoke <token_id>
 ```
+
+The old `tx-turnout tokens ...` group is gone. See [Issuing API keys](#issuing-api-keys-expiring-stored-in-1password).
 
 No Terraform apply is required for the token table; DDL is idempotent via the CLI. Do not commit or log plaintext tokens.
 
@@ -238,12 +241,31 @@ bash scripts/install-git-hooks.sh
 Every minted consumer token has a scope. `aggregates` (the default, and every token minted before scopes existed) reads counts only. `roster` is the only scope that can read voter rows (names and VUIDs, see the roster routes). The shared Cloudflare Access service credential never grants roster access.
 
 ```bash
-tx-turnout tokens mint --label "analyst" --scope roster   # prints the secret once
-tx-turnout tokens list                                    # id, status, scope, created, label
-tx-turnout tokens revoke <token_id>
+tx-turnout api generate --name "Analyst" --email analyst@example.org --scope roster
+tx-turnout api list      # id, status, scope, created, expires, label
+tx-turnout api revoke <token_id>
 ```
 
-The first `mint` or `list` after this release adds the `scope` column to the token table (default `aggregates`); run `tx-turnout tokens list` once before deploying a Worker that reads it.
+The first `generate` or `list` after this release adds the `scope` and `expires_at` columns to the token table (`aggregates` and no expiry by default); run `tx-turnout api list` once before deploying a Worker that reads them.
+
+## Issuing API keys (expiring, stored in 1Password)
+
+`tx-turnout api generate` replaces `tokens mint`. It needs the same `CLOUDFLARE_*` variables as above, plus the 1Password CLI (`op`) signed in (`op signin` in an interactive terminal; the CLI does not retry on an expired session).
+
+| Command | What it does |
+| --- | --- |
+| `api generate --name N --email E [--days 30] [--scope aggregates\|roster] [--show] [--non-interactive]` | Prompts for a missing name or email on a TTY. With `--non-interactive` or no TTY a missing option exits 2. Prints `token_id`, name, scope, `expires_at` and the 1Password item. The key prints only with `--show`. The email is never printed. |
+| `api extend <token_id> [--days 30]` | New expiry is the later of now and the current expiry, plus N days. Updates D1, re-puts the KV entry with the new TTL, then updates the item's `Expires` and `Instructions` fields (found by tag `token:<token_id>`; a missing item warns). A revoked token is refused. A key with no expiry gets now plus N. |
+| `api list` | `token_id`, status (`active`, `expired`, `revoked`), scope, created, expires (`never` for keys minted before expiry existed), label. |
+| `api revoke <token_id>` | Unchanged: D1 `revoked_at` plus KV delete. The 1Password item is left in place. |
+
+Exit codes: 0 ok, 1 service or auth error (Cloudflare or `op`), 2 usage or validation.
+
+Write order: the key is generated locally, the 1Password item is created first, then the D1 row, then the KV entry. If D1 or KV fails, the item is archived (best effort), the partial token is revoked, and the command exits 1 naming only the Cloudflare error class. If 1Password fails nothing is written to Cloudflare. The key reaches `op` on stdin inside a JSON item template, never in argv.
+
+1Password item: vault `qxyxd4oqdy5mpmg4t4qh3bfflm`, category API Credential, title `texas-turnout-scraper: <Name>`, tags `texas-turnout-scraper` and `token:<token_id>`. Fields: `credential` (the key, concealed), `Name`, `Email Address`, `Expires`, `Token ID`, `Instructions`. The email lives only in 1Password; D1 stores the name as the label.
+
+Expiry: `consumer_api_token.expires_at` (ISO-8601 UTC, nullable). The KV entry is written with `expiration_ttl` (REST query parameter, minimum 60 seconds). The Worker keeps `SELECT *` and checks `expires_at` in Python: a non-empty value at or before now, or one that does not parse, is rejected; a missing column or empty value never expires. A KV hit is bounded by its TTL. Keys minted before this change have no expiry and never expire.
 
 ## Elections list and roster routes
 
@@ -259,7 +281,7 @@ All routes need `Authorization: Bearer <token>` (or `X-API-Key`). The roster rou
 - **No pagination.** A day is one download, as the portal serves it. The all-days route is one longer download.
 - **Incremental pulls.** Send `If-None-Match` with the last `ETag`. A match returns 304 and reads no rows. A day's `ETag` is its `sha256` from the list; the all-days `ETag` changes when any day changes.
 - **Only complete, hash-verified days are served.** A day still loading is absent from the list and returns 404.
-- **PII.** Responses carry names and VUIDs, are `Cache-Control: private, no-cache`, and are never stored in KV. Rows are not logged. A leaked roster token is revoked with `tx-turnout tokens revoke <id>`.
+- **PII.** Responses carry names and VUIDs, are `Cache-Control: private, no-cache`, and are never stored in KV. Rows are not logged. A leaked roster token is revoked with `tx-turnout api revoke <id>`.
 - The Worker reads each file in batches of 64 chunks (about 21 D1 queries for a 44 MB day).
 
 ### Resuming and large downloads

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -10,14 +11,21 @@ from urllib.parse import quote
 import httpx
 
 from texas_turnout_scraper.consumer_tokens import (
+    ADD_EXPIRES_COLUMN_SQL,
     ADD_SCOPE_COLUMN_SQL,
     INSERT_SQL,
     LIST_SQL,
     REVOKE_SQL,
     SCOPE_AGGREGATES,
     SCOPE_COLUMNS_SQL,
+    SELECT_BY_ID_SQL,
+    UPDATE_EXPIRY_SQL,
+    expiry_iso,
+    extended_expiry,
     hash_token,
+    is_expired,
     kv_key_for_hash,
+    kv_ttl_seconds,
     kv_value_for_scope,
     mint_plaintext_token,
     new_token_id,
@@ -30,6 +38,14 @@ from texas_turnout_scraper.early_vote_sync import EarlyVoteSyncError
 CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4"
 
 
+class TokenNotFoundError(LookupError):
+    """No consumer token has the given id."""
+
+
+class TokenRevokedError(ValueError):
+    """The token is revoked and cannot be extended."""
+
+
 @dataclass(frozen=True)
 class ConsumerTokenRecord:
     token_id: str
@@ -37,10 +53,29 @@ class ConsumerTokenRecord:
     created_at: str
     revoked_at: str | None
     scope: str = SCOPE_AGGREGATES
+    expires_at: str | None = None
+
+    def status(self, now: dt.datetime) -> str:
+        if self.revoked_at is not None:
+            return "revoked"
+        return "expired" if is_expired(self.expires_at, now) else "active"
+
+
+@dataclass(frozen=True)
+class IssuedToken:
+    """A freshly generated key; ``plaintext`` goes only to 1Password and an opt-in print."""
+
+    token_id: str
+    plaintext: str
+    digest: str
+    label: str
+    scope: str
+    created_at: str
+    expires_at: str
 
 
 class ConsumerTokenAdmin:
-    """Mint, list, and revoke hashed consumer tokens."""
+    """Issue, extend, list, and revoke hashed consumer tokens."""
 
     def __init__(
         self,
@@ -88,18 +123,78 @@ class ConsumerTokenAdmin:
         columns = {row.get("name") for row in self._query_rows(SCOPE_COLUMNS_SQL, [])}
         if "scope" not in columns:
             self._statements([(ADD_SCOPE_COLUMN_SQL, [])])
+        if "expires_at" not in columns:
+            self._statements([(ADD_EXPIRES_COLUMN_SQL, [])])
 
-    def mint(self, label: str, scope: str = SCOPE_AGGREGATES) -> tuple[str, str]:
-        """Return ``(token_id, plaintext)``. Plaintext is only for the caller to copy."""
+    @staticmethod
+    def issue(
+        label: str,
+        *,
+        scope: str = SCOPE_AGGREGATES,
+        days: int,
+        now: dt.datetime | None = None,
+    ) -> IssuedToken:
+        """Generate a key locally. Nothing is written until :meth:`store`."""
         scope = parse_scope(scope)
-        self.ensure_schema()
-        token_id = new_token_id()
+        moment = now or dt.datetime.now(tz=dt.timezone.utc)
         plaintext = mint_plaintext_token()
-        digest = hash_token(plaintext)
-        created = utc_now_iso()
-        self._statements([(INSERT_SQL, [token_id, digest, label, created, scope])])
-        self._kv_put(kv_key_for_hash(digest), kv_value_for_scope(scope))
-        return token_id, plaintext
+        return IssuedToken(
+            token_id=new_token_id(),
+            plaintext=plaintext,
+            digest=hash_token(plaintext),
+            label=label,
+            scope=scope,
+            created_at=moment.replace(microsecond=0).isoformat(),
+            expires_at=expiry_iso(moment, days),
+        )
+
+    def store(self, issued: IssuedToken, *, now: dt.datetime | None = None) -> None:
+        """Write the D1 row, then the KV entry with a TTL matching the expiry."""
+        self.ensure_schema()
+        self._statements(
+            [
+                (
+                    INSERT_SQL,
+                    [
+                        issued.token_id,
+                        issued.digest,
+                        issued.label,
+                        issued.created_at,
+                        issued.scope,
+                        issued.expires_at,
+                    ],
+                )
+            ]
+        )
+        moment = now or dt.datetime.now(tz=dt.timezone.utc)
+        self._kv_put(
+            kv_key_for_hash(issued.digest),
+            kv_value_for_scope(issued.scope),
+            expiration_ttl=kv_ttl_seconds(issued.expires_at, moment),
+        )
+
+    def extend(self, token_id: str, days: int, *, now: dt.datetime | None = None) -> str:
+        """Push the expiry to ``max(now, current) + days``; returns the new ``expires_at``."""
+        self.ensure_schema()
+        rows = self._query_rows(SELECT_BY_ID_SQL, [token_id])
+        if not rows:
+            raise TokenNotFoundError("unknown token_id")
+        row = rows[0]
+        if row.get("revoked_at"):
+            raise TokenRevokedError("token is revoked")
+        digest = row.get("token_hash")
+        if not isinstance(digest, str) or not digest:
+            raise TokenNotFoundError("unknown token_id")
+        scope = row.get("scope")
+        moment = now or dt.datetime.now(tz=dt.timezone.utc)
+        new_expiry = extended_expiry(row.get("expires_at"), moment, days)
+        self._statements([(UPDATE_EXPIRY_SQL, [new_expiry, token_id])])
+        self._kv_put(
+            kv_key_for_hash(digest),
+            kv_value_for_scope(scope if isinstance(scope, str) and scope else SCOPE_AGGREGATES),
+            expiration_ttl=kv_ttl_seconds(new_expiry, moment),
+        )
+        return new_expiry
 
     def list_tokens(self) -> list[ConsumerTokenRecord]:
         self.ensure_schema()
@@ -116,6 +211,7 @@ class ConsumerTokenAdmin:
                 continue
             revoked = revoked_at if isinstance(revoked_at, str) and revoked_at else None
             raw_scope = row.get("scope")
+            raw_expires = row.get("expires_at")
             records.append(
                 ConsumerTokenRecord(
                     token_id=token_id,
@@ -125,6 +221,9 @@ class ConsumerTokenAdmin:
                     scope=raw_scope
                     if isinstance(raw_scope, str) and raw_scope
                     else SCOPE_AGGREGATES,
+                    expires_at=raw_expires
+                    if isinstance(raw_expires, str) and raw_expires
+                    else None,
                 )
             )
         return records
@@ -165,12 +264,14 @@ class ConsumerTokenAdmin:
         )
         _require_query_success(payload)
 
-    def _kv_put(self, key: str, value: str) -> None:
+    def _kv_put(self, key: str, value: str, *, expiration_ttl: int | None = None) -> None:
         path = _kv_value_path(self._account_id, self._namespace_id, key)
+        params = {"expiration_ttl": expiration_ttl} if expiration_ttl is not None else None
         response = self._client.put(
             path,
             content=value.encode("utf-8"),
             headers={"Content-Type": "application/octet-stream"},
+            params=params,
         )
         if response.status_code >= 400:
             raise EarlyVoteSyncError(f"Cloudflare KV write failed with HTTP {response.status_code}")

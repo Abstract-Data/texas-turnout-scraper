@@ -12,7 +12,7 @@ from texas_turnout_scraper.consumer_tokens import hash_token
 
 
 @respx.mock
-def test_mint_writes_d1_and_kv() -> None:
+def test_store_writes_d1_and_kv() -> None:
     account = "acct"
     d1_id = "db-uuid"
     kv_id = "kv-ns"
@@ -40,8 +40,10 @@ def test_mint_writes_d1_and_kv() -> None:
         d1_database_id=d1_id,
         kv_namespace_id=kv_id,
     )
-    token_id, plaintext = admin.mint("partner-a")
+    issued = admin.issue("partner-a", days=30)
+    admin.store(issued)
     admin.close()
+    token_id, plaintext = issued.token_id, issued.plaintext
 
     assert token_id
     assert plaintext
