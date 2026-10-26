@@ -252,10 +252,12 @@ The first `generate` or `list` after this release adds the `scope` and `expires_
 
 `tx-turnout api generate` replaces `tokens mint`. It needs the same `CLOUDFLARE_*` variables as above, plus the 1Password CLI (`op`) signed in (`op signin` in an interactive terminal; the CLI does not retry on an expired session).
 
+Optional overrides: `TX_TURNOUT_OP_VAULT` (1Password vault id, default the `AD: Issued API Keys` vault) and `TX_TURNOUT_API_BASE_URL` (the URL written into each item's instructions, default `https://ev-api-preview.abstractdata.io`).
+
 | Command | What it does |
 | --- | --- |
 | `api generate --name N --email E [--days 30] [--scope aggregates\|roster] [--show] [--non-interactive]` | Prompts for a missing name or email on a TTY. With `--non-interactive` or no TTY a missing option exits 2. Prints `token_id`, name, scope, `expires_at` and the 1Password item. The key prints only with `--show`. The email is never printed. |
-| `api extend <token_id> [--days 30]` | New expiry is the later of now and the current expiry, plus N days. Updates D1, re-puts the KV entry with the new TTL, then updates the item's `Expires` and `Instructions` fields (found by tag `token:<token_id>`; a missing item warns). A revoked token is refused. A key with no expiry gets now plus N. |
+| `api extend <token_id> [--days 30]` | New expiry is the later of now and the current expiry, plus N days. Updates D1, re-puts the KV entry with the new TTL, then updates the item's `Expires` and `Instructions` fields (found by tag `token:<token_id>`; a missing item warns). A revoked token is refused. A key that never expires is refused too unless you pass `--set-expiry`, which gives it now plus N. If the 1Password update fails after Cloudflare was extended, the command prints the new date to set by hand; do not run `extend` again, it would add the days a second time. |
 | `api list` | `token_id`, status (`active`, `expired`, `revoked`), scope, created, expires (`never` for keys minted before expiry existed), label. |
 | `api revoke <token_id>` | Unchanged: D1 `revoked_at` plus KV delete. The 1Password item is left in place. |
 

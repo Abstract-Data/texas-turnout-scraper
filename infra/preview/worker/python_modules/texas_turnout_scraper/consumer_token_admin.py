@@ -42,6 +42,10 @@ class TokenNotFoundError(LookupError):
     """No consumer token has the given id."""
 
 
+class TokenNoExpiryError(Exception):
+    """The token never expires; extending it would put an expiry on it."""
+
+
 class TokenRevokedError(ValueError):
     """The token is revoked and cannot be extended."""
 
@@ -95,6 +99,7 @@ class ConsumerTokenAdmin:
         self._d1_database_id = d1_database_id
         self._namespace_id = kv_namespace_id
         self._owns_client = client is None
+        self._schema_ready = False
         self._client = client or httpx.Client(
             base_url=CLOUDFLARE_API_BASE,
             headers={"Authorization": f"Bearer {api_token}"},
@@ -119,12 +124,15 @@ class ConsumerTokenAdmin:
         )
 
     def ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
         self._statements([(sql, []) for sql in schema_creates()])
         columns = {row.get("name") for row in self._query_rows(SCOPE_COLUMNS_SQL, [])}
         if "scope" not in columns:
             self._statements([(ADD_SCOPE_COLUMN_SQL, [])])
         if "expires_at" not in columns:
             self._statements([(ADD_EXPIRES_COLUMN_SQL, [])])
+        self._schema_ready = True
 
     @staticmethod
     def issue(
@@ -173,7 +181,14 @@ class ConsumerTokenAdmin:
             expiration_ttl=kv_ttl_seconds(issued.expires_at, moment),
         )
 
-    def extend(self, token_id: str, days: int, *, now: dt.datetime | None = None) -> str:
+    def extend(
+        self,
+        token_id: str,
+        days: int,
+        *,
+        set_expiry: bool = False,
+        now: dt.datetime | None = None,
+    ) -> str:
         """Push the expiry to ``max(now, current) + days``; returns the new ``expires_at``."""
         self.ensure_schema()
         rows = self._query_rows(SELECT_BY_ID_SQL, [token_id])
@@ -185,6 +200,8 @@ class ConsumerTokenAdmin:
         digest = row.get("token_hash")
         if not isinstance(digest, str) or not digest:
             raise TokenNotFoundError("unknown token_id")
+        if not row.get("expires_at") and not set_expiry:
+            raise TokenNoExpiryError("token has no expiry")
         scope = row.get("scope")
         moment = now or dt.datetime.now(tz=dt.timezone.utc)
         new_expiry = extended_expiry(row.get("expires_at"), moment, days)

@@ -320,14 +320,14 @@ def test_extend_updates_d1_kv_and_1password(env: Env) -> None:
     assert not _leaks(" ".join(args), EMAIL, NAME)
 
 
-def test_extend_a_never_expiring_token_starts_from_now(env: Env) -> None:
+def test_extend_with_set_expiry_on_a_never_expiring_token_starts_from_now(env: Env) -> None:
     env.cf.db.executescript(
         """CREATE TABLE consumer_api_token (token_id TEXT PRIMARY KEY, token_hash TEXT UNIQUE,
         label TEXT, created_at TEXT, revoked_at TEXT, scope TEXT DEFAULT 'aggregates');
         INSERT INTO consumer_api_token
         VALUES ('old','v2:abc','legacy','2026-01-01T00:00:00+00:00',NULL,'aggregates');"""
     )
-    result = env.invoke("extend", "old", "--days", "3")
+    result = env.invoke("extend", "old", "--days", "3", "--set-expiry")
     assert result.exit_code == 0, result.output
     expires = env.cf.db.execute("SELECT expires_at FROM consumer_api_token").fetchone()[0]
     delta = dt.datetime.fromisoformat(expires) - dt.datetime.now(tz=dt.timezone.utc)
@@ -400,3 +400,99 @@ def test_days_out_of_range_exits_2(env: Env) -> None:
             env.invoke("generate", "--name", NAME, "--email", EMAIL, "--days", bad).exit_code == 2
         )
     assert env.events == []
+
+
+def test_instructions_show_the_exact_env_lines_to_paste(env: Env) -> None:
+    env.invoke("generate", "--name", NAME, "--email", EMAIL)
+    text = env.field("Instructions")
+    assert 'TX_TURNOUT_API_KEY=<the "API key" field>' in text
+    assert 'TX_TURNOUT_API_NAME=<the "Name" field>' in text
+    assert 'TX_TURNOUT_API_EMAIL=<the "Email Address" field>' in text
+
+
+def test_a_permission_error_is_not_reported_as_a_signin_problem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stderr = "[ERROR] you do not have authorization to create items in this vault"
+    done = subprocess.CompletedProcess(["op"], 1, "", stderr)
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: done)
+    with pytest.raises(OnePasswordError) as raised:
+        SubprocessOnePasswordRunner().run(["item", "create"])
+    assert not isinstance(raised.value, OnePasswordAuthError)
+    assert "signin" not in str(raised.value)
+
+
+def test_base_url_and_vault_can_be_overridden_from_the_environment(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TX_TURNOUT_API_BASE_URL", "https://api.example.test")
+    monkeypatch.setenv("TX_TURNOUT_OP_VAULT", "othervault")
+    store = api_cli.OnePasswordKeyStore(env.op)
+    store.create(name=NAME, email=EMAIL, api_key="k", token_id="t1", expires_date="2026-12-01")
+    args, stdin = env.op.calls[0]
+    assert args[args.index("--vault") + 1] == "othervault"
+    assert "https://api.example.test" in str(stdin)
+
+
+def _legacy_never_expires(env: Env) -> str:
+    env.invoke("generate", "--name", NAME, "--email", EMAIL)
+    env.cf.db.execute("UPDATE consumer_api_token SET expires_at = NULL")
+    env.cf.db.commit()
+    return str(env.cf.db.execute("SELECT token_id FROM consumer_api_token").fetchone()[0])
+
+
+def test_extend_refuses_a_key_that_never_expires_without_set_expiry(env: Env) -> None:
+    token_id = _legacy_never_expires(env)
+    result = env.invoke("extend", token_id, "--days", "10")
+    assert result.exit_code == 1
+    assert "--set-expiry" in result.output
+    assert env.cf.db.execute("SELECT expires_at FROM consumer_api_token").fetchone()[0] is None
+
+
+def test_extend_with_set_expiry_puts_an_expiry_on_a_never_expiring_key(env: Env) -> None:
+    token_id = _legacy_never_expires(env)
+    result = env.invoke("extend", token_id, "--days", "10", "--set-expiry")
+    assert result.exit_code == 0
+    assert env.cf.db.execute("SELECT expires_at FROM consumer_api_token").fetchone()[0]
+
+
+def test_ctrl_c_between_the_1password_and_cloudflare_writes_rolls_back(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupted(*_a: object, **_k: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(api_cli.ConsumerTokenAdmin, "store", interrupted)
+    result = env.invoke("generate", "--name", NAME, "--email", EMAIL)
+    assert result.exit_code != 0
+    assert env.events == ["op:create", "op:archive"]
+
+
+def test_failed_cleanup_warning_names_the_token_id(env: Env) -> None:
+    env.cf.fail_d1_insert = True
+    env.op.error = OnePasswordError("op exited with status 1")
+    env.op.fail_on = lambda args: args[1] == "delete"
+    result = env.invoke("generate", "--name", NAME, "--email", EMAIL)
+    assert result.exit_code == 1
+    token_id = next(line for line in result.output.splitlines() if "token_id" in line)
+    assert token_id.split("=")[-1].strip()
+
+
+def test_extend_1password_failure_prints_the_target_date(env: Env) -> None:
+    env.invoke("generate", "--name", NAME, "--email", EMAIL)
+    token_id = str(env.cf.db.execute("SELECT token_id FROM consumer_api_token").fetchone()[0])
+    env.op.error = OnePasswordError("op exited with status 1")
+    env.op.fail_on = lambda args: args[1] == "edit"
+    result = env.invoke("extend", token_id, "--days", "5")
+    assert result.exit_code == 1
+    expires = str(env.cf.db.execute("SELECT expires_at FROM consumer_api_token").fetchone()[0])
+    assert expires[:10] in result.output
+    assert "do not run extend again" in result.output.lower()
+
+
+def test_schema_is_checked_once_per_admin(env: Env) -> None:
+    admin = env.cf.admin()
+    admin.list_tokens()
+    admin.list_tokens()
+    admin.close()
+    assert sum("pragma_table_info" in sql for sql in env.cf.sql) == 1

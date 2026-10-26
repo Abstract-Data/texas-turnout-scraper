@@ -27,6 +27,7 @@ class FakeCloudflare:
         self.kv: dict[str, tuple[str, dict[str, str]]] = {}
         self.fail_d1_insert = False
         self.fail_kv_put = False
+        self.sql: list[str] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if "/d1/database/" in request.url.path:
@@ -46,6 +47,7 @@ class FakeCloudflare:
         results: list[dict[str, object]] = []
         for item in json.loads(request.content)["batch"]:
             sql: str = item["sql"]
+            self.sql.append(sql)
             if sql.startswith("INSERT INTO consumer_api_token"):
                 if self.fail_d1_insert:
                     return httpx.Response(500, json={"success": False})

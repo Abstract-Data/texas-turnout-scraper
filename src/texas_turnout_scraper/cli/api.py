@@ -11,6 +11,7 @@ import typer
 
 from ..consumer_token_admin import (
     ConsumerTokenAdmin,
+    TokenNoExpiryError,
     TokenNotFoundError,
     TokenRevokedError,
 )
@@ -133,15 +134,19 @@ def api_generate(
         except OnePasswordError as exc:
             raise _fail(f"{exc} Nothing was written to Cloudflare.", EXIT_SERVICE) from exc
 
+        committed = False
         try:
             admin.store(issued)
+            committed = True
         except _CLOUDFLARE_ERRORS as exc:
-            _rollback(admin, store, item.item_id, issued.token_id)
             raise _fail(
                 f"Cloudflare write failed ({type(exc).__name__}); "
                 "the 1Password item was archived (best effort).",
                 EXIT_SERVICE,
             ) from exc
+        finally:
+            if not committed:
+                _rollback(admin, store, item.item_id, issued.token_id)
     finally:
         admin.close()
 
@@ -160,11 +165,19 @@ def _rollback(
     try:
         store.archive(item_id)
     except OnePasswordError:
-        typer.echo("Warning: could not archive the 1Password item; remove it by hand.", err=True)
+        typer.echo(
+            f"Warning: could not archive the 1Password item {item_id}; remove it by hand "
+            f"(token_id={token_id}).",
+            err=True,
+        )
     try:
         admin.revoke(token_id)
     except _CLOUDFLARE_ERRORS:
-        typer.echo("Warning: could not revoke the partial Cloudflare token.", err=True)
+        typer.echo(
+            f"Warning: could not revoke the partial Cloudflare token; run "
+            f"`tx-turnout api revoke {token_id}`.",
+            err=True,
+        )
 
 
 @api_app.command("extend")
@@ -173,15 +186,27 @@ def api_extend(
     days: Annotated[
         int, typer.Option("--days", min=1, max=MAX_KEY_DAYS, help="Days to add")
     ] = DEFAULT_KEY_DAYS,
+    set_expiry: Annotated[
+        bool,
+        typer.Option(
+            "--set-expiry",
+            help="Allow putting an expiry on a key that currently never expires",
+        ),
+    ] = False,
 ) -> None:
     """Extend a key: max(now, current expiry) + N days (D1, KV, 1Password)."""
     admin = _admin()
     try:
-        new_expiry = admin.extend(token_id, days)
+        new_expiry = admin.extend(token_id, days, set_expiry=set_expiry)
     except TokenNotFoundError as exc:
         raise _fail("unknown token_id", EXIT_SERVICE) from exc
     except TokenRevokedError as exc:
         raise _fail("token is revoked and cannot be extended", EXIT_SERVICE) from exc
+    except TokenNoExpiryError as exc:
+        raise _fail(
+            "token never expires; pass --set-expiry to put an expiry on it",
+            EXIT_SERVICE,
+        ) from exc
     except _CLOUDFLARE_ERRORS as exc:
         raise _fail(f"Cloudflare write failed ({type(exc).__name__})", EXIT_SERVICE) from exc
     finally:
@@ -202,7 +227,9 @@ def api_extend(
         store.update_expiry(item_id, new_expiry[:10])
     except OnePasswordError as exc:
         raise _fail(
-            f"{exc} Cloudflare was extended but the 1Password item was not updated.",
+            f"{exc} Cloudflare was extended to {new_expiry[:10]} but the 1Password item was not "
+            f"updated: set its Expires field to {new_expiry[:10]} by hand. "
+            "Do not run extend again, it would add the days a second time.",
             EXIT_SERVICE,
         ) from exc
     typer.echo(f"1password_item={item_id}")

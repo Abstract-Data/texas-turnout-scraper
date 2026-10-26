@@ -1,6 +1,6 @@
 # AGENTS.md
-# Version: 1.7.0
-# Last Updated: 2026-10-24
+# Version: 1.8.0
+# Last Updated: 2026-10-26
 # Environment: dev
 # Model: claude-sonnet-4-6
 # Fallback Model: claude-haiku-4-5-20251001
@@ -129,6 +129,7 @@ tx-turnout elections describe 49664          # Describe one election
 tx-turnout roster fetch 49664 --date 2024-10-21   # Fetch county rosters (Strategy A)
 tx-turnout turnout fetch 49664 --date 2024-10-21  # Fetch county turnout table
 tx-turnout audit run 49664 --date 2024-10-21      # Run data quality audit
+tx-turnout api generate --name "Ada" --email ada@example.org --days 30   # Issue an expiring API key (stored in 1Password)
 tx-turnout audit run-inline data/elections/49664/roster_2024-10-21.csv
 tx-turnout voterfile detect-columns /path/to/voterfile.csv
 tx-turnout voterfile match roster_ev_53813.csv /path/to/voterfile.csv
@@ -372,6 +373,7 @@ Full reference: `docs/GITBUTLER.md`. Rationale for adoption: `docs/adr/006-gitbu
 
 | Version | Date | Change |
 |---------|------|--------|
+| 1.8.0 | 2026-10-26 | API keys: `tx-turnout api generate\|extend\|list\|revoke` replaces the `tokens` group; keys expire (default 30 days), are stored in 1Password, and the Worker rejects an expired key; `onepassword_keys` shells out to `op` |
 | 1.7.0 | 2026-10-24 | Repeat VUIDs (ADR-012): SQLModel rule names the loader-only `repeat_models`/`repeat_build`; `repeat_tables` holds the Worker-safe DDL; the sync workflow runs the build after the geography step |
 | 1.6.0 | 2026-10-24 | Voter attributes (ADR-011): SQLModel rule names the loader-only `voter_models`/`voter_link`; `voter_tables` holds the Worker-safe DDL; the voter link runs locally only (voterfile is PII) |
 | 1.5.0 | 2026-10-24 | Geography tables (ADR-010): SQLModel rule names the loader-only `geo_models`/`geo_load`; new `geo` extra is offline-only (`geo_build`) |

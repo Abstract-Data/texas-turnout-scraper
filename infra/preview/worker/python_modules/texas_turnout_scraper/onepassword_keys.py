@@ -8,16 +8,19 @@ so the CLI can tell the user to run ``op signin`` once instead of retrying.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 VAULT_ID = "qxyxd4oqdy5mpmg4t4qh3bfflm"
+VAULT_ENV = "TX_TURNOUT_OP_VAULT"
 ITEM_TITLE_PREFIX = "texas-turnout-scraper: "
 BASE_TAG = "texas-turnout-scraper"
 TOKEN_TAG_PREFIX = "token:"
 API_BASE_URL = "https://ev-api-preview.abstractdata.io"
+API_BASE_URL_ENV = "TX_TURNOUT_API_BASE_URL"
 
 FIELD_CREDENTIAL_ID = "credential"
 FIELD_API_KEY = "API key"
@@ -31,25 +34,19 @@ _OP_TIMEOUT_SECONDS = 60
 _AUTH_MARKERS = (
     "not signed in",
     "no accounts configured",
-    "authorization",
-    "authorisation",
     "session expired",
-    "sign in",
-    "signin",
-    "timed out",
-    "timeout",
+    "authorization prompt",
+    "authorization timeout",
 )
 
 INSTRUCTIONS_TEMPLATE = """\
 This is an Abstract Data texas-turnout-scraper API key for the early-vote read API.
 
-Variables in this item
-  TX_TURNOUT_API_KEY    the API key (the "API key" field)
-  TX_TURNOUT_API_NAME   the Name field
-  TX_TURNOUT_API_EMAIL  the Email Address field
-
-For a person: copy each key and value above into the .env file of your project, and keep
-.env out of git.
+Paste these lines into the .env file of your project, replacing each <...> with the value
+of that field in this item, and keep .env out of git:
+  TX_TURNOUT_API_KEY=<the "API key" field>
+  TX_TURNOUT_API_NAME=<the "Name" field>
+  TX_TURNOUT_API_EMAIL=<the "Email Address" field>
 
 For an agent: send the key to the read API at {base_url} as either
   Authorization: Bearer $TX_TURNOUT_API_KEY
@@ -123,8 +120,16 @@ def token_tag(token_id: str) -> str:
     return f"{TOKEN_TAG_PREFIX}{token_id}"
 
 
+def api_base_url() -> str:
+    return os.environ.get(API_BASE_URL_ENV, "").strip().rstrip("/") or API_BASE_URL
+
+
+def vault_id() -> str:
+    return os.environ.get(VAULT_ENV, "").strip() or VAULT_ID
+
+
 def render_instructions(expires_date: str) -> str:
-    return INSTRUCTIONS_TEMPLATE.format(base_url=API_BASE_URL, expires=expires_date)
+    return INSTRUCTIONS_TEMPLATE.format(base_url=api_base_url(), expires=expires_date)
 
 
 def build_item_template(
@@ -164,9 +169,9 @@ def build_item_template(
 class OnePasswordKeyStore:
     """Create, find and update the 1Password item that holds one issued key."""
 
-    def __init__(self, runner: OnePasswordRunner, vault_id: str = VAULT_ID) -> None:
+    def __init__(self, runner: OnePasswordRunner, vault: str | None = None) -> None:
         self._runner = runner
-        self._vault = vault_id
+        self._vault = vault or vault_id()
 
     def create(
         self,
