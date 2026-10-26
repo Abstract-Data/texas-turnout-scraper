@@ -268,7 +268,7 @@ def _parse_county_csv(
         records: list[VoterRecord] = []
 
         for row in reader:
-            row = {k.strip().strip('"'): v.strip().strip('"') for k, v in row.items() if k}
+            row = {k.strip().strip('"'): (v or "").strip().strip('"') for k, v in row.items() if k}
             if not row.get("ID_VOTER", "").strip():
                 continue
             records.append(

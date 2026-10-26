@@ -54,6 +54,7 @@ dev = [
     "shapely>=2.1",
     "pyproj>=3.6",
     "pyshp>=2.3",
+    "hypothesis>=6.100",
 ]
 
 [build-system]
@@ -120,7 +121,7 @@ known-first-party = ["texas_turnout_scraper"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = ["vendor", ".git", "node_modules"]
+norecursedirs = ["vendor", ".git", "node_modules", ".hypothesis"]
 asyncio_mode = "auto"
 python_files = ["test_*.py", "check_*.py"]
 
