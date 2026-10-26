@@ -19,7 +19,8 @@ BASE_TAG = "texas-turnout-scraper"
 TOKEN_TAG_PREFIX = "token:"
 API_BASE_URL = "https://ev-api-preview.abstractdata.io"
 
-FIELD_CREDENTIAL = "credential"
+FIELD_CREDENTIAL_ID = "credential"
+FIELD_API_KEY = "API key"
 FIELD_NAME = "Name"
 FIELD_EMAIL = "Email Address"
 FIELD_EXPIRES = "Expires"
@@ -43,7 +44,7 @@ INSTRUCTIONS_TEMPLATE = """\
 This is an Abstract Data texas-turnout-scraper API key for the early-vote read API.
 
 Variables in this item
-  TX_TURNOUT_API_KEY    the API key (the "credential" field)
+  TX_TURNOUT_API_KEY    the API key (the "API key" field)
   TX_TURNOUT_API_NAME   the Name field
   TX_TURNOUT_API_EMAIL  the Email Address field
 
@@ -141,9 +142,9 @@ def build_item_template(
         "tags": [BASE_TAG, token_tag(token_id)],
         "fields": [
             {
-                "id": FIELD_CREDENTIAL,
+                "id": FIELD_CREDENTIAL_ID,
                 "type": "CONCEALED",
-                "label": FIELD_CREDENTIAL,
+                "label": FIELD_API_KEY,
                 "value": api_key,
             },
             {"id": "name", "type": "STRING", "label": FIELD_NAME, "value": name},

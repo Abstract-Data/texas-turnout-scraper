@@ -131,7 +131,7 @@ def test_default_output_hides_key_and_email(env: Env) -> None:
     result = env.invoke("generate", "--name", NAME, "--email", EMAIL)
     assert result.exit_code == 0
     template = env.items()[0]
-    key = next(f["value"] for f in template["fields"] if f["label"] == "credential")  # type: ignore[attr-defined]
+    key = next(f["value"] for f in template["fields"] if f["label"] == "API key")  # type: ignore[attr-defined]
     assert not _leaks(result.output, key, EMAIL)
     assert "token_id=" in result.output
     assert "expires_at=" in result.output
@@ -142,7 +142,7 @@ def test_default_output_hides_key_and_email(env: Env) -> None:
 def test_show_prints_the_key_but_still_not_the_email(env: Env) -> None:
     result = env.invoke("generate", "--name", NAME, "--email", EMAIL, "--show")
     template = env.items()[0]
-    key = next(f["value"] for f in template["fields"] if f["label"] == "credential")  # type: ignore[attr-defined]
+    key = next(f["value"] for f in template["fields"] if f["label"] == "API key")  # type: ignore[attr-defined]
     assert f"key={key}" in result.output
     assert EMAIL not in result.output
     assert hash_token(key) in {
@@ -153,7 +153,7 @@ def test_show_prints_the_key_but_still_not_the_email(env: Env) -> None:
 def test_key_goes_on_stdin_not_in_argv(env: Env) -> None:
     env.invoke("generate", "--name", NAME, "--email", EMAIL)
     args, stdin = env.op.calls[0]
-    key = next(f["value"] for f in env.items()[0]["fields"] if f["label"] == "credential")  # type: ignore[attr-defined]
+    key = next(f["value"] for f in env.items()[0]["fields"] if f["label"] == "API key")  # type: ignore[attr-defined]
     assert key in (stdin or "")
     assert args[:3] == ["item", "create", "-"]
     assert all(key not in a and EMAIL not in a and NAME not in a for a in args)
@@ -168,7 +168,7 @@ def test_item_shape_and_instructions(env: Env) -> None:
     token_id = env.field("Token ID")
     assert template["tags"] == ["texas-turnout-scraper", f"token:{token_id}"]
     labels = [f["label"] for f in template["fields"]]  # type: ignore[attr-defined]
-    assert labels == ["credential", "Name", "Email Address", "Expires", "Token ID", "Instructions"]
+    assert labels == ["API key", "Name", "Email Address", "Expires", "Token ID", "Instructions"]
     expires = env.field("Expires")
     expected = (dt.datetime.now(tz=dt.timezone.utc) + dt.timedelta(days=7)).date().isoformat()
     assert expires in {
@@ -191,7 +191,7 @@ def test_item_shape_and_instructions(env: Env) -> None:
         "Never paste",
     ):
         assert needle.lower() in text.lower(), needle
-    key = next(f["value"] for f in template["fields"] if f["label"] == "credential")  # type: ignore[attr-defined]
+    key = next(f["value"] for f in template["fields"] if f["label"] == "API key")  # type: ignore[attr-defined]
     assert key not in text
 
 
