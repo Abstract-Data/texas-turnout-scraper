@@ -613,7 +613,7 @@ class StagePipeline:
         try:
             header_fields(record.canonical)
         except (RosterSchemaError, csv.Error) as exc:
-            self._schema_error = f"{type(exc).__name__}: {exc}"
+            self._schema_error = type(exc).__name__
 
     async def drain(self) -> None:
         """Write whatever the stream has produced so far: canonical parts, then full segments."""
@@ -650,7 +650,10 @@ class StagePipeline:
         scatter = self._scatter
         return {
             "rows": self.rows,
-            "header_columns": list(self._canonicalizer.header or ()),
+            "header_columns": (
+                list(self._canonicalizer.header or ()) if self._schema_error is None else None
+            ),
+            "header_column_count": len(self._canonicalizer.header or ()),
             "header_schema_error": self._schema_error,
             "canonical_bytes": self.canonical_bytes,
             "sha256": self._canonical_sha.hexdigest() if complete else None,
@@ -932,7 +935,7 @@ async def write_range(
     except csv.Error as exc:
         # Canonical bytes are not always re-parsable (see collect_range). A real roster header
         # and cells hold no bare CR, so this is a reported dead end, not a fallback path.
-        report["reparse_error"] = f"{type(exc).__name__}: {exc}"
+        report["reparse_error"] = type(exc).__name__
         return report
     report.update(validated.as_report())
     report["validated_keys_match_scatter"] = validated.keys == collected.keys

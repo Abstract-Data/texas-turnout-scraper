@@ -402,6 +402,16 @@ async def test_the_report_never_carries_row_content() -> None:
     assert "0000000001" not in json.dumps(report)
 
 
+async def test_a_malformed_header_error_names_the_class_and_no_cell() -> None:
+    raw = f"{MARKER.decode()},not,a,roster\n{MARKER.decode()},1,2,3\n".encode()
+    bucket = FakeBucket()
+    report = await stage_day(
+        Recorder(ok_response(raw)), "https://example.invalid/", bucket, request_for()
+    )
+    assert report["header_schema_error"] == "RosterSchemaError"
+    assert MARKER.decode() not in json.dumps(report)
+
+
 # --------------------------------------------------------------------------------------
 # Route guards
 # --------------------------------------------------------------------------------------
