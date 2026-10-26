@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import pytest
 from typer.testing import CliRunner
@@ -431,7 +433,14 @@ def test_base_url_and_vault_can_be_overridden_from_the_environment(
     store.create(name=NAME, email=EMAIL, api_key="k", token_id="t1", expires_date="2026-12-01")
     args, stdin = env.op.calls[0]
     assert args[args.index("--vault") + 1] == "othervault"
-    assert "https://api.example.test" in str(stdin)
+    instructions = next(
+        f["value"] for f in json.loads(stdin or "{}")["fields"] if f["label"] == "Instructions"
+    )
+    hosts = {
+        (parsed.scheme, parsed.hostname)
+        for parsed in (urlparse(url) for url in re.findall(r"https?://[^\s]+", instructions))
+    }
+    assert ("https", "api.example.test") in hosts
 
 
 def _legacy_never_expires(env: Env) -> str:
