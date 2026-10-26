@@ -708,6 +708,34 @@ async def test_a_bad_row_is_quarantined_as_a_reject_not_dropped(scratch: FakeD1)
     assert scratch.conn.execute("SELECT COUNT(*) FROM early_vote_roster_reject").fetchone()[0] == 1
 
 
+async def test_a_reject_ahead_of_valid_rows_still_matches_the_scatter_keys(
+    scratch: FakeD1,
+) -> None:
+    bad = HEADER + "TRAVIS,SYNTHETIC-A,not-a-vuid,MAIL-IN,0001\n"
+    raw = bad.encode() + roster(300)[len(HEADER.encode()) :]
+    bucket = FakeBucket()
+    parsed = await _staged(bucket, raw)
+    checked = 0
+    for index in range(KEY_RANGES):
+        report = await write_range(bucket, scratch, parsed, index, verify=True)
+        if report.get("validated_rejects"):
+            assert report["validated_rows"] > 0
+            assert report["validated_keys_match_scatter"] is True
+            checked += 1
+    assert checked == 1
+
+
+async def test_a_bad_header_in_range_write_is_a_structured_report(scratch: FakeD1) -> None:
+    bucket = FakeBucket()
+    parsed = await _staged(bucket, b"A,B\n1,2\n")
+    reports = [
+        await write_range(bucket, scratch, parsed, index, verify=True)
+        for index in range(KEY_RANGES)
+    ]
+    errors = {report["reparse_error"] for report in reports if "reparse_error" in report}
+    assert errors == {"RosterSchemaError"}
+
+
 async def test_cleanup_removes_every_object_stage_wrote() -> None:
     bucket = FakeBucket()
     parsed = await _staged(bucket, roster(100), flush_bytes=256)

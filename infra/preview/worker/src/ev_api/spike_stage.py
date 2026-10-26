@@ -932,13 +932,13 @@ async def write_range(
 
     try:
         validated = validate_range(collected.mini_csv, day)
-    except csv.Error as exc:
+    except (RosterSchemaError, csv.Error) as exc:
         # Canonical bytes are not always re-parsable (see collect_range). A real roster header
         # and cells hold no bare CR, so this is a reported dead end, not a fallback path.
         report["reparse_error"] = type(exc).__name__
         return report
     report.update(validated.as_report())
-    report["validated_keys_match_scatter"] = validated.keys == collected.keys
+    report["validated_keys_match_scatter"] = sorted(validated.keys) == sorted(collected.keys)
     if verify:
         return report
     report.update(await _write_to_scratch(db, validated, day, clock=clock))
