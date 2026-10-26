@@ -122,7 +122,7 @@ def _admin() -> ConsumerTokenAdmin:
 
 
 @respx.mock
-def test_mint_stores_the_scope_in_d1_and_kv() -> None:
+def test_store_keeps_the_scope_in_d1_and_kv() -> None:
     inserts: list[list[str]] = []
     kv_writes: list[bytes] = []
 
@@ -142,28 +142,30 @@ def test_mint_stores_the_scope_in_d1_and_kv() -> None:
         side_effect=lambda r: kv_writes.append(r.content) or httpx.Response(200, json={})
     )
     admin = _admin()
-    _token_id, plaintext = admin.mint("analyst", scope=SCOPE_ROSTER)
+    issued = admin.issue("analyst", scope=SCOPE_ROSTER, days=30)
+    admin.store(issued)
     admin.close()
-    assert inserts[0][-1] == "roster"
+    plaintext = issued.plaintext
+    assert inserts[0][4] == "roster"
     assert inserts[0][1] == hash_token(plaintext)
     assert kv_writes == [b"roster"]
 
 
 @respx.mock
-def test_ensure_schema_adds_the_scope_column_once() -> None:
+def test_ensure_schema_adds_the_scope_and_expiry_columns_once() -> None:
     statements: list[str] = []
-    has_scope = {"value": False}
+    columns = ["token_id"]
 
     def d1(request: httpx.Request) -> httpx.Response:
         for item in json.loads(request.content)["batch"]:
             statements.append(item["sql"])
             if item["sql"].startswith("SELECT name FROM pragma_table_info"):
-                rows = [{"name": "token_id"}] + ([{"name": "scope"}] if has_scope["value"] else [])
+                rows = [{"name": name} for name in columns]
                 return httpx.Response(
                     200, json={"success": True, "result": [{"results": rows, "success": True}]}
                 )
             if item["sql"].startswith("ALTER TABLE"):
-                has_scope["value"] = True
+                columns.append("scope" if " scope " in item["sql"] else "expires_at")
         return httpx.Response(200, json={"success": True, "result": [{"success": True}]})
 
     respx.post(url__regex=rf".*/d1/database/{D1_ID}/query").mock(side_effect=d1)
@@ -172,5 +174,6 @@ def test_ensure_schema_adds_the_scope_column_once() -> None:
     admin.ensure_schema()
     admin.close()
     alters = [s for s in statements if s.startswith("ALTER TABLE")]
-    assert len(alters) == 1
+    assert len(alters) == 2
     assert "DEFAULT 'aggregates'" in alters[0]
+    assert alters[1].endswith("ADD COLUMN expires_at TEXT")

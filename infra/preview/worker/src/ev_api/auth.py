@@ -1,14 +1,18 @@
 """Preview read API authentication: Cloudflare Access and minted consumer tokens.
 
 Access service tokens use ``CF-Access-Client-Id`` / ``CF-Access-Client-Secret``.
-Consumers may send ``Authorization: Bearer`` or ``X-API-Key``. Only digests are
-stored; plaintext tokens are never logged.
+Consumers may send ``Authorization: Bearer`` or ``X-API-Key``. Only digests are stored;
+plaintext tokens are never logged.
+
+A consumer token whose ``expires_at`` is set and at or before now is rejected on the D1 path.
+Its KV entry carries an expiration TTL, so a KV hit is bounded by it.
 
 https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import hmac
 from collections.abc import Mapping
 from typing import Any
@@ -24,6 +28,7 @@ from texas_turnout_scraper.consumer_tokens import (
     SCOPE_ROSTER,
     extract_consumer_credential,
     hash_token,
+    is_expired,
     kv_key_for_hash,
     scope_from_kv_value,
 )
@@ -66,6 +71,8 @@ async def _token_scope_in_d1(db: D1Database, digest: str) -> str | None:
         return None
     token_id = _row_value(row, "token_id")
     if not (isinstance(token_id, str) and token_id):
+        return None
+    if is_expired(_row_value(row, "expires_at"), dt.datetime.now(tz=dt.timezone.utc)):
         return None
     scope = _row_value(row, "scope")
     return SCOPE_ROSTER if scope == SCOPE_ROSTER else SCOPE_AGGREGATES
