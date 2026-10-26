@@ -91,6 +91,10 @@ resource "cloudflare_worker_version" "preview" {
   compatibility_date  = "2026-10-17"
   compatibility_flags = ["python_workers", "python_workflows"]
   main_module         = "entry.py"
+  # Spike only: a Python day-file canonicalize needs more than the 30 s default CPU cap.
+  limits = {
+    cpu_ms = 300000
+  }
   # The deployment resource below publishes this version. Leaving deploy false
   # avoids a second, unannotated rollout.
   deploy = false
