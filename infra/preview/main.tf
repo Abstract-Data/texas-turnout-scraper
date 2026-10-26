@@ -89,7 +89,7 @@ resource "cloudflare_worker_version" "preview" {
   account_id          = var.account_id
   worker_id           = cloudflare_worker.ev_api.id
   compatibility_date  = "2026-10-17"
-  compatibility_flags = ["python_workers"]
+  compatibility_flags = ["python_workers", "python_workflows"]
   main_module         = "entry.py"
   # The deployment resource below publishes this version. Leaving deploy false
   # avoids a second, unannotated rollout.
@@ -135,7 +135,7 @@ resource "cloudflare_worker_version" "preview" {
       name = "EV_D1_BINDINGS"
       text = local.ev_d1_bindings
     },
-    ], var.github_dispatch_token == "" ? [] : [
+    ], local.spike_bindings, var.github_dispatch_token == "" ? [] : [
     {
       type = "secret_text"
       name = "GITHUB_DISPATCH_TOKEN"
