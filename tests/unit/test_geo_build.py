@@ -199,6 +199,73 @@ def test_austin_round_trips_through_the_area_crs() -> None:
     assert pyproj.CRS.from_epsg(AREA_EPSG).name == "NAD83 / Texas Centric Albers Equal Area"
 
 
+def _all_rings() -> dict[tuple[str, str], Ring]:
+    return {
+        **{("cd", str(d)): r for d, r in DISTRICTS["cd"]},
+        **{("sd", str(d)): r for d, r in DISTRICTS["sd"]},
+        **{("hd", str(d)): r for d, r in DISTRICTS["hd"]},
+        **{("county", f): r for f, _, r in COUNTIES},
+        **{("precinct", f"{c}{p}"): r for c, p, r in PRECINCTS},
+    }
+
+
+def test_every_area_point_lies_inside_its_bounding_box(reference: Path) -> None:
+    areas = _areas(_build(reference))
+    assert set(areas) == set(_all_rings())
+    for key, area in areas.items():
+        assert area["min_lat"] <= area["lat"] <= area["max_lat"], key
+        assert area["min_lon"] <= area["lon"] <= area["max_lon"], key
+        assert area["min_lat"] < area["max_lat"], key
+        assert area["min_lon"] < area["max_lon"], key
+
+
+def test_the_box_is_the_bounds_of_the_polygon_transformed_to_degrees(reference: Path) -> None:
+    to_lonlat = pyproj.Transformer.from_crs(AREA_EPSG, 4326, always_xy=True)
+    areas = _areas(_build(reference))
+    for key, ring in _all_rings().items():
+        lons, lats = to_lonlat.transform([x for x, _ in ring], [y for _, y in ring])
+        area = areas[key]
+        assert area["min_lon"] == round(min(lons), 6), key
+        assert area["max_lon"] == round(max(lons), 6), key
+        assert area["min_lat"] == round(min(lats), 6), key
+        assert area["max_lat"] == round(max(lats), 6), key
+
+
+def test_the_box_is_not_a_transform_of_the_projected_bounds(reference: Path) -> None:
+    """A rectangle in the Albers plane is not a rectangle in degrees: the corners differ."""
+    to_lonlat = pyproj.Transformer.from_crs(AREA_EPSG, 4326, always_xy=True)
+    ring = _box(-5, -5, 22, 12)
+    xs, ys = [x for x, _ in ring], [y for _, y in ring]
+    projected = to_lonlat.transform([min(xs), max(xs)], [min(ys), max(ys)])
+    naive = (min(projected[0]), max(projected[0]), min(projected[1]), max(projected[1]))
+    travis = _areas(_build(reference))[("county", "453")]
+    actual = (travis["min_lon"], travis["max_lon"], travis["min_lat"], travis["max_lat"])
+    assert actual != tuple(round(v, 6) for v in naive)
+
+
+def test_box_values_are_rounded_to_six_places(reference: Path) -> None:
+    for area in _areas(_build(reference)).values():
+        for column in ("min_lat", "min_lon", "max_lat", "max_lon"):
+            assert round(area[column], 6) == area[column]
+
+
+def test_a_box_is_widened_to_hold_a_point_that_bows_past_the_vertices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    to_lonlat = pyproj.Transformer.from_crs(AREA_EPSG, 4326, always_xy=True)
+    ox, oy = _origin()
+    geom = Polygon([(ox, oy), (ox + 2 * KM, oy), (ox + 2 * KM, oy + 2 * KM), (ox, oy + 2 * KM)])
+    inside = geo_build._area("precinct", "x", "y", geom, to_lonlat)
+    assert (inside.min_lat, inside.min_lon) < (inside.lat, inside.lon)
+
+    narrow = Polygon([(0.0, 0.0), (0.001, 0.0), (0.001, 0.001)])
+    monkeypatch.setattr(geo_build.shapely, "transform", lambda *_a, **_k: narrow)
+    widened = geo_build._area("precinct", "x", "y", geom, to_lonlat)
+    assert widened.min_lat <= widened.lat <= widened.max_lat
+    assert widened.min_lon <= widened.lon <= widened.max_lon
+    assert widened.max_lat > 0.001
+
+
 GOLDEN_PRECINCTS = [
     {
         "pctkey": "4530001",
@@ -313,7 +380,11 @@ def test_codes_and_keys_are_strings_on_the_data_objects(reference: Path) -> None
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
 def test_a_non_finite_value_never_reaches_the_json(bad: float) -> None:
-    data = GeoData(provenance={}, areas=(Area("county", "001", "X", bad, 0.0),), precincts=())
+    data = GeoData(
+        provenance={},
+        areas=(Area("county", "001", "X", bad, 0.0, 0.0, 0.0, 0.0, 0.0),),
+        precincts=(),
+    )
     with pytest.raises(ValueError, match="Out of range float values"):
         data.to_json()
 
@@ -440,6 +511,9 @@ def test_the_real_layers_build_with_every_point_inside_its_polygon() -> None:
         "precinct": ("tx_election/precincts/" + current["filename"], "PCTKEY"),
     }
     points = {(a["kind"], a["code"]): (a["lon"], a["lat"]) for a in out["areas"]}
+    for area in out["areas"]:
+        assert area["min_lat"] <= area["lat"] <= area["max_lat"], area["code"]
+        assert area["min_lon"] <= area["lon"] <= area["max_lon"], area["code"]
     for kind, (where, field) in layers.items():
         path = reference / where
         shp = path if path.suffix == ".shp" else next(path.glob("*.shp"))

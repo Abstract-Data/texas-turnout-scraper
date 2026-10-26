@@ -5,8 +5,9 @@ Worker imports may import this module. Run it when a plan or the precinct layer 
 commit the output; ``geo_load`` loads that file into D1. See docs/adr/010-geography-tables.md.
 
 Every place gets a point from ``representative_point()`` of its shape in EPSG:3083, so the point
-lies inside the shape (a centroid can fall outside a concave district). Each precinct takes, per
-plan, the district it overlaps most by area in EPSG:3083.
+lies inside the shape (a centroid can fall outside a concave district), and a bounding box from
+the bounds of the shape transformed to EPSG:4326 (never a transform of projected bounds). Each
+precinct takes, per plan, the district it overlaps most by area in EPSG:3083.
 """
 
 from __future__ import annotations
@@ -47,9 +48,12 @@ SPLIT_BELOW = 0.99
 TIE_TOLERANCE = 1e-9
 METHOD = (
     "points: shapely representative_point() of each (multi)polygon in EPSG:3083, transformed to "
-    "EPSG:4326 and rounded to 6 decimals; districts: per plan, the district with the largest "
-    "intersection area with the precinct in EPSG:3083 (ties to the lower number), share rounded "
-    "to 4 decimals, split when share < 0.99, null when nothing overlaps"
+    "EPSG:4326 and rounded to 6 decimals; bounding boxes: shapely bounds of each (multi)polygon "
+    "after transforming its vertices to EPSG:4326 (min_lat, min_lon, max_lat, max_lon), widened "
+    "to include the point when an edge bows past the vertices, rounded to 6 decimals; districts: "
+    "per plan, the district with the largest intersection area with the precinct in EPSG:3083 "
+    "(ties to the lower number), share rounded to 4 decimals, split when share < 0.99, null "
+    "when nothing overlaps"
 )
 
 EXPECTED_COUNTS: Mapping[str, int] = {"county": 254, "cd": 38, "sd": 31, "hd": 150}
@@ -89,6 +93,10 @@ class Area:
     name: str
     lat: float
     lon: float
+    min_lat: float
+    min_lon: float
+    max_lat: float
+    max_lon: float
 
 
 @dataclass(frozen=True)
@@ -197,10 +205,34 @@ def _read(shp: Path, keep: Mapping[str, str] | None = None) -> list[_Feature]:
     return features
 
 
-def _point(geom: BaseGeometry, to_lonlat: pyproj.Transformer) -> tuple[float, float]:
+def _area(
+    kind: str, code: str, name: str, geom: BaseGeometry, to_lonlat: pyproj.Transformer
+) -> Area:
+    """A place with its interior point and its box, both in EPSG:4326.
+
+    The box is the bounds of the vertices transformed to degrees. A long straight edge in the
+    Albers plane can bow slightly past its end vertices in degrees, so the box is widened to
+    hold the point; rounding is monotonic, so the rounded point stays inside the rounded box.
+    """
     point = geom.representative_point()
-    lon, lat = to_lonlat.transform(point.x, point.y)
-    return round(float(lat), POINT_DECIMALS), round(float(lon), POINT_DECIMALS)
+    lon, lat = (float(v) for v in to_lonlat.transform(point.x, point.y))
+    degrees = shapely.transform(geom, to_lonlat.transform, interleaved=False)
+    min_lon, min_lat, max_lon, max_lat = (float(v) for v in degrees.bounds)
+
+    def r(value: float) -> float:
+        return round(value, POINT_DECIMALS)
+
+    return Area(
+        kind,
+        code,
+        name,
+        r(lat),
+        r(lon),
+        r(min(min_lat, lat)),
+        r(min(min_lon, lon)),
+        r(max(max_lat, lat)),
+        r(max(max_lon, lon)),
+    )
 
 
 def _district_code(record: Mapping[str, Any]) -> str:
@@ -316,7 +348,7 @@ def build_geo(
     pipeline_commit: str | None = None,
     expected: Mapping[str, int] = EXPECTED_COUNTS,
 ) -> GeoData:
-    """Areas with interior points and per-precinct districts from ``reference_dir``."""
+    """Areas with interior points, boxes and per-precinct districts from ``reference_dir``."""
     reference_dir = Path(reference_dir)
     to_lonlat = pyproj.Transformer.from_crs(AREA_EPSG, POINT_EPSG, always_xy=True)
     sources: list[Path] = []
@@ -337,17 +369,15 @@ def build_geo(
         _unique(kind, codes)
         districts[kind] = [(code, f.geom) for code, f in zip(codes, features, strict=True)]
         for code, feature in zip(codes, features, strict=True):
-            lat, lon = _point(feature.geom, to_lonlat)
-            areas.append(Area(kind, code, f"{DISTRICT_LABELS[kind]} {code}", lat, lon))
+            name = f"{DISTRICT_LABELS[kind]} {code}"
+            areas.append(_area(kind, code, name, feature.geom, to_lonlat))
 
     counties = _read(county_shp, keep={"STATEFP": TEXAS_STATEFP})
     _check_count("county", counties, expected)
     _unique("county", [str(f.record["COUNTYFP"]) for f in counties])
     for feature in counties:
-        lat, lon = _point(feature.geom, to_lonlat)
-        areas.append(
-            Area("county", str(feature.record["COUNTYFP"]), str(feature.record["NAME"]), lat, lon)
-        )
+        code, name = str(feature.record["COUNTYFP"]), str(feature.record["NAME"])
+        areas.append(_area("county", code, name, feature.geom, to_lonlat))
 
     precinct_features = _read(precinct_shp)
     if not precinct_features:
@@ -359,8 +389,7 @@ def build_geo(
     precincts: list[PrecinctDistricts] = []
     for index, (pctkey, feature) in enumerate(zip(pctkeys, precinct_features, strict=True)):
         prec = str(feature.record["PREC"])
-        lat, lon = _point(feature.geom, to_lonlat)
-        areas.append(Area("precinct", pctkey, prec, lat, lon))
+        areas.append(_area("precinct", pctkey, prec, feature.geom, to_lonlat))
         assigned: dict[str, Any] = {}
         for kind in DISTRICT_FOLDERS:
             hit = best[kind][index]

@@ -32,6 +32,7 @@ from texas_turnout_scraper.geo_tables import (
     ALIAS_DELETE_SQL,
     ALIAS_UPSERT_SQL,
     ALIASES_SQL,
+    AREA_COLUMNS,
     AREA_DELETE_SQL,
     AREA_KEYS_SQL,
     AREA_UPSERT_SQL,
@@ -142,6 +143,10 @@ def _text(value: object) -> str:
     return "" if value is None else str(value)
 
 
+def _area_row(area: GeoArea) -> list[object]:
+    return [getattr(area, column) for column in AREA_COLUMNS]
+
+
 def _precinct_row(precinct: GeoPrecinct) -> list[object]:
     row: list[object] = []
     for column in PRECINCT_COLUMNS:
@@ -188,7 +193,7 @@ def load_geo(
         len(stale_precincts),
     )
     if not dry_run:
-        area_rows = [[a.kind, a.code, a.name, a.lat, a.lon] for a in areas]
+        area_rows = [_area_row(a) for a in areas]
         _write_batches(store, database_id, AREA_UPSERT_SQL, area_rows, batch_rows)
         precinct_rows = [_precinct_row(p) for p in precincts]
         _write_batches(store, database_id, PRECINCT_UPSERT_SQL, precinct_rows, batch_rows)

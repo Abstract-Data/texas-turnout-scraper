@@ -98,7 +98,11 @@ from texas_turnout_scraper.early_vote_roster_rows import (
     legacy_drain_sql,
     legacy_remaining_sql,
 )
-from texas_turnout_scraper.geo_tables import GEO_SCHEMA_CREATES
+from texas_turnout_scraper.geo_tables import (
+    AREA_COLUMNS_SQL,
+    GEO_SCHEMA_CREATES,
+    geo_migration_statements,
+)
 from texas_turnout_scraper.http_transport import HttpBackend, PacedHttpClient
 from texas_turnout_scraper.r2_snapshots import (
     R2SnapshotStore,
@@ -1368,6 +1372,10 @@ class CloudflareEarlyVoteStore:
             database_id,
             [(sql, []) for sql in _SCHEMA_CREATES],
         )
+        alters = geo_migration_statements(self._column_names(database_id, AREA_COLUMNS_SQL))
+        if alters:
+            self._statements(database_id, [(sql, []) for sql in alters])
+            logger.info("early-vote D1 added %s geo_area columns", len(alters))
         self._schema_ready.add(database_id)
 
     def _day_scoped_file_ids(self, database_id: str, election_id: str) -> tuple[str, ...]:

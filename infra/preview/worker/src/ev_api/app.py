@@ -17,6 +17,7 @@ from ev_api.bindings import (
     WorkersRosterStore,
     binding_map_from_env,
 )
+from ev_api.geo_routes import register_geo_routes
 from ev_api.read import (
     DEFAULT_KV_TTL_SECONDS,
     AggregateStore,
@@ -239,6 +240,7 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
         return await _serve(source_election_id, "county-by-day", request, None)
 
     register_roster_routes(app, _deps_for_request)
+    register_geo_routes(app, _deps_for_request)
     register_spike_routes(app, _deps_for_request)
     register_stage_routes(app, _deps_for_request)
     register_spike_workflow_routes(app, _deps_for_request)

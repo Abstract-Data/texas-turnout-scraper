@@ -6,14 +6,14 @@ the committed DDL in ``geo_tables`` instead. See docs/adr/010-geography-tables.m
 
 from __future__ import annotations
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from sqlmodel import Field, SQLModel
 
 from texas_turnout_scraper.geo_tables import ALIAS_RULES, AREA_KINDS
 
 
 class GeoArea(SQLModel, table=True):
-    """One county, precinct or district, with a point inside its shape."""
+    """One county, precinct or district, with a point inside its shape and its bounding box."""
 
     __tablename__ = "geo_area"
 
@@ -22,6 +22,11 @@ class GeoArea(SQLModel, table=True):
     name: str
     lat: float
     lon: float
+    # Nullable only so a table that predates the box can be altered in place; see geo_tables.
+    min_lat: float | None = None
+    min_lon: float | None = None
+    max_lat: float | None = None
+    max_lon: float | None = None
 
     @field_validator("kind")
     @classmethod
@@ -29,6 +34,24 @@ class GeoArea(SQLModel, table=True):
         if value not in AREA_KINDS:
             raise ValueError("unknown area kind")
         return value
+
+    @model_validator(mode="after")
+    def _box(self) -> GeoArea:
+        box = (self.min_lat, self.min_lon, self.max_lat, self.max_lon)
+        if all(v is None for v in box):
+            return self
+        if (
+            self.min_lat is None
+            or self.min_lon is None
+            or self.max_lat is None
+            or self.max_lon is None
+        ):
+            raise ValueError("a bounding box needs all four edges")
+        if not (
+            self.min_lat <= self.lat <= self.max_lat and self.min_lon <= self.lon <= self.max_lon
+        ):
+            raise ValueError("the point lies outside its bounding box")
+        return self
 
 
 class GeoPrecinct(SQLModel, table=True):

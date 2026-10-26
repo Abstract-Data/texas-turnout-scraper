@@ -9,7 +9,7 @@ To place each early-vote voter on a map we need a point for the voter's county, 
 congressional, state senate and state house district, and a mapping from each precinct to its
 districts. The state publishes the plans and the precincts as shapefiles. The roster names a
 county and a county-local precinct, so roster precincts also need a mapping to the state's
-precinct keys. Nothing reads these tables yet; a later Worker change joins them to roster rows.
+precinct keys. The Worker reads them through a lookup endpoint (see Amendment, bounding boxes).
 
 ## Decision
 
@@ -89,3 +89,43 @@ the JSON's provenance) and the same library versions, the output is byte-identic
 - 26 precincts are split in at least one plan (6 congressional, 5 state senate, 16 state house).
 - Library versions are part of the provenance, so a shapely, GEOS or PROJ upgrade can change the
   last digit of a point and the bytes of the file. The rebuild shows that as a diff to review.
+
+## Amendment: bounding boxes and the precinct lookup endpoint
+
+The voterfile has no coordinate columns (47 columns, none latitude or longitude), so a voter's
+location is the voter's precinct. A consumer attaches a point and a box to each voter by joining
+on county and precinct.
+
+10. **Bounding boxes.** Every area (county, precinct, congressional, state senate, state house)
+    also carries `min_lat, min_lon, max_lat, max_lon`. The box is the `bounds` of the shape after
+    its vertices are transformed to EPSG:4326, never a transform of the projected bounds (a
+    rectangle in the Albers plane is not a rectangle in degrees). Values are rounded to 6
+    decimals. An edge that is straight in Albers can bow slightly past its end vertices in
+    degrees, so the box is widened to include the point; rounding is monotonic, so the rounded
+    point is always inside the rounded box, and a test checks this for every area. Provenance
+    `method` names the box rule, so `tx_geo.json` gets a new sha256 and the next load re-runs.
+11. **Columns and migration.** `geo_area` gains four `FLOAT` columns after `lon`. They are
+    nullable in D1 even though the build always writes them: `ALTER TABLE ... ADD COLUMN` cannot
+    add a NOT NULL column without a default, and rows loaded before the change have no box until
+    the next load. `GeoArea` accepts all four or none, and rejects a box that excludes the point.
+    `geo_tables.geo_migration_statements` turns a `pragma_table_info('geo_area')` column list
+    into the missing `ALTER TABLE geo_area ADD COLUMN` statements, none once current.
+    `CloudflareEarlyVoteStore._ensure_schema` runs it after the `CREATE TABLE IF NOT EXISTS`
+    statements, so every geo load and every sync migrates an old table exactly once.
+12. **Endpoint.** `GET /elections/{source_election_id}/geo/precincts` (`ev_api/geo_routes.py`)
+    joins matched `geo_precinct_alias` rows to `geo_area` where `kind = 'precinct'` and returns
+    `source_election_id` (a string), `version`, `count`, `unmatched` and `precincts`, sorted by
+    `(county, precinct)`, each with `county`, `precinct`, `pctkey`, `lat`, `lon` and
+    `bbox = [min_lon, min_lat, max_lon, max_lat]` (null on rows loaded before boxes existed).
+    It is behind the same gate as the aggregate routes (Access service credential or any
+    consumer token, any scope); geography is public data. It reuses `read_resource`: the body is
+    cached in KV under the election version with the standard TTL, the ETag is the version, and a
+    matching `If-None-Match` returns 304. A D1 without the geo tables, or with the old
+    `geo_area`, returns 503 `{"detail": "geo_not_loaded"}` and caches nothing. The cached body
+    is not refreshed when only geography changes; it follows the election version or the TTL.
+    About 60 s of KV propagation makes it unsuitable for election-night results; a faster path is
+    out of scope.
+13. **Why a lookup and not roster columns.** The roster routes stream stored bytes unchanged and
+    must stay byte-exact, because parsing a day per request exceeds the Worker CPU limit. About
+    10,000 distinct precincts is one small cacheable document; a consumer joins it to the roster
+    it already pulls. Appending the same columns at ingest in the Workflow is a later change.

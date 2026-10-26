@@ -286,6 +286,16 @@ All routes need `Authorization: Bearer <token>` (or `X-API-Key`). The roster rou
 - **PII.** Responses carry names and VUIDs, are `Cache-Control: private, no-cache`, and are never stored in KV. Rows are not logged. A leaked roster token is revoked with `tx-turnout api revoke <id>`.
 - The Worker reads each file in batches of 64 chunks (about 21 D1 queries for a 44 MB day).
 
+## Precinct points and bounding boxes
+
+`GET /elections/{id}/geo/precincts` returns a point and a bounding box for every roster `(county, precinct)` that matched a state precinct, so a consumer can attach them to each voter by joining on `COUNTY` and `PRECINCT`. The voterfile has no per-voter coordinates; precinct is the resolution. No voter data is in the response.
+
+- **Who.** Any valid credential (Access service token, or a consumer token of any scope), the same gate as the aggregate routes. Without one: 401, before D1 or KV is read.
+- **Body.** `source_election_id` (string), `version` (the election version in the ETag), `count`, `unmatched` (roster pairs with no state precinct) and `precincts`, sorted by county then precinct. Each entry has `county`, `precinct`, `pctkey`, `lat`, `lon` and `bbox` = `[min_lon, min_lat, max_lon, max_lat]` (`null` for rows loaded before boxes existed).
+- **Caching.** Stored in KV under the election version with the standard TTL (24 h); `ETag` is `"v<version>"` and a matching `If-None-Match` returns 304. A geography reload alone does not refresh the cached body before the TTL or the next election version. KV propagation is about 60 s, which is unsuitable for election-night results; a faster path is out of scope.
+- **Not loaded.** If the election's D1 has no geography tables, or `geo_area` has no box columns yet, the route returns 503 `{"detail": "geo_not_loaded"}` and caches nothing.
+- **Loading.** Rebuild `data/geo/tx_geo.json` with `uv run python -m texas_turnout_scraper.geo_build`, then `uv run python -m texas_turnout_scraper.geo_load --election-id <id> --dry-run` and, once approved, `--apply`. The apply adds the four box columns to an existing `geo_area` and reloads because the file's sha256 changed. See `docs/adr/010-geography-tables.md`.
+
 ### Resuming and large downloads
 
 - **Per-day downloads accept `Range`.** Responses carry `Accept-Ranges: bytes`. `Range: bytes=START-END`, `bytes=START-` and `bytes=-N` return `206` with `Content-Range`; a start past the end returns `416`. Several ranges, another unit, or a malformed header get the whole file. Send `If-Range: "<etag>"` so a resumed download is refused if the day changed in between (you get the full new file). `If-None-Match` still wins and returns `304`. Only the chunks covering the range are read.
