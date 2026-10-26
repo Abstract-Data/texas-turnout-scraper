@@ -183,7 +183,7 @@ Revision 2 to 3 (second review, narrow BLOCK, all folded in):
 
 | # | Finding | Fix |
 |---|---|---|
-| 1 | `file_id` undefined; a retry mints a new id and orphans chunks; `finish` would decode every file in a 128 MB isolate | `file_id` minted once in `stage`; `files` writes the aggregate meta row; `commit` deletes orphans; `finish` checks state instead of the full backfill |
+| 1 | `file_id` undefined; a retry mints a new id and orphans chunks; `finish` would decode every file in a 128 MB isolate | `file_id` minted once in `stage`; `files` writes the aggregate meta row; orphan files are deleted by `finish` with a keep-set (revision 3 had `commit` do it, see the third review); `finish` checks state instead of the full backfill |
 | 2 | Crash between `flip` and `commit`: readers consistent, but the change log can mislabel and `V` and `target` can be re-read after the marker moved | `recover` returns `V` and `target`; the short-circuit lives only in `flip`; the log carries `prior_sha256` |
 | 3 | `files` cannot compute the manifest `rows` count before rows exist | The manifest entry is appended in `flip` from D1 |
 | 4 | The set-based SQL cannot reproduce last-row-wins, rejects differ, no `id_voter` index | Decision 6 accepts documented differences; candidate-set check; index in the approvals |
