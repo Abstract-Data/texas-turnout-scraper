@@ -1,7 +1,7 @@
 # ADR-014: Early-vote ingest as a Cloudflare Workflow
 
 **Date:** 2026-10-26
-**Status:** Proposed (revision 2, after an independent review of revision 1). Design only, nothing is implemented.
+**Status:** Proposed (revision 3, after two independent reviews and the owner's decisions of 2026-10-26). Design only, nothing is implemented.
 
 ## Context
 
@@ -13,7 +13,7 @@ Evidence so far:
 - Spike PR #88 showed a Python Worker can fetch a statewide roster day from the Civix portal and stream-decode it: HTTP 200, no challenge, 48.0 MB decoded in about 7 s of network time, Python heap about 65 MB (measured, 2026-10-20 file).
 - Cloudflare docs (read 2026-10-26) confirm Python Workflows exist (`WorkflowEntrypoint`, `step.do`, retries, `python_workflows` and `python_workers` flags), steps have no wall-clock limit, CPU is 30 s per invocation by default and configurable to 5 minutes, an isolate has 128 MB, and a D1 `batch()` counts as one query toward the per-invocation limit. Step output size, subrequest counts for binding calls and concurrency limits are not yet confirmed for this design (risk R12).
 
-Revision 1 of this ADR was reviewed against the code and blocked. Its findings are folded in below and listed in "Review findings".
+Revision 1 was blocked by an independent review. Revision 2 was reviewed again and blocked narrowly on six gaps. Both sets of findings are folded in below and listed under "Review findings". The owner's answers to the open decisions are recorded under "Decisions".
 
 ## What cannot be ported as written
 
@@ -59,7 +59,8 @@ Step inputs and outputs are small JSON values. Outputs are persisted by Workflow
 
 ```
 RunPlan      election_id, run_id, mode ("recent" | "sweep"), days: list[ev_date]
-StagedDay    ev_date, raw_sha256, sha256 (canonical), decoded_bytes, rows,
+StagedDay    ev_date, file_id (sha256 + run_id, minted once here), prior_sha256, raw_sha256,
+             sha256 (canonical), decoded_bytes, rows,
              header_cols, empty: bool
              canonical_key              staging/{run_id}/{ev_date}/file.csv
              range_segments: list[int]  exact segment count per range, 16 entries
@@ -96,12 +97,12 @@ About 22 steps for a changed day, 2 for an unchanged one. Under 400 steps for a 
 |---|---|---|---|
 | `plan` | Takes the election's early-vote dates, drops future dates, picks `recent` (today and yesterday) or `sweep`. Takes the run lease (below) | Pure read, then a conditional lease write | 3 |
 | `stage` | Deletes any prior objects under its run-scoped prefix, then one portal GET. Streams the envelope through `EnvelopeStreamDecoder`, canonicalizes incrementally, hashes the canonical bytes, writes the canonical object by multipart upload, and writes `(row_hash, cells)` records to per-range segments flushed at 512 KB. Counts rows per county and method | The prefix is cleared first and the exact segment counts are returned, so a retry never reads stale segments | 3, backoff 30 s |
-| `files` | Streams the canonical object into the R2 snapshot (gzip) for the new version, snapshots the replaced version, writes file chunks (32 KiB base64, about 1,465 per day, batched), the file row, and the precomputed aggregates from the counts | Keys are content-addressed or replaced by file id, as today | 3 |
-| `recover` | Runs the day-level `recovery_statements` once. If the replaced version's rows are untrusted, retires all rows | Same statements the loader runs first today | 3 |
-| `range` | Reads its segments, computes `occ` with a dict limited to this range, reads the range's current keys from D1, diffs, validates and inserts added rows tagged `added_in = target`, marks removed rows. Starts by clearing its own range's unpublished marks | Per-range recovery makes a retry safe without touching other ranges | 5, backoff 30 s |
-| `flip` | Checks visible rows plus rejects at `target` equal the staged count, writes the version marker, writes the day-change log, then `gc_statements` per range | The marker flips once. A failure before it leaves the published version unchanged | 3 |
-| `commit` | Upserts `early_vote_day` (the commit point), updates the pointer, repoints and deletes the old file as `_write_day_scoped` does | Plain upserts and deletes | 3 |
-| `finish` | Runs `finalize_published_roster`, bumps `ev:{election}:version`, writes the KV hash and manifest keys that `choose_published_file` needs, checks `published_precompute_state`. Only if some day published | KV writes are overwrites after D1 | 3 |
+| `files` | Streams the canonical object into the R2 snapshot object (gzip) for the new version, snapshots the replaced version, writes file chunks (32 KiB base64, about 1,465 per day, batched), the file row under the `file_id` minted in `stage`, and the precomputed aggregates plus their meta row from the staged counts. It does not write the snapshot manifest entry (see `flip`) | Keys are content-addressed or replaced by `file_id`, as today. A retry reuses the same `file_id`, so it rewrites instead of orphaning | 3 |
+| `recover` | Reads the day's current version `V` once, derives `target = V + 1`, runs the day-level `recovery_statements`, and decides `full_replace` (retire all rows when the replaced version is untrusted). Returns `V`, `target` and `full_replace`. Later steps use these values and never re-read the version | Same statements the loader runs first today. A retry returns the same `V` because nothing has flipped | 3 |
+| `range` | Takes `V`, `target`, `full_replace` from `recover`. Reads its segments, computes `occ` with a dict limited to this range, reads the range's current keys from D1 (empty when `full_replace`), diffs, validates and inserts added rows tagged `added_in = target`, marks removed rows, and records the changed VUIDs in `early_vote_sync_candidate`. Starts by clearing its own range's unpublished marks | Per-range recovery makes a retry safe without touching other ranges | 5, backoff 30 s |
+| `flip` | Checks visible rows plus rejects at `target` equal the staged count. If every range reported zero added and zero removed, only restamps `file_id` and sha (the same-keys case in `load_roster_day`) and does not bump the version. Otherwise writes the version marker at `target`, then computes the VUID-level figures from `early_vote_sync_candidate` (change log, `COUNT(DISTINCT id_voter)` for the snapshot manifest entry, which it appends), then runs `gc_statements` per range | The marker flips once. A failure before it leaves the published version unchanged | 3 |
+| `commit` | Upserts `early_vote_day` (the commit point), updates the pointer, repoints, deletes orphan file ids for the day and the old file as `_write_day_scoped` does, and deletes the staging prefix | Plain upserts and deletes | 3 |
+| `finish` | Compares the pointer and the KV hash with the latest `early_vote_day` on every run, whether or not a day published in this run, and finalizes if they differ. `finalize_published_roster` uses the latest stored day, not the latest processed day. The manifest digest is computed over every stored day's hash read from D1, so `recent` and `sweep` runs agree. Bumps `ev:{election}:version`, writes the KV hash and manifest keys that `choose_published_file` needs, and checks `published_precompute_state` (a state check, not the full backfill that decodes every file). Releases the lease | KV writes are overwrites after D1 | 3 |
 
 The ~60 s KV propagation caveat is unchanged and is unsuitable for election-night results; a faster path is out of scope.
 
@@ -112,12 +113,14 @@ The ~60 s KV propagation caveat is unchanged and is unsuitable for election-nigh
 - **Range-bounded keys.** The key read uses a new keys-only, range-bounded query on both the row table and the reject table. The current `VISIBLE_PAGE_SQL` has no range bound, returns names, and ignores rejects, so it is not reused.
 - **Per-range recovery.** Add range-scoped variants of `recovery_statements`, `retire_statements` and `gc_statements`. The day-level versions stay for the loader.
 - **Same keys, different bytes.** When the key sets are equal but the file differs (reordered lines), `load_roster_day` restamps `file_id` and sha without a new version. `flip` keeps that behavior.
-- **Whole-file side effects.** The day-change log and the snapshot manifest `rows` count are distinct-VUID figures, not row-key figures. They are computed in D1 with set-based SQL, partitioned by VUID range, while the replaced version's rows are still present (before `gc`). The skip of VUID `0000000000` and the uppercase of county and method are kept. The SQL is specified and differentially tested against `diff_rosters` and `roster_row_count` before the Workflow uses it (risk R11).
+- **Whole-file side effects.** The day-change log and the snapshot manifest `rows` count are distinct-VUID figures. The owner accepted documented small differences from the old code (decision 6). They are computed in D1 from accepted rows only: distinct `id_voter` for the count, and for a VUID whose duplicate rows differ, the lowest county and then method. VUIDs from rejected lines are not counted, and VUID `0000000000` is skipped as today. To avoid full scans, each `range` step records the VUIDs of its added and removed rows in `early_vote_sync_candidate`, and `flip` checks presence at `V` and at `target` only for those candidates. This needs an index on `early_vote_roster_row (day, id_voter)`, to be measured in the scratch database (R4, R15). The change log is written with the sha the day was diffed against (`prior_sha256`, carried from `stage`), so a second portal change before the retry cannot mislabel a transition. The SQL is differentially tested against `diff_rosters` and `roster_row_count` on files without rejects or conflicting duplicates, and the expected differences are asserted on files with them (R11).
 - **Empty portal files.** `stage` reports `skipped_empty` when the file has no data rows and the day is never published, matching `run_backfill`.
+- **No day-level early exit.** The same-keys short-circuit of `load_roster_day` lives only inside `flip` (a restamp). It is never a reason to skip `files` or `commit`.
+- **Staging objects.** The canonical object is written by multipart upload with fixed 8 MiB parts (about 6 parts, 8 to 16 MB of heap). Open multipart uploads are not objects, so a retried `stage` cannot find them to delete. A lifecycle rule aborts incomplete multipart uploads after 1 day. Range segments are immutable objects of about 512 KB each, about 115 per day.
 
 ### One load path
 
-`load_roster_day` is split into a per-range function and a day-level publish function. The existing whole-day function becomes their composition and keeps its signature, so the CLI, the loader and the stateful Hypothesis machine keep working. The Workflow calls the same range and publish functions. The split functions move to a module with no sqlmodel import, because `roster_models` is loader-only and the Worker must not import it (AGENTS.md, ADR-009). Row validation in the Worker then needs either a Worker-safe validator with a drift test against the models, or an owner decision to allow SQLModel in the Worker (decision 5).
+`load_roster_day` is split into a per-range function and a day-level publish function. The existing whole-day function becomes their composition and keeps its signature, so the CLI, the loader and the stateful Hypothesis machine keep working. The Workflow calls the same range and publish functions. The split functions move to a module with no sqlmodel import, because `roster_models` is loader-only and the Worker must not import it (AGENTS.md, ADR-009). The owner decided to allow SQLModel in the Worker (decision 5), so row validation uses the same models. The spike measures cold start and CPU (R7); if either is bad, a plain Worker-safe validator with a drift test replaces it.
 
 ### Store adapters
 
@@ -129,7 +132,7 @@ The Worker `scheduled` handler keeps ADR-013's `should_dispatch` hours (10:00, 1
 
 ### Lease
 
-Two instances writing the same day would race. `plan` takes a lease with one conditional statement (an upsert that only succeeds when the row is absent or expired, then a check of rows changed). The lease expires after 10 minutes, every step renews it, and `finish` releases it. A crashed instance therefore blocks the next firing for at most 10 minutes. The lease table is `early_vote_sync_lease` in each election DB, added to the schema list with a drift test.
+Two instances writing the same day would race. `plan` takes a lease with one conditional statement: `INSERT ... ON CONFLICT(election_id) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at WHERE early_vote_sync_lease.expires_at < unixepoch()`, then checks that one row changed. D1 serializes writes, so the acquire is race-free. The clock is D1's `unixepoch()`, never Worker time. Renewal is `UPDATE ... SET expires_at = ... WHERE holder = :me AND expires_at > unixepoch()`, and zero rows changed aborts the instance. The TTL is 10 minutes, every step renews it, and the long steps (`stage`, `files`) renew inside the step every 100 batches. `finish` releases it. A terminated instance never releases, so the lease expires and blocks the next firing for at most 10 minutes, with no data risk. Paths that do not take the lease (the Actions workflow, local CLI runs, `early_vote_roster_rows_backfill`) can still race, so cutover step 4 disables them. The lease table is `early_vote_sync_lease` in each election DB, added to the schema list with a drift test.
 
 ### Failure and resume model
 
@@ -148,33 +151,49 @@ Workflow step outputs and instance state persist (3 days on Free, 30 on Paid). O
 
 ## What stays off the Workflow
 
-- **Repeat build.** 802 MB peak. Options: a short Actions job dispatched by `finish` only after the KV bump (about 90 s measured; this keeps the `GITHUB_DISPATCH_TOKEN` binding), or a later rewrite as set-based SQL in D1 partitioned by VUID range. The Actions option has no lease tie to the roster load, so it runs only after `finish` succeeds. Owner decision 1.
+- **Repeat build.** Paused until after 2026-11-03 (decision 1). Nothing reads the repeat tables yet. It is rebuilt later as set-based D1 SQL partitioned by VUID range. The `GITHUB_DISPATCH_TOKEN` binding and the dispatch code are removed at cutover.
 - **Geography load.** One-time and idempotent. A new election needs a new per-election D1 and a binding in Terraform, which is an owner-approved change and not something the Workflow does.
 - **Voter link.** Local by decision.
 - **GitHub Pages CSV.** `data-refresh.yml` is a separate workflow and is unaffected. This ADR does not claim a link between it and the Workflow.
 
-## Review findings (revision 1 to revision 2)
+## Review findings
+
+Revision 1 to 2 (first review, all resolved):
 
 | # | Finding | Fix |
 |---|---|---|
 | 1 | Marker flipped before chunks, file row, aggregates, day hash; unchanged check read the wrong table | Original order restored; unchanged check reads `early_vote_day.sha256` |
-| 2 | Scatter cannot produce the ordered canonical file chunks, snapshot and sha need | `stage` also writes the canonical object in file order |
-| 3 | `occ` needs a whole-day dict in `stage` | `occ` computed per range in the `range` step |
+| 2 | Scatter cannot produce the ordered canonical file | `stage` also writes the canonical object in file order |
+| 3 | `occ` needs a whole-day dict in `stage` | `occ` computed per range |
 | 4 | `recovery_statements` not range-scoped | Range-scoped variants plus one day-level `recover` step |
-| 5 | Rejects invisible to the diff, visible query unbounded and returns names | Keys-only, range-bounded query on both tables |
-| 6 | Change log and manifest counts are whole-file VUID figures | Set-based D1 SQL before `gc`, differentially tested |
-| 7 | `finish` incomplete (pointer, KV hash and manifest keys, empty-day skip, aggregates) | Specified in `finish` and `stage` |
-| 8 | Streaming canonicalizer diverges | Specified behaviors and a differential test |
-| 9 | Lease race and TTL unspecified | Conditional lease statement, 10-minute TTL, renewal, release |
-| 10 | Stale segments on a retry | Prefix cleared and exact segment counts returned |
-| 11 | Worker would import loader-only sqlmodel code | Split functions move to a sqlmodel-free module; owner decision 5 |
-| 12 | Owner approvals and Terraform changes unlisted | Listed under "Approvals needed" |
+| 5 | Rejects invisible to the diff, key read unbounded and returned names | Keys-only, range-bounded query on both tables |
+| 6 | Change log and manifest counts are whole-file VUID figures | See revision 2 to 3, items 3 and 4 |
+| 7 | `finish` incomplete | Specified |
+| 8 | Streaming canonicalizer diverges | Behaviors specified, differential test |
+| 9 | Lease race and TTL unspecified | See revision 2 to 3, item 5 |
+| 10 | Stale segments on a retry | Prefix cleared, exact counts, multipart abort rule |
+| 11 | Worker would import loader-only sqlmodel | Decision 5 allows SQLModel in the Worker, measured in the spike |
+| 12 | Approvals and Terraform changes unlisted | Listed |
+
+Revision 2 to 3 (second review, narrow BLOCK, all folded in):
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | `file_id` undefined; a retry mints a new id and orphans chunks; `finish` would decode every file in a 128 MB isolate | `file_id` minted once in `stage`; `files` writes the aggregate meta row; `commit` deletes orphans; `finish` checks state instead of the full backfill |
+| 2 | Crash between `flip` and `commit`: readers consistent, but the change log can mislabel and `V` and `target` can be re-read after the marker moved | `recover` returns `V` and `target`; the short-circuit lives only in `flip`; the log carries `prior_sha256` |
+| 3 | `files` cannot compute the manifest `rows` count before rows exist | The manifest entry is appended in `flip` from D1 |
+| 4 | The set-based SQL cannot reproduce last-row-wins, rejects differ, no `id_voter` index | Decision 6 accepts documented differences; candidate-set check; index in the approvals |
+| 5 | Lease needs a renewal rule, in-step renewal, a clock, and disabling other writers | Specified |
+| 6 | A terminated instance skips `finish`; the manifest digest depends on the mode | `finish` reconciles every run; digest over all stored days |
+| 7 | Multipart upload sizes and abandoned uploads | Fixed 8 MiB parts, abort-incomplete lifecycle rule |
+| 8 | Cutover write test is a production write not listed | Scratch D1 first; the preview write needs explicit approval |
 
 ## Approvals needed
 
-- Terraform: a Workflow binding and class, a private staging R2 bucket with a lifecycle rule, the cron trigger now creating a Workflow, `limits.cpu_ms` for the Worker. Apply is the owner's, through the existing gates.
+- Terraform: a Workflow binding and class, a private staging R2 bucket with lifecycle rules (1-day expiry and abort-incomplete-multipart), a scratch D1 database for the spike and tests, the cron trigger now creating a Workflow, `limits.cpu_ms` for the Worker. Apply is the owner's, through the existing gates.
+- Schema changes on the preview election DB: the `early_vote_sync_lease` and `early_vote_sync_candidate` tables, a sync-status table, and an index on `early_vote_roster_row (day, id_voter)`. These go in the schema list with drift tests and are applied by the loader's normal idempotent schema step.
+- Cutover step 3 writes one past day to the preview D1. It needs the owner's explicit approval at that time.
 - Cutover step 4 re-enables a scheduled write path.
-- Keeping `GITHUB_DISPATCH_TOKEN` only if the repeat build stays on Actions.
 
 ## Risks and the second spike
 
@@ -203,19 +222,24 @@ Workflow step outputs and instance state persist (3 days on Free, 30 on Paid). O
 
 1. Second spike passes R1 to R6 and R12 to R14.
 2. Build the split of `load_roster_day`, the adapters and the Workflow behind `dry_run`: it computes hashes and diffs and writes nothing. Compare row counts and sha256 for three days with the stored state.
-3. Enable writes for one past day with a small change set. Verify counts, the visible rows against the previous version, and that the read API serves the same bytes.
-4. Enable the full run on the cron. The Actions workflow stays in the repo, disabled.
+3. Run the whole pipeline against a scratch D1 first (range writes, `occ`, timings, the VUID checks). Then, with the owner's explicit approval, enable writes for one past day on the preview D1 with a small change set. Verify counts, the visible rows against the previous version, and that the read API serves the same bytes.
+4. Enable the full run on the cron. The Actions workflow stays in the repo, disabled, and so do the local loader paths that do not take the lease.
 5. After 2026-11-03, remove the cron trigger, the Actions sync and the dispatch code in `ev_api/cron.py`.
 
 Rollback at any step is `gh workflow enable early-vote-sync.yml` plus pointing the cron back at dispatch. Every write is versioned and the day hash is last, so a half-finished Workflow run never changes what readers see.
 
-## Open decisions for the owner
+## Decisions (owner, 2026-10-26)
 
-1. Repeat build placement (short Actions job now, SQL in D1 later).
-2. `recent` versus `sweep` policy. Skipping older days relies on late portal edits being rare. The 22:00 sweep bounds the exposure to one day.
-3. Whether to drop the D1 copy of the raw file (about 64 MB written per changed day) and serve the roster CSV from R2. Not part of this change.
-4. Staging bucket name and retention, and how failures are reported (Workflow status only, or an email or alert).
-5. Worker-safe row validator versus allowing SQLModel in the Worker.
+| # | Question | Decision |
+|---|---|---|
+| 1 | Repeat build | Pause until after 2026-11-03 |
+| 2 | Which days per run | Recent days each run, full sweep at the 22:00 firing |
+| 3 | The D1 copy of the raw file | Keep for now, revisit after 2026-11-03 |
+| 4 | Staging retention | Private bucket, delete at commit, 1-day lifecycle plus abort-incomplete-multipart |
+| 5 | Row validation in the Worker | Allow SQLModel in the Worker and measure it in the spike; fall back to a plain validator if cold start or CPU is bad. The AGENTS.md rule is updated with the implementing PR |
+| 6 | VUID-level figures (change log, manifest `rows`) | Accept documented small differences |
+| 7 | First write test | Scratch D1 first, then one past day on the preview D1 with explicit approval |
+| 8 | Failure reporting | A status row per run in D1 and an authenticated route showing recent runs. Counts and failed days only, no PII |
 
 ## Consequences
 
