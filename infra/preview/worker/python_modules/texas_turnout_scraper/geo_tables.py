@@ -7,16 +7,23 @@ pinned by a drift test. See docs/adr/010-geography-tables.md.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 AREA_KINDS = frozenset({"county", "precinct", "cd", "sd", "hd"})
 # Tried in this order; the first that finds a state precinct in the same county wins.
 ALIAS_RULES = ("exact", "zfill4", "alnum_zfill4", "unmatched")
 META_NAME = "tx_geo"
 GEO_ROWS_PER_STATEMENT = 1000
 
+# The box columns are nullable: a table created before they existed gains them by ALTER, which
+# cannot add a NOT NULL column without a default, and its rows keep NULL until the next load.
+BBOX_COLUMNS = ("min_lat", "min_lon", "max_lat", "max_lon")
 AREA_TABLE_SQL = (
     "CREATE TABLE IF NOT EXISTS geo_area (kind VARCHAR NOT NULL, code VARCHAR NOT NULL, "
-    "name VARCHAR NOT NULL, lat FLOAT NOT NULL, lon FLOAT NOT NULL, PRIMARY KEY (kind, code))"
+    "name VARCHAR NOT NULL, lat FLOAT NOT NULL, lon FLOAT NOT NULL, min_lat FLOAT, "
+    "min_lon FLOAT, max_lat FLOAT, max_lon FLOAT, PRIMARY KEY (kind, code))"
 )
+AREA_COLUMNS_SQL = "SELECT name FROM pragma_table_info('geo_area')"
 PRECINCT_TABLE_SQL = (
     "CREATE TABLE IF NOT EXISTS geo_precinct (pctkey VARCHAR NOT NULL, "
     "county_fips VARCHAR NOT NULL, prec VARCHAR NOT NULL, cd VARCHAR, sd VARCHAR, hd VARCHAR, "
@@ -38,6 +45,23 @@ GEO_SCHEMA_CREATES: tuple[str, ...] = (
     ALIAS_TABLE_SQL,
     META_TABLE_SQL,
 )
+
+
+def geo_migration_statements(area_columns: Iterable[str]) -> list[str]:
+    """ALTERs that bring an older ``geo_area`` to the current columns; none once it is current.
+
+    ``area_columns`` is the result of ``AREA_COLUMNS_SQL``. A missing table has no columns, so
+    nothing is altered (its CREATE has the full shape).
+    """
+    present = set(area_columns)
+    if not present:
+        return []
+    return [
+        f"ALTER TABLE geo_area ADD COLUMN {column} FLOAT"
+        for column in BBOX_COLUMNS
+        if column not in present
+    ]
+
 
 GEO_TABLES_PRESENT_SQL = (
     "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN "
@@ -65,10 +89,12 @@ def _columns(count: int) -> str:
 
 
 # Each upsert takes one JSON array of row arrays, in the column order written below.
+AREA_COLUMNS = ("kind", "code", "name", "lat", "lon", *BBOX_COLUMNS)
 AREA_UPSERT_SQL = (
-    f"INSERT INTO geo_area (kind, code, name, lat, lon) SELECT {_columns(5)} "
-    "FROM json_each(?) WHERE true ON CONFLICT(kind, code) DO UPDATE SET "
-    "name = excluded.name, lat = excluded.lat, lon = excluded.lon"
+    f"INSERT INTO geo_area ({', '.join(AREA_COLUMNS)}) "
+    f"SELECT {_columns(len(AREA_COLUMNS))} FROM json_each(?) WHERE true "
+    "ON CONFLICT(kind, code) DO UPDATE SET "
+    + ", ".join(f"{name} = excluded.{name}" for name in AREA_COLUMNS[2:])
 )
 PRECINCT_COLUMNS = (
     "pctkey",

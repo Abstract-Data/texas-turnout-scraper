@@ -20,7 +20,7 @@ from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateTable
 
 from texas_turnout_scraper.early_vote_roster_rows import ROW_TABLE_SQL, VERSION_TABLE_SQL
-from texas_turnout_scraper.early_vote_sync import _SCHEMA_CREATES
+from texas_turnout_scraper.early_vote_sync import _SCHEMA_CREATES, CloudflareEarlyVoteStore
 from texas_turnout_scraper.geo_load import (
     build_aliases,
     county_key,
@@ -31,10 +31,12 @@ from texas_turnout_scraper.geo_load import (
 from texas_turnout_scraper.geo_models import GeoArea, GeoMeta, GeoPrecinct, GeoPrecinctAlias
 from texas_turnout_scraper.geo_tables import (
     ALIAS_TABLE_SQL,
+    AREA_COLUMNS_SQL,
     AREA_TABLE_SQL,
     GEO_SCHEMA_CREATES,
     META_TABLE_SQL,
     PRECINCT_TABLE_SQL,
+    geo_migration_statements,
 )
 
 
@@ -79,6 +81,13 @@ def _precinct(
     }
 
 
+BOX = {"min_lat": 29.9, "min_lon": -97.1, "max_lat": 30.1, "max_lon": -96.9}
+OLD_AREA_TABLE_SQL = (
+    "CREATE TABLE geo_area (kind VARCHAR NOT NULL, code VARCHAR NOT NULL, "
+    "name VARCHAR NOT NULL, lat FLOAT NOT NULL, lon FLOAT NOT NULL, PRIMARY KEY (kind, code))"
+)
+
+
 def _geo(
     precincts: list[dict[str, Any]], extra_areas: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
@@ -88,7 +97,14 @@ def _geo(
         {"kind": "county", "code": "283", "name": "La Salle", "lat": 28.3, "lon": -99.1},
         {"kind": "cd", "code": "1", "name": "Congressional District 1", "lat": 30.1, "lon": -97.1},
         *[
-            {"kind": "precinct", "code": p["pctkey"], "name": p["prec"], "lat": 30.0, "lon": -97.0}
+            {
+                "kind": "precinct",
+                "code": p["pctkey"],
+                "name": p["prec"],
+                "lat": 30.0,
+                "lon": -97.0,
+                **BOX,
+            }
             for p in precincts
         ],
         *(extra_areas or []),
@@ -467,3 +483,127 @@ def test_the_worker_app_import_graph_loads_no_geo_libraries_and_no_sqlmodel() ->
     )
     env = {**os.environ, "PYTHONPATH": str(worker_src)}
     subprocess.run([sys.executable, "-c", code], check=True, env=env)
+
+
+def _columns(store: _SqliteStore) -> list[str]:
+    return [row[0] for row in store.rows("SELECT name FROM pragma_table_info('geo_area')")]
+
+
+def test_a_load_stores_the_box_beside_the_point(store: _SqliteStore, tmp_path: Path) -> None:
+    load_geo(store, "db", _write(tmp_path, _geo(PRECINCTS)))
+    assert store.rows(
+        "SELECT lat, lon, min_lat, min_lon, max_lat, max_lon FROM geo_area "
+        "WHERE kind = 'precinct' AND code = '4530101'"
+    ) == [(30.0, -97.0, 29.9, -97.1, 30.1, -96.9)]
+
+
+def test_an_area_row_without_a_box_still_loads_with_nulls(
+    store: _SqliteStore, tmp_path: Path
+) -> None:
+    data = _geo(PRECINCTS)
+    for area in data["areas"]:
+        for column in BOX:
+            area.pop(column, None)
+    load_geo(store, "db", _write(tmp_path, data))
+    assert store.rows("SELECT min_lat, max_lon FROM geo_area WHERE kind = 'county'")[0] == (
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"min_lat": 29.9},
+        {**BOX, "min_lat": 30.5},
+        {**BOX, "max_lon": -98.0},
+    ],
+)
+def test_a_partial_or_point_excluding_box_stops_the_load_before_any_write(
+    store: _SqliteStore, tmp_path: Path, bad: dict[str, float]
+) -> None:
+    data = _geo(PRECINCTS)
+    for column in BOX:
+        data["areas"][0].pop(column, None)
+    data["areas"][0].update(bad)
+    with pytest.raises(ValidationError):
+        load_geo(store, "db", _write(tmp_path, data))
+    assert store.statements == []
+
+
+def test_the_migration_adds_the_box_columns_to_an_old_table_and_is_idempotent() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(OLD_AREA_TABLE_SQL)
+    conn.execute("INSERT INTO geo_area VALUES ('county', '453', 'Travis', 30.3, -97.7)")
+
+    def present() -> list[str]:
+        return [r[0] for r in conn.execute(AREA_COLUMNS_SQL).fetchall()]
+
+    statements = geo_migration_statements(present())
+    assert len(statements) == 4
+    for sql in statements:
+        conn.execute(sql)
+    assert present()[-4:] == ["min_lat", "min_lon", "max_lat", "max_lon"]
+    assert conn.execute("SELECT lat, min_lat FROM geo_area").fetchall() == [(30.3, None)]
+    assert geo_migration_statements(present()) == []
+    assert geo_migration_statements([]) == []
+
+
+def test_a_partly_migrated_table_only_gets_the_missing_columns() -> None:
+    names = ["kind", "code", "name", "lat", "lon", "min_lat", "min_lon"]
+    assert geo_migration_statements(names) == [
+        "ALTER TABLE geo_area ADD COLUMN max_lat FLOAT",
+        "ALTER TABLE geo_area ADD COLUMN max_lon FLOAT",
+    ]
+
+
+class _SyncStore(_SqliteStore):
+    """The real ``_ensure_schema`` running against sqlite, with a geo_area of the old shape."""
+
+    def __init__(self) -> None:
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute(OLD_AREA_TABLE_SQL)
+        self.statements = []
+        self._schema_ready: set[str] = set()
+
+    def _column_names(self, database_id: str, sql: str) -> list[str]:
+        return CloudflareEarlyVoteStore._column_names(self, database_id, sql)  # type: ignore[arg-type]
+
+    def ensure(self) -> None:
+        CloudflareEarlyVoteStore._ensure_schema(self, "db")  # type: ignore[arg-type]
+
+
+def test_ensure_schema_migrates_an_old_geo_area_once_and_a_reload_fills_the_box(
+    tmp_path: Path,
+) -> None:
+    sync = _SyncStore()
+    sync.conn.execute("INSERT INTO geo_area VALUES ('county', '453', 'Travis', 30.3, -97.7)")
+    sync.ensure()
+    assert _columns(sync)[-4:] == ["min_lat", "min_lon", "max_lat", "max_lon"]
+    alters = [sql for sql, _ in sync.statements if sql.startswith("ALTER TABLE geo_area")]
+    assert len(alters) == 4
+    sync._schema_ready.clear()
+    sync.ensure()
+    assert len([s for s, _ in sync.statements if s.startswith("ALTER TABLE geo_area")]) == 4
+
+    unboxed = _geo(PRECINCTS)
+    for area in unboxed["areas"]:
+        for column in BOX:
+            area.pop(column, None)
+    old_file = _write(tmp_path, unboxed, "old.json")
+    new_file = _write(tmp_path, _geo(PRECINCTS), "new.json")
+    assert old_file.read_bytes() != new_file.read_bytes()
+    assert load_geo(sync, "db", old_file).status == "wrote"
+    assert sync.rows("SELECT min_lat FROM geo_area WHERE kind = 'precinct'")[0] == (None,)
+    assert load_geo(sync, "db", old_file).status == "unchanged"
+    assert load_geo(sync, "db", new_file).status == "wrote"
+    assert sync.rows("SELECT min_lat, max_lon FROM geo_area WHERE kind = 'precinct'")[0] == (
+        29.9,
+        -96.9,
+    )
+
+
+def test_a_fresh_table_already_has_the_box_and_needs_no_migration() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(AREA_TABLE_SQL)
+    assert geo_migration_statements(r[0] for r in conn.execute(AREA_COLUMNS_SQL)) == []

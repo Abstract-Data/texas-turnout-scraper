@@ -846,6 +846,19 @@ class _MemoryD1:
         sql = sql.strip()
         if "pragma_table_info('early_vote_roster_row')" in sql:
             return {"success": True, "results": [{"name": "day"}, {"name": "row_hash"}]}
+        if "pragma_table_info('geo_area')" in sql:
+            names = [
+                "kind",
+                "code",
+                "name",
+                "lat",
+                "lon",
+                "min_lat",
+                "min_lon",
+                "max_lat",
+                "max_lon",
+            ]
+            return {"success": True, "results": [{"name": name} for name in names]}
         if "pragma_table_info" in sql:
             self.order.append("schema")
             if "early_vote_chunk" in sql:
