@@ -68,6 +68,31 @@ Fixtures use synthetic names/VUIDs. Tests must not log row contents or assert on
 
 `tests/conftest.py` skips tests marked `@pytest.mark.live` unless pytest is invoked with `--live`. Live legacy tests use `LegacySession()` (cloudscraper default).
 
+## Property and stateful tests (Hypothesis)
+
+`tests/unit/property/` holds Hypothesis tests for the places where edge cases hide. Every strategy generates synthetic data only, so a printed failing example never holds a real voter.
+
+| File | What it covers |
+|---|---|
+| `test_validation_properties.py` | Record validation: VUIDs stay 10-digit strings, errors name fields and never echo values, CSV and canonicalization round trips, `extra` loses nothing, DOB and EDR rejects, precinct matching, `parse_voter` against an independent oracle |
+| `test_pure_properties.py` | Boundaries: Worker cron `should_dispatch` across the 2026-11-01 daylight-time switch and the end instant, scores and hashes, signed 64-bit row keys, `key_ranges` tiling, chunking and batching, age-tier birthdays |
+| `test_stateful_roster.py` | `RuleBasedStateMachine` models: roster-row diff writes (idempotent reload, crash then rerun, marker written last), the repeat build's distinct-count invariant, and the backfill sequence |
+
+Profiles are registered in `tests/conftest.py` and chosen by `HYPOTHESIS_PROFILE`, or `CI` in CI.
+
+| Profile | Use |
+|---|---|
+| `tx-dev` | Default locally. 50 examples, no deadline. |
+| `tx-ci` | Loaded when `CI` is set. Derandomized, 100 examples, no example database, prints the reproduction blob. |
+| `tx-thorough` | `HYPOTHESIS_PROFILE=tx-thorough uv run pytest tests/unit/property`. 2000 examples, for a deep manual run. |
+
+Conventions:
+
+- A property failure that is a real defect in `src/` is first committed as `@pytest.mark.xfail(strict=True, reason=...)` with the shrunk synthetic example, then fixed in its own change. A fixed defect drops the marker.
+- Pin every nasty case you find with `@example(...)` so it runs on every profile.
+- Assert behaviour against an oracle written from the requirement, not a copy of the code under test.
+- Keep a file under about 25 seconds on `tx-dev`. A failing stateful machine can take minutes to shrink.
+
 ## Coverage targets
 
 See project prompts and `docs/GUARDRAILS.md`. Unit tests should cover:
