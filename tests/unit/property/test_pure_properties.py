@@ -479,6 +479,16 @@ def test_a_bad_day_is_refused_naming_the_field_only() -> None:
 
 
 @settings(max_examples=1)
+@example(
+    [["\u00e9", None, "", "ab", "e\u0301", "\U0001f600"], [""], [None]],
+    [
+        (
+            "0000000001",
+            [("2026-10-21", "ALPHA", "IN-PERSON"), ("2026-10-22", "B\u00c9TA", "MAIL-IN")],
+            ["2026-10-23"],
+        )
+    ],
+)
 @given(
     st.lists(hash_values, min_size=1, max_size=10),
     st.lists(st.tuples(vuids, appearance_lists, removal_lists), min_size=1, max_size=10),

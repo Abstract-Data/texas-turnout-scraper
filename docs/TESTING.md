@@ -91,7 +91,7 @@ Conventions:
 - A property failure that is a real defect in `src/` is first committed as `@pytest.mark.xfail(strict=True, reason=...)` with the shrunk synthetic example, then fixed in its own change. A fixed defect drops the marker.
 - Pin every nasty case you find with `@example(...)` so it runs on every profile.
 - Assert behaviour against an oracle written from the requirement, not a copy of the code under test.
-- Keep a file under about 25 seconds on `tx-dev`. A failing stateful machine can take minutes to shrink.
+- Keep a file under about 25 seconds on `tx-dev`. A failing stateful machine can take minutes to shrink, and the machines cap runs at 20 steps even under `tx-thorough`.
 
 ## Coverage targets
 
