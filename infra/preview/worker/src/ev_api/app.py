@@ -28,6 +28,8 @@ from ev_api.read import (
 )
 from ev_api.roster_routes import register_roster_routes
 from ev_api.spike_portal import register_spike_routes
+from ev_api.spike_stage import register_stage_routes
+from ev_api.spike_workflow import register_spike_workflow_routes
 from texas_turnout_scraper.civix.read_client import http_path
 
 logger = logging.getLogger(__name__)
@@ -238,6 +240,8 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
 
     register_roster_routes(app, _deps_for_request)
     register_spike_routes(app, _deps_for_request)
+    register_stage_routes(app, _deps_for_request)
+    register_spike_workflow_routes(app, _deps_for_request)
 
     return app
 

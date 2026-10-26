@@ -69,7 +69,13 @@ def _unescape(data: bytes) -> bytes:
 
 
 class EnvelopeStreamDecoder:
-    """Incremental decoder for the Civix envelope. Memory is one chunk plus under 4 characters."""
+    """Incremental decoder for the Civix envelope. Memory is one chunk plus under 4 characters.
+
+    A caller that needs the decoded bytes rather than only their hash sets ``sink`` to a callback
+    (``spike_stage`` canonicalizes through it). The decoder itself never keeps them.
+    """
+
+    sink: Callable[[bytes], None] | None = None
 
     def __init__(self) -> None:
         self._sha256 = hashlib.sha256()
@@ -144,6 +150,8 @@ class EnvelopeStreamDecoder:
         if self.decoded_bytes > _MAX_DECODED_BYTES:
             raise EnvelopeError("too_large")
         self._sha256.update(raw)
+        if self.sink is not None:
+            self.sink(raw)
 
 
 async def body_chunks(body: Any) -> AsyncIterator[bytes]:

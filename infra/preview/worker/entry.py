@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from ev_api.app import app
 from ev_api.cron import run_scheduled
+from ev_api.spike_workflow import install_workflow
 
 
 def install_entrypoint() -> type | None:
@@ -41,3 +42,5 @@ def install_entrypoint() -> type | None:
 
 
 Default = install_entrypoint()
+# Temporary spike. The Workflow binding's class_name must match this module-level name.
+SpikeWorkflow = install_workflow()

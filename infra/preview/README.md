@@ -32,6 +32,66 @@ A push to `main` or `workflow_dispatch` on `main` runs two jobs in the GitHub En
 
 The dispatch token comes from the `preview` environment secret `EV_DISPATCH_GITHUB_TOKEN` (a fine-grained token with only Actions: write on this repository). The plan step passes it as `TF_VAR_github_dispatch_token`; the variable is `sensitive` and defaults to empty, and the `GITHUB_DISPATCH_TOKEN` `secret_text` binding is added only when it is non-empty. The saved plan carries the value, so the apply step does not need it. The token also lands in the Terraform state in the same private bucket and in the Worker binding; rotate it by changing the secret and running the Terraform workflow.
 
+## Workflow ingest spike (temporary)
+
+`spike_ingest.tf` is the second spike for the early-vote Workflow ingest (`docs/adr/014-cloudflare-workflow-ingest.md`). It is temporary and everything in it is named `spike`.
+
+| Resource | Name | Why |
+| --- | --- | --- |
+| `cloudflare_r2_bucket.spike_staging` | `tx-turnout-ev-staging-spike` | Private staging for the canonical day object and the per-range segments. No `cloudflare_r2_managed_domain` and no `cloudflare_r2_custom_domain` are declared, which are the only two ways a bucket is served publicly. The objects hold voter names, so it must stay private. |
+| `cloudflare_r2_bucket_lifecycle.spike_staging` | rule `spike-expire-1-day` | Owner decision 4. Deletes objects and aborts incomplete multipart uploads after `max_age = 86400` seconds. R2's own default for abandoned multipart uploads is 7 days, which is too long for voter data. |
+| `cloudflare_d1_database.spike_scratch` | `tx-turnout-ev-scratch` | Owner decision 7. Never added to `EV_D1_BINDINGS`, so the read API cannot reach it. |
+| `cloudflare_workflow.spike_ingest` | `tx-turnout-ev-spike`, class `SpikeWorkflow` | The Hello-world Workflow. `default_retention` is 1 day for success and error, so step outputs do not sit for the account default of 3 or 30 days. |
+
+The Worker version gains three bindings from `local.spike_bindings`: R2 `STAGING`, D1 `SCRATCH`, and Workflow `SPIKE_WORKFLOW`. `main.tf` carries two lines of the spike: `python_workflows` in `compatibility_flags`, and `local.spike_bindings` in the version's `bindings` concat. Python Workflows need both `python_workers` and `python_workflows` plus `compatibility_date` 2025-08-01 or later; the Worker is on 2026-10-17.
+
+`class_name` must equal the module-level `SpikeWorkflow` name in `worker/entry.py`. The class is built by `install_workflow()`, which returns `None` when the `workers` package is absent, so unit tests import the module without the runtime.
+
+### Post-apply checks
+
+Both routes need Access headers to pass the edge and a minted consumer token to pass the Worker, the same as every other route. Export `EV_API_HOST`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` and `EV_API_TOKEN` first; do not log any of them.
+
+```bash
+# 1. Start a 300-step run with one deliberate failure at step 7.
+curl -sS -X POST "https://$EV_API_HOST/spike/workflow/start?suffix=r1&steps=300&fail_at=7" \
+  -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  -H "Authorization: Bearer $EV_API_TOKEN"
+
+# 2. Start again with the same suffix. This is the duplicate-id question (R6).
+curl -sS -X POST "https://$EV_API_HOST/spike/workflow/start?suffix=r1&steps=300&fail_at=7" \
+  -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  -H "Authorization: Bearer $EV_API_TOKEN"
+
+# 3. Poll the status until it is not "running".
+curl -sS "https://$EV_API_HOST/spike/workflow/status?id=spike-r1" \
+  -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  -H "Authorization: Bearer $EV_API_TOKEN"
+
+# 4. Ask for more steps than the cap, to confirm the guard.
+curl -sS -X POST "https://$EV_API_HOST/spike/workflow/start?suffix=r2&steps=9999" \
+  -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  -H "Authorization: Bearer $EV_API_TOKEN"
+```
+
+| Response field | What it proves |
+| --- | --- |
+| `created: true` with an `instance_id` | The Terraform-declared `SPIKE_WORKFLOW` binding reaches a real Workflow and `create(id=, params=)` works from Python (R5). |
+| `created: false`, `duplicate: true`, `create_error.class` on call 2 | Workflows rejects a duplicate instance id, and `get` finds the existing one. This is what makes the cron's `ev-{election}-{yyyymmddhh}` id safe (R6). |
+| `status.output_counts.steps_run == 300` | A 300-step loop runs to the end inside one instance (R6, R12). |
+| `status.output_counts.steps_ok == 299` and `steps_caught == 1` | A failed step is catchable and the run continues, which is what lets one failed day not kill the run (R6). |
+| `status.converted: true` | A JS status object converts to Python through `to_py`. `converted: false` with a `raw_type` means it does not, and the real Workflow needs another reader. |
+| `status.output_counts` present at all | A step output under 1 MiB round-trips and is readable from the Worker (R12, R13). |
+| `steps: 400` on call 4 | The cap holds, so a caller cannot ask for an unbounded run. |
+| `ctx_probe.ok: true` in the Workflow's own output | `ctx` injection into a `ctx` parameter works. `ok: false` with an `error_class` means the real Workflow cannot read `attempt` from the context. |
+
+CPU per step is not in the response. Workers clocks do not advance during CPU, so read CPU milliseconds from Workers Logs for the Worker, not from any timing the route returns.
+
+To remove the spike: delete `spike_ingest.tf`, `worker/src/ev_api/spike_workflow.py`, `tests/unit/test_ev_spike_workflow.py`, this section, the two spike lines in `main.tf`, the two mount lines in `worker/src/ev_api/app.py`, and the import plus `SpikeWorkflow` export in `worker/entry.py`.
+
 ## Routing and Access
 
 Hostname choice: **Workers custom domain** on `abstractdata.io` (personal Cloudflare account), not `workers.dev`. Custom domain keeps preview off the shared `workers.dev` surface, matches production-like hostnames for Quick Results, and pairs with hostname-based Access. Cloudflare documents protecting Workers on custom domains via Access ([Cloudflare Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/), [custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/#require-sign-in-for-a-custom-domain)).
