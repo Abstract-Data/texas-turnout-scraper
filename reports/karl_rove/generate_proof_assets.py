@@ -17,7 +17,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     out = Path("dist/karl-rove-proof")
     data = example_report()
-    write_outputs(data, html_path=out / "karl-rove-report.html", pdf_path=out / "karl-rove-report.pdf")
+    write_outputs(
+        data,
+        html_path=out / "karl-rove-report.html",
+        pdf_path=out / "karl-rove-report.pdf",
+    )
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
