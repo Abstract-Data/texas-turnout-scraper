@@ -68,9 +68,7 @@ def render_html(data: KarlRoveReportData) -> str:
     banner = ""
     if data.is_fixture:
         banner = (
-            "<div class='fixture-banner' role='status'>"
-            "EXAMPLE DATA — not live API output"
-            "</div>"
+            "<div class='fixture-banner' role='status'>EXAMPLE DATA — not live API output</div>"
         )
     vep_rows = "\n".join(
         f"<tr><td>{y.vep_cohort_year}</td><td class='num'>{_fmt_int(y.registrants)}</td></tr>"
