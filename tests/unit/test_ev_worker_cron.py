@@ -7,7 +7,14 @@ import logging
 from datetime import datetime, timezone
 
 import pytest
-from ev_api.cron import DispatchError, dispatch_request, run_scheduled, should_dispatch
+from ev_api.cron import (
+    DispatchError,
+    body_text_for_log,
+    dispatch_error_message,
+    dispatch_request,
+    run_scheduled,
+    should_dispatch,
+)
 
 TOKEN = "github_pat_example_not_real_0123456789"
 DISPATCH_URL = (
@@ -27,13 +34,16 @@ class Env:
 
 
 class Sender:
-    def __init__(self, status: int = 204) -> None:
+    def __init__(self, status: int = 204, response_body: str = "") -> None:
         self.status = status
+        self.response_body = response_body
         self.calls: list[tuple[str, dict[str, str], dict[str, object]]] = []
 
-    async def __call__(self, url: str, headers: dict[str, str], body: dict[str, object]) -> int:
+    async def __call__(
+        self, url: str, headers: dict[str, str], body: dict[str, object]
+    ) -> tuple[int, str]:
         self.calls.append((url, headers, body))
-        return self.status
+        return self.status, self.response_body
 
 
 def run(env: Env, now: datetime, send: Sender) -> None:
@@ -151,3 +161,42 @@ def test_any_other_status_raises_with_the_number_only(
     assert TOKEN not in message
     assert "Bearer" not in message
     assert TOKEN not in caplog.text
+
+
+def test_422_disabled_workflow_logs_body_and_hints_in_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    body = '{"message":"Workflow early-vote-sync.yml is disabled"}'
+    with caplog.at_level(logging.ERROR, logger="ev_api.cron"), pytest.raises(DispatchError) as raised:
+        run(
+            Env(TOKEN),
+            utc("2026-11-02T23:00:00"),
+            Sender(422, body),
+        )
+    assert "disabled" in str(raised.value).lower()
+    assert "workflow appears disabled" in str(raised.value)
+    assert "HTTP 422" in caplog.text
+    assert "disabled" in caplog.text
+    assert TOKEN not in caplog.text
+    assert "Bearer" not in caplog.text
+
+
+def test_non_422_failure_logs_truncated_body_without_secrets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    body = "Bad credentials " + ("x" * 400)
+    with caplog.at_level(logging.ERROR, logger="ev_api.cron"), pytest.raises(DispatchError) as raised:
+        run(Env(TOKEN), utc("2026-11-02T23:00:00"), Sender(401, body))
+    assert str(raised.value) == "early-vote dispatch failed: HTTP 401"
+    assert "workflow appears disabled" not in str(raised.value)
+    logged = body_text_for_log(body)
+    assert len(logged) <= 301
+    assert logged.endswith("…")
+    assert logged in caplog.text
+    assert TOKEN not in caplog.text
+
+
+def test_dispatch_error_message_disabled_only_for_422_with_disabled_text() -> None:
+    assert "disabled" in dispatch_error_message(422, "Workflow is disabled").lower()
+    assert dispatch_error_message(422, "ref not found") == "early-vote dispatch failed: HTTP 422"
+    assert dispatch_error_message(401, "disabled") == "early-vote dispatch failed: HTTP 401"
