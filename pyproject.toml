@@ -26,6 +26,7 @@ waf = ["cloudscraper>=1.2.71"]
 loader = ["sqlmodel>=0.0.48"]
 # Offline geography build only (geo_build). Nothing the loader or Worker imports needs it.
 geo = ["shapely>=2.1", "pyproj>=3.6", "pyshp>=2.3"]
+reports = ["playwright>=1.49.0"]
 
 [project.scripts]
 tx-turnout = "texas_turnout_scraper.cli:app"
@@ -115,6 +116,7 @@ max-args = 8
 "src/texas_turnout_scraper/roster.py" = ["SLF001"]
 # DuckDB match stays one function per WS-5C; report/enrichment helpers land later.
 "src/texas_turnout_scraper/voterfile.py" = ["C901", "PLR0915", "PLR0912", "DTZ007"]
+"reports/**/*.py" = ["PLR0913"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["texas_turnout_scraper"]
@@ -124,6 +126,7 @@ testpaths = ["tests"]
 norecursedirs = ["vendor", ".git", "node_modules", ".hypothesis"]
 asyncio_mode = "auto"
 python_files = ["test_*.py", "check_*.py"]
+pythonpath = ["."]
 
 [tool.ty.environment]
 python-version = "3.10"
