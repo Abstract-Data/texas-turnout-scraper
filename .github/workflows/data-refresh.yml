@@ -1,8 +1,10 @@
+# Manual-only legacy path: live early-vote data is D1/KV via early-vote-sync (ADR-013/014).
+# Per-voter roster CSVs must never be committed to this repo (PII + branch protection).
+# If GitHub Pages CSV API (ADR-003) is revived, publish aggregate-only artifacts to a
+# separate gh-pages branch — not main.
 name: Data Refresh
 
 on:
-  schedule:
-    - cron: "0 8 * * *" # 8:00 UTC daily (3 AM CT)
   workflow_dispatch:
     inputs:
       election_id:
@@ -51,8 +53,7 @@ jobs:
       - name: Refresh Civix elections
         id: civix_refresh
         if: >-
-          (github.event_name == 'schedule' ||
-          github.event.inputs.source == 'all' ||
+          (github.event.inputs.source == 'all' ||
           github.event.inputs.source == 'civix') &&
           (github.event.inputs.source != 'legacy')
         continue-on-error: true
@@ -73,8 +74,7 @@ jobs:
       - name: Refresh legacy elections
         id: legacy_refresh
         if: >-
-          (github.event_name == 'schedule' ||
-          github.event.inputs.source == 'all' ||
+          (github.event.inputs.source == 'all' ||
           github.event.inputs.source == 'legacy') &&
           (github.event.inputs.source != 'civix')
         continue-on-error: true
@@ -126,11 +126,6 @@ jobs:
               exit 1
             elif [ "$source" = "legacy" ] && $legacy_failed; then
               echo "Legacy refresh failed for election_id=$election_id"
-              exit 1
-            fi
-          elif [ "$EVENT_NAME" = "schedule" ]; then
-            if $civix_failed && $legacy_failed; then
-              echo "Both civix and legacy scheduled refresh steps failed"
               exit 1
             fi
           fi
