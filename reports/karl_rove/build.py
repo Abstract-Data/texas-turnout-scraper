@@ -102,7 +102,9 @@ def run_build(
     if fixture:
         data = build_fixture_report()
     else:
-        data = asyncio.run(build_live_report(**live_kwargs))  # type: ignore[arg-type]
+        data = asyncio.run(
+            build_live_report(**live_kwargs),  # type: ignore[arg-type]  # reason: **live_kwargs is object-typed; ty cannot verify unpack to build_live_report kwargs
+        )
     pdf_path = output_dir / "karl-rove-report.pdf" if write_pdf else None
     write_outputs(data, html_path=output_dir / "karl-rove-report.html", pdf_path=pdf_path)
     return data
