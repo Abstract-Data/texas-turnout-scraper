@@ -109,8 +109,9 @@ export class EvIngest extends DurableObject<Env> {
 
 	async startRun(mode: RunMode, trigger: RunState["trigger"]): Promise<{ started: boolean; detail: string }> {
 		const container = this.ctx.container!;
-		// `running` is true as soon as start() returns, so a second caller sees it.
-		if (container.running || (await this.ctx.storage.get<RunState>(RUN_KEY))) {
+		// No await before start(): `running` is true as soon as start() returns, so a second
+		// caller is refused here.
+		if (container.running) {
 			return { started: false, detail: "a run is in progress" };
 		}
 		container.start({
@@ -127,9 +128,19 @@ export class EvIngest extends DurableObject<Env> {
 				R2_SECRET_ACCESS_KEY: this.env.R2_SECRET_ACCESS_KEY,
 			},
 		});
-		await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
-		await this.ctx.storage.put<RunState>(RUN_KEY, { mode, trigger, startedAt: Date.now() });
-		await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+		try {
+			const previous = await this.ctx.storage.get<RunState>(RUN_KEY);
+			if (previous) {
+				log("ev-ingest lost", { ...previous, detail: "no Container for the recorded run" });
+			}
+			await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
+			await this.ctx.storage.put<RunState>(RUN_KEY, { mode, trigger, startedAt: Date.now() });
+			await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+		} catch (error) {
+			// Without the record and the alarm nothing would ever stop this Container.
+			await this.finish(container);
+			throw error;
+		}
 		log("ev-ingest started", { mode, trigger });
 		return { started: true, detail: `${mode} run started` };
 	}
@@ -153,24 +164,28 @@ export class EvIngest extends DurableObject<Env> {
 			await this.ctx.storage.delete(RUN_KEY);
 			return;
 		}
-		const exit = await run(container, ["cat", RUN_EXIT]);
-		if (exit.exitCode !== 0) {
-			if (Date.now() - state.startedAt > MAX_RUN_MS) {
-				log("ev-ingest timed out", { ...state, seconds });
+		try {
+			const exit = await run(container, ["cat", RUN_EXIT]);
+			if (exit.exitCode === 0) {
+				const output = await run(container, ["cat", RUN_LOG]);
+				log("ev-ingest finished", {
+					...state,
+					seconds,
+					exit_code: Number(exit.stdout.trim()),
+					report: runReport(output.stdout),
+				});
 				await this.finish(container);
 				return;
 			}
-			await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+		} catch (error) {
+			log("ev-ingest check failed", { ...state, seconds, error: error instanceof Error ? error.name : "unknown" });
+		}
+		if (Date.now() - state.startedAt > MAX_RUN_MS) {
+			log("ev-ingest timed out", { ...state, seconds });
+			await this.finish(container);
 			return;
 		}
-		const output = await run(container, ["cat", RUN_LOG]);
-		log("ev-ingest finished", {
-			...state,
-			seconds,
-			exit_code: Number(exit.stdout.trim()),
-			report: runReport(output.stdout),
-		});
-		await this.finish(container);
+		await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
 	}
 
 	private async finish(container: Container): Promise<void> {
