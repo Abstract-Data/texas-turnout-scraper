@@ -361,7 +361,7 @@ def test_county_spellings_resolve_to_one_fips(name: str, fips: str) -> None:
     assert county_fips(name) == fips
 
 
-def test_the_crosswalk_matches_the_geography_file_and_the_vendored_table() -> None:
+def test_the_crosswalk_matches_the_geography_file() -> None:
     areas = json.loads((ROOT / "data/geo/tx_geo.json").read_text())["areas"]
     geo = {
         county_key(a["name"]): "48" + str(a["code"]).zfill(3)
@@ -370,11 +370,18 @@ def test_the_crosswalk_matches_the_geography_file_and_the_vendored_table() -> No
     }
     assert COUNTY_FIPS == geo
     assert len(COUNTY_FIPS) == 254
-    path = (
-        ROOT
-        / "vendor/voterfile-audit-pipeline/src/voterfile_audit_pipeline/reference/county_fips.py"
-    )
-    spec = importlib.util.spec_from_file_location("vendored_county_fips", path)
+
+
+_VENDORED_FIPS = (
+    ROOT / "vendor/voterfile-audit-pipeline/src/voterfile_audit_pipeline/reference/county_fips.py"
+)
+
+
+@pytest.mark.skipif(
+    not _VENDORED_FIPS.exists(), reason="voterfile-audit-pipeline submodule not checked out"
+)
+def test_the_crosswalk_matches_the_vendored_voterfile_table() -> None:
+    spec = importlib.util.spec_from_file_location("vendored_county_fips", _VENDORED_FIPS)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
