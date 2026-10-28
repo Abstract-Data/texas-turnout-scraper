@@ -61,14 +61,14 @@ from texas_turnout_scraper.voter_geo_tables import (
     SPLIT_CD,
     SPLIT_HD,
     SPLIT_SD,
+    VOTER_GEO_BASE_PRESENT_SQL,
+    VOTER_GEO_BASE_TABLE_COUNT,
     VOTER_GEO_COLUMNS,
     VOTER_GEO_DELETE_SQL,
     VOTER_GEO_LIVE_ROWS_SQL,
     VOTER_GEO_META_SELECT_SQL,
     VOTER_GEO_META_UPSERT_SQL,
-    VOTER_GEO_PRESENT_SQL,
     VOTER_GEO_STORED_HASHES_SQL,
-    VOTER_GEO_TABLE_COUNT,
     VOTER_GEO_UPSERT_SQL,
     VOTER_GEO_VERSION,
     VUID_WIDTH,
@@ -445,7 +445,8 @@ def _stored_meta(store: VoterGeoStore, database_id: str) -> dict[str, str]:
 
 
 def _tables_present(store: VoterGeoStore, database_id: str) -> bool:
-    return _count(store, database_id, VOTER_GEO_PRESENT_SQL) == VOTER_GEO_TABLE_COUNT
+    # Only the Stage 1 tables: a database built before the point tables existed still diffs.
+    return _count(store, database_id, VOTER_GEO_BASE_PRESENT_SQL) == VOTER_GEO_BASE_TABLE_COUNT
 
 
 def _geo_present(store: VoterGeoStore, database_id: str) -> bool:

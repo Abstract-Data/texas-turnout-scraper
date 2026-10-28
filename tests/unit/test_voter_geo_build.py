@@ -549,7 +549,10 @@ def test_the_sync_schema_creates_the_voter_geo_tables() -> None:
         assert sql in _SCHEMA_CREATES
 
 
-_HEAVY = "('sqlmodel', 'sqlalchemy', 'duckdb', 'polars', 'geopandas', 'shapely', 'voterfile_audit_pipeline')"
+_HEAVY = (
+    "('sqlmodel', 'sqlalchemy', 'duckdb', 'polars', 'geopandas', 'shapely', "
+    "'voterfile_audit_pipeline')"
+)
 _BUILD_HEAVY = "('duckdb', 'polars', 'geopandas', 'shapely', 'voterfile_audit_pipeline')"
 
 

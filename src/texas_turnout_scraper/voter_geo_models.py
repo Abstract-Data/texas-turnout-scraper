@@ -4,25 +4,31 @@ Loader-only (``loader`` extra), like ``repeat_models``: the Worker and ``early_v
 the committed DDL in ``voter_geo_tables`` instead. The build always goes through
 ``model_validate``. ``VoterGeo`` validates without a table (a table model routes every field set
 through SQLAlchemy's attribute instrumentation, ADR-011); ``VoterGeoRow`` is the table.
-Validation errors name fields, never values. See docs/adr/015-voter-geography.md.
+Validation errors name fields, never values. ``VoterGeoPoint`` is the Stage 2 residential point
+(only the local ``voter_geo`` module writes it); its table carries the ADR-015 §8 CHECKs.
+See docs/adr/015-voter-geography.md.
 """
 
 from __future__ import annotations
 
+import math
 import re
 
 from pydantic import field_validator, model_validator
-from sqlalchemy import Text
+from sqlalchemy import CheckConstraint, Text
 from sqlmodel import Field, SQLModel
 
 from texas_turnout_scraper.voter_geo_tables import (
     FIPS_WIDTH,
     FLAGS_ALL,
+    GEOCODE_QUALITY_POINT,
+    GEOCODE_SOURCE_POINT,
     SPLITS_ALL,
     VUID_WIDTH,
 )
 
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _digits(value: str, width: int) -> bool:
@@ -91,6 +97,104 @@ class VoterGeoMeta(SQLModel, table=True):
     """What the last build saw. Written after every other voter_geo write."""
 
     __tablename__ = "voter_geo_meta"
+
+    name: str = Field(primary_key=True, sa_type=Text)
+    value: str = Field(sa_type=Text)
+
+
+class VoterGeoPoint(SQLModel):
+    """A voter's residential address point and the districts under it.
+
+    Only matched points exist, so ``lat`` and ``lon`` are always set; the columns are nullable
+    because the table says "set exactly when the quality is ``address_point``" as a CHECK.
+    """
+
+    vuid: str = Field(primary_key=True, sa_type=Text)
+    lat: float | None = None
+    lon: float | None = None
+    cd: str | None = Field(default=None, sa_type=Text)
+    sd: str | None = Field(default=None, sa_type=Text)
+    hd: str | None = Field(default=None, sa_type=Text)
+    geocode_source: str = Field(sa_type=Text)
+    geocode_quality: str = Field(sa_type=Text)
+    address_points_vintage: str = Field(sa_type=Text)
+    src_hash: int
+    matched_at: str = Field(sa_type=Text)
+
+    @field_validator("vuid")
+    @classmethod
+    def _vuid(cls, value: str) -> str:
+        if not _digits(value, VUID_WIDTH):
+            raise ValueError("not a VUID")
+        return value
+
+    @field_validator("lat")
+    @classmethod
+    def _lat(cls, value: float | None) -> float | None:
+        if value is not None and not (math.isfinite(value) and -90 <= value <= 90):
+            raise ValueError("latitude out of range")
+        return value
+
+    @field_validator("lon")
+    @classmethod
+    def _lon(cls, value: float | None) -> float | None:
+        if value is not None and not (math.isfinite(value) and -180 <= value <= 180):
+            raise ValueError("longitude out of range")
+        return value
+
+    @field_validator("geocode_source")
+    @classmethod
+    def _source(cls, value: str) -> str:
+        if value != GEOCODE_SOURCE_POINT:
+            raise ValueError("unknown geocode source")
+        return value
+
+    @field_validator("geocode_quality")
+    @classmethod
+    def _quality(cls, value: str) -> str:
+        if value != GEOCODE_QUALITY_POINT:
+            raise ValueError("unknown geocode quality")
+        return value
+
+    @field_validator("address_points_vintage")
+    @classmethod
+    def _vintage(cls, value: str) -> str:
+        if _DATE.fullmatch(value) is None:
+            raise ValueError("not a vintage date")
+        return value
+
+    @field_validator("matched_at")
+    @classmethod
+    def _matched_at(cls, value: str) -> str:
+        if _TIMESTAMP.fullmatch(value) is None:
+            raise ValueError("not a UTC timestamp")
+        return value
+
+    @model_validator(mode="after")
+    def _point_is_whole(self) -> VoterGeoPoint:
+        if self.lat is None or self.lon is None:
+            raise ValueError("an address point has both lat and lon")
+        return self
+
+
+class VoterGeoPointRow(VoterGeoPoint, table=True):
+    """The ``voter_geo_point`` table; its DDL is the committed ``VOTER_GEO_POINT_TABLE_SQL``."""
+
+    __tablename__ = "voter_geo_point"
+    __table_args__ = (
+        CheckConstraint(
+            f"(lat IS NOT NULL AND lon IS NOT NULL) = (geocode_quality = '{GEOCODE_QUALITY_POINT}')"
+        ),
+        CheckConstraint(f"geocode_quality = '{GEOCODE_QUALITY_POINT}'"),
+        CheckConstraint(f"geocode_source = '{GEOCODE_SOURCE_POINT}'"),
+        {"sqlite_with_rowid": False},
+    )
+
+
+class VoterGeoPointMeta(SQLModel, table=True):
+    """What the last point build saw. Written after every other voter_geo_point write."""
+
+    __tablename__ = "voter_geo_point_meta"
 
     name: str = Field(primary_key=True, sa_type=Text)
     value: str = Field(sa_type=Text)

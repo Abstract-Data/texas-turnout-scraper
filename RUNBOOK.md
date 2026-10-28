@@ -251,8 +251,27 @@ matches reports `status=unchanged` and writes nothing. After a change to how row
 `VOTER_GEO_VERSION` in `voter_geo_tables.py`.
 
 **Reading it.** `GET /elections/{id}/roster/{ev_date}/geo?page=0` through `63` with a roster-scoped
-token. The pages partition the day's live VUIDs. A 503 `voter_geo_not_loaded` means the tables do
-not exist yet.
+token. The pages partition the day's live rows; a voter listed twice on one day can appear on two
+pages, so dedupe on `vuid`. A 503 `voter_geo_not_loaded` means the tables do not exist yet.
+
+**Residential points (`voter_geo_point`, Stage 2).** Local only: it reads the voterfile's address
+columns, which are PII. It geocodes offline against the TxGIO address points and never calls a
+network geocoder. Writing to the production D1 needs the owner's approval each time. The pipeline
+needs Python 3.11 or later, so it runs in an ephemeral env from the repo root:
+
+```bash
+REF=/path/to/voterfile-audit-pipeline/data/reference
+op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- env PYTHONPATH=src \
+  uv run --no-project --python 3.12 --with ".[loader,voterfile]" \
+  --with ./vendor/voterfile-audit-pipeline \
+  python -m texas_turnout_scraper.voter_geo --election-id 53815 \
+  --voterfile /path/to/voterfile.csv --points-dir "$REF/tx_address_points/parquet" \
+  --shapefile-dir "$REF/tiger" --dry-run
+```
+
+Replace `--dry-run` with `--apply` only with the owner's approval. The run stops before writing
+if a plan layer is not `PLANC2333`, `PLANS2168` or `PLANH2316`, or if the address-point
+`manifest.json` is missing. Output is counts only.
 
 ### An election has stopped updating on Pages (held back for size)
 
