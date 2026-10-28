@@ -1,9 +1,10 @@
 """Per-voter geography for one roster day (VUIDs and precincts, no names), roster scope only.
 
 ``GET /elections/{id}/roster/{ev_date}/geo?page=k`` serves the ``k``th of ``VOTER_GEO_PAGES``
-row-hash ranges of the day's live roster rows, joined to ``voter_geo``. One D1 query returns the
-page as one JSON text cell and the Worker wraps it without parsing, so CPU per request is
-constant. See docs/adr/015-voter-geography.md.
+row-hash ranges of the day's live roster rows, joined to ``voter_geo`` and, where a voter has a
+residential point, ``voter_geo_point``. One D1 query returns the page as one JSON text cell and the
+Worker wraps it without parsing, so CPU per request is constant. See
+docs/adr/015-voter-geography.md.
 """
 
 from __future__ import annotations
@@ -48,14 +49,23 @@ def _page_number(text: str | None) -> int | None:
     return page if page < VOTER_GEO_PAGES else None
 
 
-async def _signature(db: D1Database) -> str | None:
-    """The last build's signature, or None when the tables or the signature are missing."""
+async def _signatures(db: D1Database) -> tuple[str, str] | None:
+    """The last build's signature and the last point apply's ("" before the first), or None.
+
+    None means the tables or the Stage 1 signature are missing. The point signature is part of the
+    ETag, since a point apply changes served rows without touching the Stage 1 signature.
+    """
     present = await _d1_fetch_all(db.prepare(VOTER_GEO_PRESENT_SQL))
     if not present or _d1_int(_row_value(present[0], "n")) != VOTER_GEO_TABLE_COUNT:
         return None
     rows = await _d1_fetch_all(db.prepare(VOTER_GEO_SIGNATURE_SQL))
-    value = _row_value(rows[0], "value") if rows else None
-    return value if isinstance(value, str) and value else None
+    if not rows:
+        return None
+    signature = _row_value(rows[0], "signature")
+    point_signature = _row_value(rows[0], "point_signature")
+    if not isinstance(signature, str) or not signature:
+        return None
+    return signature, point_signature if isinstance(point_signature, str) else ""
 
 
 class _VoterGeoApi(_RosterApi):
@@ -80,10 +90,12 @@ class _VoterGeoApi(_RosterApi):
         day = await find_day(db, election_id, ev_date)
         if day is None:
             return JSONResponse({"detail": "not_found"}, status_code=404)
-        signature = await _signature(db)
-        if signature is None:
+        signatures = await _signatures(db)
+        if signatures is None:
             return JSONResponse({"detail": VOTER_GEO_NOT_LOADED_DETAIL}, status_code=503)
-        tag = f"{day_etag(day)}.{signature[:_SIGNATURE_IN_TAG]}.p{number}"
+        signature, point_signature = signatures
+        point_part = f".{point_signature[:_SIGNATURE_IN_TAG]}" if point_signature else ""
+        tag = f"{day_etag(day)}.{signature[:_SIGNATURE_IN_TAG]}{point_part}.p{number}"
         headers = {"ETag": _quoted(tag), "Cache-Control": _CACHE_CONTROL}
         if _etag_matches(request.headers.get("if-none-match"), tag):
             return Response(status_code=304, headers=headers)

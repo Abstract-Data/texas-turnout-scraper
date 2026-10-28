@@ -1,7 +1,7 @@
 # ADR-015: Per-voter geography in D1
 
 **Date:** 2026-10-27
-**Status:** Proposed (Stage 1 built; Stage 2 waits for the owner's explicit approval)
+**Status:** Proposed (both stages built; neither applied to the production D1)
 
 ## Context
 
@@ -19,7 +19,7 @@ them. Geography is computed after the roster load and stored. It is never comput
 ## Decision
 
 1. **Two stages, two tables, one writer each.** Stage 1 (`voter_geo`) is derived from the roster
-   and the ADR-010 tables, and adds no new PII. Stage 2 (`voter_geo_point`, not built yet) holds
+   and the ADR-010 tables, and adds no new PII. Stage 2 (`voter_geo_point`) holds
    residential points from the owner's voterfile and is written only on the owner's machine. The
    two never write the same table, so a Stage 1 rebuild cannot overwrite a Stage 2 point and the
    restricted table can be dropped or scoped on its own. The read route joins them.
@@ -78,24 +78,55 @@ them. Geography is computed after the roster load and stored. It is never comput
    point is never stored or served as a residence. Stage 2 puts the invariant in its table as a
    `CHECK`, since `CREATE TABLE IF NOT EXISTS` cannot add one later.
 
-## Stage 2 (proposed, waits for approval)
+## Stage 2: residential points
 
-Stage 2 runs only on the owner's machine, like ADR-011. No workflow runs it. It reuses the
-voterfile-audit-pipeline at the pinned rev through an optional extra that only this module
-imports. The pipeline needs Python 3.11 or later, so the extra carries that marker.
+The owner approved Stage 2 on 2026-10-27. Writing points to the production D1 needs a separate
+approval. Stage 2 runs only on the owner's machine, like ADR-011. No workflow runs it.
 
-- Read the target VUIDs from D1 as `voter_link.target_vuids` does and pass them to DuckDB through
-  a temporary CSV.
-- Normalize the selected rows with the pipeline's ingest. This voterfile vintage has no `RSTPRE`
-  column, and the directional survives only in `RADDRESS`. The pipeline's ingest recovers it
-  (`_recover_pre_directional`, pipeline ADR-0023) and renames the components to the names
-  `geocode_frame_offline` expects by default.
-- Geocode with `geocode_frame_offline` against the TxGIO address-point parquet (vintage
-  2026-03-18). Matching is exact on a normalized key and never fuzzy. `geocoding.geocode_batch`
-  is never used, because it sends addresses to the Census geocoder and Nominatim.
-- Assign districts with `assign_districts` on the matched points, against the plan layers.
-- Write `voter_geo_point (vuid, lat, lon, cd, sd, hd, geocode_source, geocode_quality,
-  address_points_vintage, matched_at)` with the `CHECK` of §8, through the same diff-only batches.
+9. **Environment.** The pipeline needs Python 3.11 or later and this project's venv is 3.10. Stage
+   2 runs in an ephemeral environment built from the pinned submodule:
+   `PYTHONPATH=src uv run --no-project --python 3.12 --with ".[loader,voterfile]" --with
+   ./vendor/voterfile-audit-pipeline python -m texas_turnout_scraper.voter_geo ...`. Neither
+   `pyproject.toml` nor `uv.lock` names the pipeline, so CI never needs the private repo.
+   `PYTHONPATH=src` is there because uv can reuse a cached wheel of this project that predates a
+   change. polars, geopandas, duckdb and the pipeline are imported only inside functions, and a
+   subprocess test holds that.
+10. **Inputs.** Target VUIDs come from D1 as in `voter_link.target_vuids`, and reach DuckDB through
+    a temporary CSV. The read selects only `VUID COUNTY RADDRESS RHNUM RDESIG RSTNAME RSTTYPE
+    RSTSFX RUNUM RUTYPE RCITY RZIP CDPLANC2333 SD2022 HD2022`. Names, birth dates, mailing
+    addresses and history are never read.
+11. **Normalization.** The pipeline's public `ingest` requires name columns, so it is not called.
+    `voter_geo` runs the same steps in the same order: null spellings, `normalize_voter_columns`,
+    strip and upper-case, `_recover_pre_directional`, `_combine_address_component_columns` and
+    `_combine_address_unit_columns`. This voterfile vintage has no `RSTPRE`. The directional
+    survives only in `RADDRESS`, and `_recover_pre_directional` (pipeline ADR-0023) recovers it.
+    The frame then carries the column names `geocode_frame_offline` expects by default. Duplicate
+    VUIDs keep the last row, as `ingest` does. These are private functions at a pinned rev, so a
+    submodule bump must be checked against them.
+12. **No network geocoder.** `geocode_frame_offline` matches exactly on a normalized key against the
+    local TxGIO parquet (vintage 2026-03-18) and never fuzzily. The pipeline's
+    `stages.geography` package imports `geocoding.geocode_batch` (Census, then Nominatim) when it
+    loads. `voter_geo` therefore registers a tripwire module under that name first. The real
+    module never runs, and a call raises. It refuses to start if the real module is already
+    loaded. A test holds this.
+13. **Districts.** `assign_districts` places each matched point in the plan layers. A layer folder
+    must hold exactly one `.shp`, named for `PLANC2333`, `PLANS2168` or `PLANH2316` (the ADR-010
+    plans), or the run stops before any write. A point inside no polygon keeps a NULL district.
+    The precinct stays the Stage 1 alias: the pipeline's precinct layer is the 2020 VTD file,
+    which ADR-010 rejected.
+14. **Table.** `voter_geo_point (vuid, lat, lon, cd, sd, hd, geocode_source, geocode_quality,
+    address_points_vintage, src_hash, matched_at)`, `WITHOUT ROWID`, one row per matched point
+    only. Three `CHECK`s: `lat` and `lon` are both set exactly when `geocode_quality` is
+    `address_point`; `geocode_quality` is `address_point`; `geocode_source` is
+    `txgio_address_point`. Coordinates are rounded to 6 decimals. `voter_geo_point_meta` holds a
+    `signature` over the sorted `src_hash` values and the vintage, plus the vintage, the plan
+    names, the pipeline rev, the voterfile name and size, and the counts. Writes are diff-only as
+    in Stage 1. A point whose voter is no longer a target or no longer geocodes is deleted. An
+    apply refuses to delete every stored point when nothing geocoded.
+15. **Route.** When a point row exists, the route serves its `lat`, `lon` and districts with
+    `district_source` `address_point` and `geocode_quality` `address_point`. Otherwise it serves
+    the Stage 1 fields. The ETag adds the point signature when one exists, so an apply of points
+    alone still changes it.
 
 ## Consequences
 

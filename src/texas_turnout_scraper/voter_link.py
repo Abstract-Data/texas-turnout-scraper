@@ -161,20 +161,22 @@ def target_vuids(store: VoterStore, database_id: str, election_id: str) -> set[s
     return targets
 
 
-def voterfile_sql() -> str:
-    """The 21 chosen columns of the rows whose VUID is in the target file. Parameters: voterfile
-    path, target file path."""
-    columns = ", ".join(f'"{column}"' for column in VOTERFILE_COLUMNS)
+def voterfile_sql(columns: Sequence[str] = VOTERFILE_COLUMNS) -> str:
+    """The chosen columns (the 21 history ones by default) of the rows whose VUID is in the target
+    file. Parameters: voterfile path, target file path."""
+    selected = ", ".join(f'"{column}"' for column in columns)
     return (
-        f"SELECT {columns} FROM read_csv(?, header = true, all_varchar = true, "
+        f"SELECT {selected} FROM read_csv(?, header = true, all_varchar = true, "
         "strict_mode = false, ignore_errors = true) "
         f"WHERE lpad(trim(\"VUID\"), {VUID_WIDTH}, '0') IN "
         "(SELECT vuid FROM read_csv(?, header = true, columns = {'vuid': 'VARCHAR'}))"
     )
 
 
-def read_voterfile(path: Path, targets: Iterable[str]) -> Iterator[dict[str, str | None]]:
-    """Voterfile rows for ``targets`` only, keyed by the voterfile column names."""
+def read_voterfile(
+    path: Path, targets: Iterable[str], columns: Sequence[str] = VOTERFILE_COLUMNS
+) -> Iterator[dict[str, str | None]]:
+    """Voterfile rows for ``targets`` only, keyed by the voterfile column names in ``columns``."""
     import duckdb
 
     with tempfile.TemporaryDirectory() as folder:
@@ -185,13 +187,13 @@ def read_voterfile(path: Path, targets: Iterable[str]) -> Iterator[dict[str, str
         connection = duckdb.connect()
         try:
             try:
-                cursor = connection.execute(voterfile_sql(), [str(path), str(target_file)])
+                cursor = connection.execute(voterfile_sql(columns), [str(path), str(target_file)])
             except duckdb.Error as error:
                 # DuckDB messages can quote a line of the file; keep only the error type.
                 raise EarlyVoteSyncError(f"voterfile read failed: {type(error).__name__}") from None
             while rows := cursor.fetchmany(FETCH_ROWS):
                 for row in rows:
-                    yield dict(zip(VOTERFILE_COLUMNS, row, strict=True))
+                    yield dict(zip(columns, row, strict=True))
         finally:
             connection.close()
 

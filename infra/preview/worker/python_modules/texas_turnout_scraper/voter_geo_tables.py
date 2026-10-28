@@ -10,6 +10,12 @@ from __future__ import annotations
 
 # Part of the build signature, so a change to how rows are derived rebuilds them.
 VOTER_GEO_VERSION = 1
+# The same for voter_geo_point, which only the local voter_geo module writes (Stage 2).
+VOTER_GEO_POINT_VERSION = 1
+GEOCODE_SOURCE_POINT = "txgio_address_point"
+GEOCODE_QUALITY_POINT = "address_point"
+# A residential point is stored to 6 decimals (about 0.1 m), like the ADR-010 area points.
+COORD_DECIMALS = 6
 VUID_WIDTH = 10
 FIPS_WIDTH = 3
 
@@ -33,13 +39,44 @@ VOTER_GEO_META_TABLE_SQL = (
     "CREATE TABLE IF NOT EXISTS voter_geo_meta (name TEXT NOT NULL, value TEXT NOT NULL, "
     "PRIMARY KEY (name))"
 )
-VOTER_GEO_SCHEMA_CREATES: tuple[str, ...] = (VOTER_GEO_TABLE_SQL, VOTER_GEO_META_TABLE_SQL)
-
-VOTER_GEO_PRESENT_SQL = (
-    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN "
-    "('voter_geo', 'voter_geo_meta')"
+# Stage 2: matched residential points only, one writer (the local voter_geo module). The CHECKs
+# are the ADR-015 §8 invariant, since CREATE TABLE IF NOT EXISTS cannot add one later.
+VOTER_GEO_POINT_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS voter_geo_point (vuid TEXT NOT NULL, lat FLOAT, lon FLOAT, "
+    "cd TEXT, sd TEXT, hd TEXT, geocode_source TEXT NOT NULL, geocode_quality TEXT NOT NULL, "
+    "address_points_vintage TEXT NOT NULL, src_hash INTEGER NOT NULL, matched_at TEXT NOT NULL, "
+    "PRIMARY KEY (vuid), "
+    "CHECK ((lat IS NOT NULL AND lon IS NOT NULL) = (geocode_quality = 'address_point')), "
+    "CHECK (geocode_quality = 'address_point'), "
+    "CHECK (geocode_source = 'txgio_address_point')) WITHOUT ROWID"
 )
-VOTER_GEO_TABLE_COUNT = 2
+VOTER_GEO_POINT_META_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS voter_geo_point_meta (name TEXT NOT NULL, value TEXT NOT NULL, "
+    "PRIMARY KEY (name))"
+)
+VOTER_GEO_SCHEMA_CREATES: tuple[str, ...] = (
+    VOTER_GEO_TABLE_SQL,
+    VOTER_GEO_META_TABLE_SQL,
+    VOTER_GEO_POINT_TABLE_SQL,
+    VOTER_GEO_POINT_META_TABLE_SQL,
+)
+
+
+def _present_sql(names: tuple[str, ...]) -> str:
+    quoted = ", ".join(f"'{name}'" for name in names)
+    return f"SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ({quoted})"
+
+
+# The Stage 1 build checks only its own tables, so it still works before the point tables exist.
+VOTER_GEO_BASE_TABLES = ("voter_geo", "voter_geo_meta")
+VOTER_GEO_POINT_TABLES = ("voter_geo_point", "voter_geo_point_meta")
+VOTER_GEO_BASE_PRESENT_SQL = _present_sql(VOTER_GEO_BASE_TABLES)
+VOTER_GEO_BASE_TABLE_COUNT = len(VOTER_GEO_BASE_TABLES)
+VOTER_GEO_POINT_PRESENT_SQL = _present_sql(VOTER_GEO_POINT_TABLES)
+VOTER_GEO_POINT_TABLE_COUNT = len(VOTER_GEO_POINT_TABLES)
+# The route joins all of them.
+VOTER_GEO_PRESENT_SQL = _present_sql((*VOTER_GEO_BASE_TABLES, *VOTER_GEO_POINT_TABLES))
+VOTER_GEO_TABLE_COUNT = len(VOTER_GEO_BASE_TABLES) + len(VOTER_GEO_POINT_TABLES)
 
 # voter_geo columns in the order the upsert payload carries them.
 VOTER_GEO_COLUMNS: tuple[str, ...] = (
@@ -74,6 +111,31 @@ META_COUNT_NAMES: tuple[str, ...] = (
 )
 META_NAMES: tuple[str, ...] = ("signature", *META_COUNT_NAMES)
 
+# voter_geo_point columns in the order the upsert payload carries them.
+VOTER_GEO_POINT_COLUMNS: tuple[str, ...] = (
+    "vuid",
+    "lat",
+    "lon",
+    "cd",
+    "sd",
+    "hd",
+    "geocode_source",
+    "geocode_quality",
+    "address_points_vintage",
+    "src_hash",
+    "matched_at",
+)
+# Every row of voter_geo_point_meta; ``signature`` changes exactly when a point row does, so the
+# route's ETag can name it.
+POINT_META_NAMES: tuple[str, ...] = (
+    "signature",
+    "address_points_vintage",
+    "plans",
+    "pipeline_rev",
+    "voterfile",
+    "counts",
+)
+
 # Rows per read: stored hashes are read in keyset pages of this size.
 PAGE_ROWS = 10_000
 
@@ -98,12 +160,33 @@ VOTER_GEO_UPSERT_SQL = _upsert("voter_geo", VOTER_GEO_COLUMNS, "vuid")
 VOTER_GEO_DELETE_SQL = "DELETE FROM voter_geo WHERE vuid IN (SELECT value FROM json_each(?))"
 VOTER_GEO_META_UPSERT_SQL = _upsert("voter_geo_meta", ("name", "value"), "name")
 VOTER_GEO_META_SELECT_SQL = "SELECT name, value FROM voter_geo_meta"
-VOTER_GEO_SIGNATURE_SQL = "SELECT value FROM voter_geo_meta WHERE name = 'signature'"
+# One query for both signatures: the route needs them for its ETag and pays one D1 round trip.
+# point_signature is NULL until the first point apply.
+VOTER_GEO_SIGNATURE_SQL = (
+    "SELECT (SELECT value FROM voter_geo_meta WHERE name = 'signature') AS signature, "
+    "(SELECT value FROM voter_geo_point_meta WHERE name = 'signature') AS point_signature"
+)
 # src_hash as text: D1's JSON results cannot carry every signed 64-bit integer exactly.
 # Parameter: the last VUID already read ('' to start).
 VOTER_GEO_STORED_HASHES_SQL = (
     "SELECT vuid, CAST(src_hash AS TEXT) AS src_hash FROM voter_geo "
     f"WHERE vuid > ? ORDER BY vuid LIMIT {PAGE_ROWS}"
+)
+
+VOTER_GEO_POINT_UPSERT_SQL = _upsert("voter_geo_point", VOTER_GEO_POINT_COLUMNS, "vuid")
+VOTER_GEO_POINT_DELETE_SQL = (
+    "DELETE FROM voter_geo_point WHERE vuid IN (SELECT value FROM json_each(?))"
+)
+VOTER_GEO_POINT_META_UPSERT_SQL = _upsert("voter_geo_point_meta", ("name", "value"), "name")
+VOTER_GEO_POINT_META_SELECT_SQL = "SELECT name, value FROM voter_geo_point_meta"
+VOTER_GEO_POINT_STORED_HASHES_SQL = (
+    "SELECT vuid, CAST(src_hash AS TEXT) AS src_hash FROM voter_geo_point "
+    f"WHERE vuid > ? ORDER BY vuid LIMIT {PAGE_ROWS}"
+)
+# What Stage 1 says about each VUID, for the counts of voters without a point.
+# Parameter: the last VUID already read ('' to start).
+VOTER_GEO_PLACES_SQL = (
+    f"SELECT vuid, pctkey, cd, sd, hd FROM voter_geo WHERE vuid > ? ORDER BY vuid LIMIT {PAGE_ROWS}"
 )
 
 # Live rows of one day and one row_hash range in key order, so within a day the lowest
@@ -123,16 +206,28 @@ VOTER_GEO_PAGES = 64
 VOTER_GEO_PAGE_SQL = (
     "SELECT COUNT(*) AS n, json_group_array(json_object("
     "'vuid', vuid, 'county_fips', county_fips, 'pctkey', pctkey, 'cd', cd, 'sd', sd, 'hd', hd, "
-    "'district_source', CASE WHEN pctkey IS NOT NULL THEN 'precinct_alias' END, "
-    "'split_flag', split_flag, 'flags', flags, 'lat', NULL, 'lon', NULL, "
-    "'geocode_source', CASE WHEN has_row THEN 'none' END, "
-    "'geocode_quality', CASE WHEN pctkey IS NOT NULL THEN 'stated_precinct' "
-    "WHEN has_row THEN 'not_located' END, "
-    "'address_points_vintage', NULL, 'matched_at', matched_at)) AS voters FROM ("
+    "'district_source', CASE WHEN has_point THEN 'address_point' "
+    "WHEN pctkey IS NOT NULL THEN 'precinct_alias' END, "
+    "'split_flag', split_flag, 'flags', flags, 'lat', lat, 'lon', lon, "
+    "'geocode_source', CASE WHEN has_point THEN geocode_source "
+    "WHEN has_row THEN 'none' END, "
+    "'geocode_quality', CASE WHEN has_point THEN geocode_quality "
+    "WHEN pctkey IS NOT NULL THEN 'stated_precinct' WHEN has_row THEN 'not_located' END, "
+    "'address_points_vintage', address_points_vintage, 'matched_at', matched_at)) AS voters FROM ("
     "SELECT DISTINCT r.id_voter AS vuid, g.county_fips AS county_fips, g.pctkey AS pctkey, "
-    "g.cd AS cd, g.sd AS sd, g.hd AS hd, g.split_flag AS split_flag, g.flags AS flags, "
-    "g.vuid IS NOT NULL AS has_row, g.matched_at AS matched_at "
+    "CASE WHEN p.vuid IS NOT NULL THEN p.cd ELSE g.cd END AS cd, "
+    "CASE WHEN p.vuid IS NOT NULL THEN p.sd ELSE g.sd END AS sd, "
+    "CASE WHEN p.vuid IS NOT NULL THEN p.hd ELSE g.hd END AS hd, "
+    "g.split_flag AS split_flag, g.flags AS flags, g.vuid IS NOT NULL AS has_row, "
+    "p.vuid IS NOT NULL AS has_point, p.lat AS lat, p.lon AS lon, "
+    "p.geocode_source AS geocode_source, p.geocode_quality AS geocode_quality, "
+    "p.address_points_vintage AS address_points_vintage, "
+    # SQLite's two-argument max() is NULL when either side is, so each NULL is handled here.
+    "CASE WHEN p.vuid IS NULL THEN g.matched_at "
+    "WHEN g.matched_at IS NULL OR p.matched_at > g.matched_at THEN p.matched_at "
+    "ELSE g.matched_at END AS matched_at "
     "FROM early_vote_roster_row r LEFT JOIN voter_geo g ON g.vuid = r.id_voter "
+    "LEFT JOIN voter_geo_point p ON p.vuid = r.id_voter "
     "WHERE r.day = ? AND r.row_hash BETWEEN ? AND ? AND r.removed_in IS NULL "
     "ORDER BY r.id_voter)"
 )

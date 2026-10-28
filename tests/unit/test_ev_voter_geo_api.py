@@ -348,3 +348,128 @@ def test_a_page_costs_one_page_query_and_the_route_is_mounted_once() -> None:
     paths = [getattr(r, "path", "") for r in client.app.routes]  # type: ignore[attr-defined]
     assert paths.count("/elections/{source_election_id}/roster/{ev_date}/geo") == 1
     assert "/elections/{source_election_id}/roster/{ev_date}" in paths
+
+
+# --- Stage 2: residential points ----------------------------------------------------------------
+
+POINT_VINTAGE = "2026-03-18"
+POINT_SIGNATURE = "ef" * 32
+
+
+def _add_point(
+    db: _Db, vuid: str, *, cd: str | None = "9", matched_at: str = "2026-10-28T01:00:00Z"
+) -> None:
+    db.conn.execute(
+        "INSERT INTO voter_geo_point VALUES (?, 30.267153, -97.743061, ?, '21', '49', "
+        "'txgio_address_point', 'address_point', ?, 7, ?)",
+        (vuid, cd, POINT_VINTAGE, matched_at),
+    )
+    db.conn.commit()
+
+
+def _all_voters(client: TestClient) -> dict[str, dict[str, Any]]:
+    seen: dict[str, dict[str, Any]] = {}
+    for k in range(VOTER_GEO_PAGES):
+        for voter in _page(client, k).json()["voters"]:
+            seen[voter["vuid"]] = voter
+    return seen
+
+
+def test_empty_point_tables_serve_the_stage_1_answer() -> None:
+    # All four tables exist but hold no point: present is not the same as loaded.
+    db, _ = _db()
+    assert db.conn.execute("SELECT COUNT(*) FROM voter_geo_point").fetchone() == (0,)
+    response = _page(_client(db), 0)
+    assert response.status_code == 200
+    placed = _all_voters(_client(db))[_vuid(2)]
+    assert placed["district_source"] == "precinct_alias"
+    assert placed["geocode_quality"] == "stated_precinct"
+
+
+def test_a_point_replaces_the_districts_and_keeps_the_precinct_fields() -> None:
+    db, _ = _db()
+    _add_point(db, _vuid(2))  # has a voter_geo row with a precinct
+    _add_point(db, _vuid(1), cd=None)  # n = 0: a voter_geo row without a precinct
+    _add_point(db, _vuid(10))  # n = 9: no voter_geo row at all
+    seen = _all_voters(_client(db))
+    assert seen[_vuid(2)] == {
+        "vuid": _vuid(2),
+        "county_fips": "453",
+        "pctkey": "4530101",
+        "cd": "9",
+        "sd": "21",
+        "hd": "49",
+        "district_source": "address_point",
+        "split_flag": 5,
+        "flags": 0,
+        "lat": 30.267153,
+        "lon": -97.743061,
+        "geocode_source": "txgio_address_point",
+        "geocode_quality": "address_point",
+        "address_points_vintage": POINT_VINTAGE,
+        "matched_at": "2026-10-28T01:00:00Z",
+    }
+    # A point in no polygon keeps its null district rather than borrowing the precinct's.
+    assert seen[_vuid(1)]["cd"] is None and seen[_vuid(1)]["district_source"] == "address_point"
+    # No voter_geo row: the point stands alone, with no precinct or county.
+    alone = seen[_vuid(10)]
+    assert (alone["county_fips"], alone["pctkey"], alone["flags"]) == (None, None, None)
+    assert alone["geocode_quality"] == "address_point" and alone["lat"] == 30.267153
+
+
+def test_matched_at_is_the_later_of_the_precinct_row_and_the_point() -> None:
+    db, _ = _db()
+    _add_point(db, _vuid(2), matched_at="2026-10-26T00:00:00Z")  # older than 2026-10-27T01
+    _add_point(db, _vuid(3), matched_at="2026-10-28T00:00:00Z")
+    seen = _all_voters(_client(db))
+    assert seen[_vuid(2)]["matched_at"] == "2026-10-27T01:00:00Z"
+    assert seen[_vuid(3)]["matched_at"] == "2026-10-28T00:00:00Z"
+
+
+def test_lat_and_lon_are_present_exactly_when_the_quality_is_address_point() -> None:
+    db, live = _db()
+    for index, vuid in enumerate(live):
+        if index % 3 == 0:
+            _add_point(db, vuid)
+    seen = _all_voters(_client(db))
+    qualities: dict[str | None, int] = {}
+    for voter in seen.values():
+        located = voter["lat"] is not None and voter["lon"] is not None
+        assert (voter["lat"] is None) == (voter["lon"] is None)
+        assert located == (voter["geocode_quality"] == "address_point")
+        assert located == (voter["district_source"] == "address_point")
+        assert located == (voter["address_points_vintage"] == POINT_VINTAGE)
+        qualities[voter["geocode_quality"]] = qualities.get(voter["geocode_quality"], 0) + 1
+    assert set(qualities) == {"address_point", "stated_precinct", "not_located", None}
+    assert qualities["address_point"] == len(live[::3])
+    text = "".join(_page(_client(db), k).text for k in range(VOTER_GEO_PAGES))
+    for forbidden in ("FAKE", "TRAVIS", "voter_name", "voting_method", "MAIL-IN", 'county"'):
+        assert forbidden not in text
+
+
+def test_the_etag_names_the_point_apply_and_stays_put_without_one() -> None:
+    db, _ = _db()
+    client = _client(db)
+    before = _page(client, 3).headers["etag"]
+    assert re.fullmatch(r'"[0-9a-f]{64}\.abababababababab\.p3"', before)
+    queries = db.queries
+    _page(client, 3)
+    assert db.queries - queries == 4  # the combined signature query adds no round trip
+    db.conn.execute("INSERT INTO voter_geo_point_meta VALUES ('signature', ?)", (POINT_SIGNATURE,))
+    after = _page(client, 3, **{"If-None-Match": before})
+    assert after.status_code == 200
+    assert re.fullmatch(
+        r'"[0-9a-f]{64}\.abababababababab\.efefefefefefefef\.p3"', after.headers["etag"]
+    )
+    db.conn.execute(
+        "UPDATE voter_geo_point_meta SET value = ? WHERE name = 'signature'", ("12" * 32,)
+    )
+    assert _page(client, 3).headers["etag"] != after.headers["etag"]
+
+
+def test_missing_point_tables_are_503() -> None:
+    db, _ = _db()
+    db.conn.execute("DROP TABLE voter_geo_point")
+    response = _page(_client(db), 0)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "voter_geo_not_loaded"}
