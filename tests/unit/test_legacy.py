@@ -471,6 +471,7 @@ def test_legacy_session_establishes_cookie() -> None:
         session.close()
 
 
+@pytest.mark.real_sleep
 def test_legacy_session_pace_enforced() -> None:
     session = LegacySession(pace_seconds=0.1, http_backend="httpx")
     try:
