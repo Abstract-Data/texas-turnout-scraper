@@ -11,11 +11,15 @@ from hypothesis import HealthCheck, settings
 
 # The preview read API lives under infra/preview/worker and is not an installable
 # extra of the root package. Unit tests import it from this path.
-_EV_API_SRC = Path(__file__).resolve().parents[1] / "infra" / "preview" / "worker" / "src"
-if _EV_API_SRC.is_dir():
-    _ev_api_src = str(_EV_API_SRC)
-    if _ev_api_src not in sys.path:
-        sys.path.insert(0, _ev_api_src)
+_PREVIEW_WORKER = Path(__file__).resolve().parents[1] / "infra" / "preview" / "worker"
+for _worker_src in (
+    _PREVIEW_WORKER / "src",
+    Path(__file__).resolve().parents[1] / "infra" / "preview" / "sync_worker" / "src",
+):
+    if _worker_src.is_dir():
+        _path = str(_worker_src)
+        if _path not in sys.path:
+            sys.path.insert(0, _path)
 
 
 # Hypothesis profiles. Every strategy in this repo generates synthetic data only, so a printed
