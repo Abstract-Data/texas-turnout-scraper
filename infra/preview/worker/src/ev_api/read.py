@@ -27,8 +27,13 @@ from texas_turnout_scraper.civix.read_client import (
 )
 from texas_turnout_scraper.early_vote_d1_precompute_read import AggregatesNotComputed
 from texas_turnout_scraper.early_vote_sync import hash_key
+from texas_turnout_scraper.first_seen import cacheable
 
 logger = logging.getLogger(__name__)
+
+# Last cache-key segment. Bump it when the body shape changes, so bodies cached at the same
+# published version in the old shape are not served again.
+BODY_SHAPE = "b2"
 
 # Daily early-vote snapshots: old version keys expire by TTL; they are not purged.
 DEFAULT_KV_TTL_SECONDS = 86_400
@@ -155,6 +160,9 @@ async def _populate_versioned_cache(
         return _not_computed_outcome()
     if body is None:
         return ReadOutcome(404, etag, None, "miss")
+    if not cacheable(body):
+        # No ETag either: a client must not revalidate this body against the version's ETag.
+        return ReadOutcome(200, None, body, "uncached")
     raw = json.dumps(body, separators=(",", ":"), sort_keys=True)
     await kv.put(key, raw, expiration_ttl=ttl_seconds)
     return ReadOutcome(200, etag, body, "miss")
@@ -180,7 +188,7 @@ async def read_resource(
         matched = etag_matches(query.if_none_match, etag)
     except ValueError:
         return ReadOutcome(400, etag, None, "bad_etag")
-    key = cache_key(election_id, version, *query.segments)
+    key = cache_key(election_id, version, *query.segments, BODY_SHAPE)
     cached = await kv.get(key)
     if matched:
         if cached is not None and _object_json(cached) is not None:

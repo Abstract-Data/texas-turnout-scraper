@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -220,6 +221,20 @@ async def test_precomputed_parity_with_streaming_on_fixture() -> None:
     assert streamed is not None
     assert precomputed is not None
     assert precomputed.pop("semantics") == "daily"
+    assert precomputed.pop("county_fips_unmatched") == 0
+    precomputed.pop("dedupe")
+    counties = cast("list[dict[str, object]]", precomputed["by_county"])
+    for row in counties:
+        assert row.pop("county_fips") is not None
+    for row in [cast("dict[str, object]", precomputed["statewide"]), *counties]:
+        for added in (
+            "rows_reported",
+            "new_voters",
+            "new_in_person",
+            "new_mail_in",
+            "restated_rows",
+        ):
+            row.pop(added, None)
     assert precomputed == streamed
 
 

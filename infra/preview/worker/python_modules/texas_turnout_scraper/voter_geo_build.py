@@ -40,7 +40,6 @@ from texas_turnout_scraper.early_vote_sync import (
     EarlyVoteSyncError,
     _cloudflare_config_from_env,
 )
-from texas_turnout_scraper.geo_load import county_key
 from texas_turnout_scraper.geo_tables import (
     ALIASES_SQL,
     COUNTY_NAMES_SQL,
@@ -51,6 +50,7 @@ from texas_turnout_scraper.geo_tables import (
 )
 from texas_turnout_scraper.geo_tables import META_SELECT_SQL as GEO_META_SELECT_SQL
 from texas_turnout_scraper.repeat_tables import ROSTER_VERSIONS_SQL
+from texas_turnout_scraper.tx_counties import county_key
 from texas_turnout_scraper.voter_geo_models import VoterGeo, VoterGeoMeta
 from texas_turnout_scraper.voter_geo_tables import (
     FLAG_MULTI_COUNTY,

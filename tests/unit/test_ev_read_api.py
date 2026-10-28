@@ -8,6 +8,7 @@ import pytest
 from ev_api.app import ReadDeps, create_app
 from ev_api.read import (
     _AGGREGATES_NOT_COMPUTED_RETRY_AFTER_SECONDS,
+    BODY_SHAPE,
     DEFAULT_KV_TTL_SECONDS,
     SINGLE_FLIGHT_LOCK_TTL_SECONDS,
     SINGLE_FLIGHT_RETRY_AFTER_SECONDS,
@@ -136,7 +137,7 @@ def _url(resource: str = "totals", ev_date: str | None = None) -> str:
 @pytest.mark.asyncio
 async def test_cache_hit_does_not_query_d1() -> None:
     payload = {"statewide": {"total": 2, "in_person": 2, "mail_in": 0}}
-    key = cache_key(_ELECTION, _VERSION, *_segments())
+    key = cache_key(_ELECTION, _VERSION, *_segments(), BODY_SHAPE)
     kv = MemoryKv(
         {
             version_key(_ELECTION): str(_VERSION),
@@ -250,7 +251,7 @@ async def test_cache_miss_sets_default_ttl() -> None:
     assert outcome.status_code == 200
     assert outcome.cache == "miss"
     assert store.calls == [(_ELECTION, _segments(), _SHA)]
-    cache_key_name = cache_key(_ELECTION, _VERSION, *_segments())
+    cache_key_name = cache_key(_ELECTION, _VERSION, *_segments(), BODY_SHAPE)
     cache_puts = [item for item in kv.puts if item[0] == cache_key_name]
     assert len(cache_puts) == 1
     assert cache_puts[0][2] == DEFAULT_KV_TTL_SECONDS
@@ -259,7 +260,7 @@ async def test_cache_miss_sets_default_ttl() -> None:
 @pytest.mark.asyncio
 async def test_if_none_match_returns_304_only_when_versioned_cache_exists() -> None:
     payload = {"statewide": {"total": 1}}
-    key = cache_key(_ELECTION, _VERSION, *_segments())
+    key = cache_key(_ELECTION, _VERSION, *_segments(), BODY_SHAPE)
     kv = MemoryKv(
         {
             version_key(_ELECTION): str(_VERSION),
@@ -303,7 +304,7 @@ def test_http_aggregate_totals_404_json_when_version_missing() -> None:
 
 def test_http_aggregate_totals_304_with_etag() -> None:
     payload = {"statewide": {"total": 1, "in_person": 1, "mail_in": 0}}
-    key = cache_key(_ELECTION, _VERSION, *_segments())
+    key = cache_key(_ELECTION, _VERSION, *_segments(), BODY_SHAPE)
     kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: json.dumps(payload)})
     client = _client(kv, RecordingStore())
     first = client.get(_url(), headers=_AUTH)
@@ -348,7 +349,7 @@ def test_http_aggregate_totals_requires_access() -> None:
 
 def test_http_aggregate_totals_200() -> None:
     payload = {"statewide": {"total": 1, "in_person": 1, "mail_in": 0}}
-    key = cache_key(_ELECTION, _VERSION, *_segments())
+    key = cache_key(_ELECTION, _VERSION, *_segments(), BODY_SHAPE)
     kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: json.dumps(payload)})
     response = _client(kv, RecordingStore()).get(_url(), headers=_AUTH)
     assert response.status_code == 200
@@ -359,7 +360,7 @@ def test_http_aggregate_totals_consumer_bearer_kv() -> None:
     secret = "consumer-secret-not-a-voter"
     digest = hash_token(secret)
     payload = {"statewide": {"total": 2, "in_person": 2, "mail_in": 0}}
-    key = cache_key(_ELECTION, _VERSION, *_segments())
+    key = cache_key(_ELECTION, _VERSION, *_segments(), BODY_SHAPE)
     kv = MemoryKv(
         {
             version_key(_ELECTION): str(_VERSION),
@@ -378,7 +379,7 @@ def test_http_aggregate_totals_consumer_api_key_d1() -> None:
     secret = "consumer-api-key-secret"
     digest = hash_token(secret)
     payload = {"statewide": {"total": 3, "in_person": 1, "mail_in": 2}}
-    key = cache_key(_ELECTION, _VERSION, *_segments())
+    key = cache_key(_ELECTION, _VERSION, *_segments(), BODY_SHAPE)
     kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: json.dumps(payload)})
     response = _client(
         kv,
@@ -462,7 +463,7 @@ def test_non_ascii_access_header_is_401_not_500() -> None:
 
 def test_non_ascii_access_header_does_not_block_valid_consumer_token() -> None:
     secret = "consumer-with-bad-access-header"
-    key = cache_key(_ELECTION, _VERSION, *_segments())
+    key = cache_key(_ELECTION, _VERSION, *_segments(), BODY_SHAPE)
     kv = MemoryKv(
         {
             version_key(_ELECTION): str(_VERSION),
@@ -504,7 +505,7 @@ def test_invalid_ev_date_unauthenticated_is_401() -> None:
 
 
 def test_valid_ev_date_is_served() -> None:
-    key = cache_key(_ELECTION, _VERSION, *_segments("totals", "2024-10-21"))
+    key = cache_key(_ELECTION, _VERSION, *_segments("totals", "2024-10-21"), BODY_SHAPE)
     kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: json.dumps({"ok": 1})})
     response = _client(kv, RecordingStore()).get(
         f"/elections/{_ELECTION}/aggregates/totals",
