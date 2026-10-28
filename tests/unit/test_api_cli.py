@@ -8,6 +8,7 @@ import re
 import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import cast
 from urllib.parse import urlparse
 
 import pytest
@@ -17,6 +18,7 @@ from texas_turnout_scraper.cli import api as api_cli
 from texas_turnout_scraper.cli._typer_apps import app
 from texas_turnout_scraper.consumer_tokens import hash_token
 from texas_turnout_scraper.onepassword_keys import (
+    AccessPair,
     OnePasswordAuthError,
     OnePasswordError,
     SubprocessOnePasswordRunner,
@@ -26,6 +28,8 @@ from .fake_cloudflare import FakeCloudflare, FakeOp, signed_out
 
 NAME = "Ada Lovelace"
 EMAIL = "ada.private@example.org"
+ACCESS_ID = "preview-client.access"
+ACCESS_SECRET = "access-secret-not-a-key"
 
 
 @dataclass
@@ -35,7 +39,7 @@ class Env:
     events: list[str]
     tty: list[bool]
 
-    def invoke(self, *args: str, input: str | None = None):  # noqa: A002
+    def invoke(self, *args: str, input: str | None = None):
         return CliRunner().invoke(app, ["api", *args], input=input)
 
     def items(self) -> list[dict[str, object]]:
@@ -58,6 +62,8 @@ def env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Env]:
     monkeypatch.setattr(api_cli, "_admin", cf.admin)
     monkeypatch.setattr(api_cli, "_key_store", op.store)
     monkeypatch.setattr(api_cli, "_stdin_is_tty", lambda: tty[0])
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", ACCESS_ID)
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", ACCESS_SECRET)
     yield Env(cf=cf, op=op, events=events, tty=tty)
 
 
@@ -172,6 +178,8 @@ def test_item_shape_and_instructions(env: Env) -> None:
     labels = [f["label"] for f in template["fields"]]  # type: ignore[attr-defined]
     assert labels == [
         "API key",
+        "CF-Access-Client-Id",
+        "CF-Access-Client-Secret",
         "Endpoint",
         "Scope",
         "Name",
@@ -461,7 +469,14 @@ def test_base_url_and_vault_can_be_overridden_from_the_environment(
     monkeypatch.setenv("TX_TURNOUT_API_BASE_URL", "https://api.example.test")
     monkeypatch.setenv("TX_TURNOUT_OP_VAULT", "othervault")
     store = api_cli.OnePasswordKeyStore(env.op)
-    store.create(name=NAME, email=EMAIL, api_key="k", token_id="t1", expires_date="2026-12-01")
+    store.create(
+        name=NAME,
+        email=EMAIL,
+        api_key="k",
+        token_id="t1",
+        expires_date="2026-12-01",
+        access=AccessPair(client_id=ACCESS_ID, client_secret=ACCESS_SECRET),
+    )
     args, stdin = env.op.calls[0]
     assert args[args.index("--vault") + 1] == "othervault"
     instructions = next(
@@ -536,3 +551,102 @@ def test_schema_is_checked_once_per_admin(env: Env) -> None:
     admin.list_tokens()
     admin.close()
     assert sum("pragma_table_info" in sql for sql in env.cf.sql) == 1
+
+
+def _fields(item: dict[str, object]) -> list[dict[str, object]]:
+    return cast("list[dict[str, object]]", item["fields"])
+
+
+def _field_entry(item: dict[str, object], label: str) -> dict[str, object]:
+    return next(f for f in _fields(item) if f["label"] == label)
+
+
+def test_generate_stores_the_access_pair_with_the_secret_concealed(env: Env) -> None:
+    result = env.invoke("generate", "--name", NAME, "--email", EMAIL)
+    assert result.exit_code == 0, result.output
+    item = env.items()[0]
+    assert _field_entry(item, "CF-Access-Client-Id")["value"] == ACCESS_ID
+    secret = _field_entry(item, "CF-Access-Client-Secret")
+    assert secret == {
+        "id": "access_client_secret",
+        "type": "CONCEALED",
+        "label": "CF-Access-Client-Secret",
+        "value": ACCESS_SECRET,
+    }
+    note = env.field("Instructions")
+    assert "provides them separately" not in note
+    assert 'CF_ACCESS_CLIENT_SECRET=<the "CF-Access-Client-Secret" field>' in note
+    assert ACCESS_SECRET not in note
+    assert _leaks(result.output, ACCESS_SECRET) == []
+    assert all(ACCESS_SECRET not in arg for args, _ in env.op.calls for arg in args)
+
+
+@pytest.mark.parametrize("unset", ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"])
+def test_generate_without_the_access_pair_exits_2_before_any_write(
+    env: Env, monkeypatch: pytest.MonkeyPatch, unset: str
+) -> None:
+    monkeypatch.delenv(unset)
+    result = env.invoke("generate", "--name", NAME, "--email", EMAIL)
+    assert result.exit_code == 2
+    assert unset in result.output
+    assert env.events == []
+    assert env.op.calls == []
+
+
+def _issued_without_access(env: Env) -> tuple[str, str]:
+    env.invoke("generate", "--name", NAME, "--email", EMAIL)
+    item_id, item = next(iter(env.op.items.items()))
+    item["fields"] = [
+        f
+        for f in _fields(item)
+        if f["label"] not in ("CF-Access-Client-Id", "CF-Access-Client-Secret")
+    ]
+    env.op.calls.clear()
+    return item_id, env.field("Token ID")
+
+
+@pytest.mark.parametrize("by", ["token_id", "all"])
+def test_attach_access_adds_the_pair_to_an_old_item_through_stdin(env: Env, by: str) -> None:
+    item_id, token_id = _issued_without_access(env)
+    key_before = env.field("API key")
+    args = ["attach-access", token_id] if by == "token_id" else ["attach-access", "--all"]
+    result = env.invoke(*args)
+    assert result.exit_code == 0, result.output
+    item = env.op.items[item_id]
+    assert _field_entry(item, "CF-Access-Client-Id")["value"] == ACCESS_ID
+    assert _field_entry(item, "CF-Access-Client-Secret")["type"] == "CONCEALED"
+    assert _field_entry(item, "CF-Access-Client-Secret")["value"] == ACCESS_SECRET
+    assert env.field("API key") == key_before
+    assert "Send both on every request" in env.field("Instructions")
+    assert env.field("notesPlain") == env.field("Instructions")
+    assert all(ACCESS_SECRET not in arg for args, _ in env.op.calls for arg in args)
+    assert _leaks(result.output, ACCESS_SECRET, key_before) == []
+
+
+def test_attach_access_twice_keeps_one_pair(env: Env) -> None:
+    item_id, token_id = _issued_without_access(env)
+    env.invoke("attach-access", token_id)
+    env.invoke("attach-access", token_id)
+    labels = [f["label"] for f in _fields(env.op.items[item_id])]
+    assert labels.count("CF-Access-Client-Secret") == 1
+
+
+def test_attach_access_refuses_an_item_returned_without_its_key_value(env: Env) -> None:
+    item_id, token_id = _issued_without_access(env)
+    _field_entry(env.op.items[item_id], "API key").pop("value")
+    result = env.invoke("attach-access", token_id)
+    assert result.exit_code == 1
+    assert "op:edit" not in env.events
+
+
+@pytest.mark.parametrize("args", [[], ["abc", "--all"]])
+def test_attach_access_needs_ids_or_all_but_not_both(env: Env, args: list[str]) -> None:
+    result = env.invoke("attach-access", *args)
+    assert result.exit_code == 2
+    assert env.op.calls == []
+
+
+def test_attach_access_unknown_token_exits_1_with_a_warning(env: Env) -> None:
+    result = env.invoke("attach-access", "nosuchtoken")
+    assert result.exit_code == 1
+    assert "token:nosuchtoken" in result.output
