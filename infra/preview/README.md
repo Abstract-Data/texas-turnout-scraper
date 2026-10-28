@@ -224,6 +224,8 @@ The portal publishes one file per early-vote date, and each file holds only that
 
 A day whose file is still being written is left out until it is complete, and `days` shows what was included. A complete day with no computed aggregates returns 503 instead of an undercount.
 
+`total`, `in_person` and `mail_in` count roster rows. The portal re-lists voters on later days, so rows overstate voters (2026-10-24 re-listed about 657,000). Each body also carries distinct-voter counts from `early_vote_first_seen` ([ADR-016](../../docs/adr/016-first-appearance-voter-counts.md)): `unique_voters` (with `_in_person` / `_mail_in`) on cumulative bodies, `new_voters` and `restated_rows` on a day, and `restated` plus `cumulative_unique_voters` on each `by-day` entry. `rows_reported` repeats the row count beside them. `dedupe.status` is `current` when those counts match the stored roster; when it is `stale` or `missing` they are null, the body has no ETag and it is not cached. Every county row has `county_fips` (5-digit, `48283` for La Salle); `county_fips_unmatched` counts names that matched no county.
+
 ## Local Terraform checks (git hooks)
 
 CI runs `terraform fmt -check`, `terraform validate` and `tflint`. To prove the first two before anything leaves your machine, install the repo's hooks once per clone:

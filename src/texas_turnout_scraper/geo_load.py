@@ -51,6 +51,7 @@ from texas_turnout_scraper.geo_tables import (
     PRECINCT_UPSERT_SQL,
     ROSTER_DAYS_SQL,
 )
+from texas_turnout_scraper.tx_counties import county_key
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +100,6 @@ class AliasResult:
     @property
     def matched_row_share(self) -> float:
         return self.matched_rows / self.rows if self.rows else 0.0
-
-
-def county_key(name: str) -> str:
-    """A county name compared by its letters only: ``DE WITT`` and ``DeWitt`` are one county."""
-    return "".join(ch for ch in name.upper() if ch.isascii() and ch.isalpha())
 
 
 def _candidates(precinct: str) -> Iterator[tuple[str, str]]:

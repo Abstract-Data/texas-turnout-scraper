@@ -107,7 +107,13 @@ async def test_default_totals_sum_every_day() -> None:
     assert body["through_ev_date"] == "2026-10-20"
     assert body["days"] == ["2026-10-19", "2026-10-20"]
     by_county = {row["county"]: row for row in body["by_county"]}
-    assert by_county["TRAVIS"] == {"county": "TRAVIS", "total": 35, "in_person": 30, "mail_in": 5}
+    assert by_county["TRAVIS"] == {
+        "county": "TRAVIS",
+        "county_fips": "48453",
+        "total": 35,
+        "in_person": 30,
+        "mail_in": 5,
+    }
     assert set(by_county) == {"TRAVIS", "BEXAR", "HARRIS"}
 
 

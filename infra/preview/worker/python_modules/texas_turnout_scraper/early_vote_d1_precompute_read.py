@@ -26,6 +26,7 @@ from texas_turnout_scraper.early_vote_d1_read import (
     resolve_day_for_date,
 )
 from texas_turnout_scraper.early_vote_sync import EarlyVoteFileView, choose_published_file
+from texas_turnout_scraper.first_seen import annotate, load_first_seen
 
 
 class AggregatesNotComputed(Exception):
@@ -207,7 +208,23 @@ async def build_precomputed_aggregate_resource(
     kv_sha256: str,
     ev_date: str | None = None,
 ) -> dict[str, object] | None:
+    """Aggregate body with distinct-voter counts and ``county_fips`` (see ``first_seen``)."""
     election_id = require_election_id(source_election_id)
+    body = await _resource_body(db, election_id, resource, kv_sha256=kv_sha256, ev_date=ev_date)
+    if body is None:
+        return None
+    first_seen = await load_first_seen(db, election_id)
+    return annotate(body, resource, first_seen, ev_date=ev_date)
+
+
+async def _resource_body(
+    db: D1Database,
+    election_id: str,
+    resource: str,
+    *,
+    kv_sha256: str,
+    ev_date: str | None,
+) -> dict[str, object] | None:
     if resource == "by-day":
         return await _build_by_day_resource(db, election_id, kv_sha256=kv_sha256)
     if resource == "county-by-day":
@@ -215,7 +232,4 @@ async def build_precomputed_aggregate_resource(
     totals = await _totals_for_ev_date(db, election_id, kv_sha256=kv_sha256, ev_date=ev_date)
     if totals is None:
         return None
-    sliced = _slice_totals_resource(totals, resource)
-    if sliced is None:
-        return None
-    return sliced
+    return _slice_totals_resource(totals, resource)

@@ -6,6 +6,7 @@ import sqlite3
 
 import pytest
 from ev_api.app import ReadDeps, create_app
+from ev_api.read import BODY_SHAPE
 from fastapi.testclient import TestClient
 
 from tests.unit.test_early_vote_roster_stream import _Db
@@ -136,7 +137,7 @@ def test_a_second_request_is_served_from_kv_without_touching_d1() -> None:
     first = client.get(URL, headers=AGGREGATES)
     queries = db.queries
     assert queries > 0
-    assert kv.puts == [(cache_key("53815", 7, "geo", "precincts"), TTL)]
+    assert kv.puts == [(cache_key("53815", 7, "geo", "precincts", BODY_SHAPE), TTL)]
     second = client.get(URL, headers=ROSTER)
     assert second.json() == first.json()
     assert db.queries == queries
@@ -165,8 +166,8 @@ def test_a_new_election_version_gets_a_new_cache_entry_and_etag() -> None:
     assert response.headers["etag"] == '"v8"'
     assert response.json()["version"] == "8"
     assert [key for key, _ in kv.puts] == [
-        cache_key("53815", 7, "geo", "precincts"),
-        cache_key("53815", 8, "geo", "precincts"),
+        cache_key("53815", 7, "geo", "precincts", BODY_SHAPE),
+        cache_key("53815", 8, "geo", "precincts", BODY_SHAPE),
     ]
 
 
