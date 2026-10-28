@@ -30,8 +30,9 @@ def test_extend_from_a_future_expiry_adds_to_it_and_reputs_kv() -> None:
     admin = cf.admin()
     issued = admin.issue("partner", days=10, now=NOW)
     admin.store(issued, now=NOW)
-    new = admin.extend(issued.token_id, 5, now=NOW + dt.timedelta(days=1))
+    new, scope = admin.extend(issued.token_id, 5, now=NOW + dt.timedelta(days=1))
     assert new == "2026-11-16T12:00:00+00:00"
+    assert scope == "aggregates"
     ((_v, params),) = cf.kv.values()
     assert int(params["expiration_ttl"]) == 15 * 86400 - 86400
 
@@ -42,7 +43,7 @@ def test_extend_after_lapse_counts_from_now() -> None:
     issued = admin.issue("partner", days=1, now=NOW)
     admin.store(issued, now=NOW)
     later = NOW + dt.timedelta(days=9)
-    assert admin.extend(issued.token_id, 7, now=later) == "2026-11-17T12:00:00+00:00"
+    assert admin.extend(issued.token_id, 7, now=later)[0] == "2026-11-17T12:00:00+00:00"
 
 
 def test_extend_revoked_and_unknown() -> None:
