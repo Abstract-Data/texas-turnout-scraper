@@ -270,7 +270,16 @@ def test_two_rows_of_one_voter_in_a_page_are_listed_once() -> None:
 
 @pytest.mark.parametrize(
     "query",
-    ["", "?page=", "?page=-1", "?page=64", "?page=064", "?page=abc", "?page=1.5", "?page=1000"],
+    [
+        "",
+        "?page=",
+        "?page=-1",
+        f"?page={VOTER_GEO_PAGES}",
+        f"?page=0{VOTER_GEO_PAGES}",
+        "?page=abc",
+        "?page=1.5",
+        "?page=1000",
+    ],
 )
 def test_a_missing_or_out_of_range_page_is_400(query: str) -> None:
     db, _ = _db()
