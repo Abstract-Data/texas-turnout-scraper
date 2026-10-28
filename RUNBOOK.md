@@ -227,6 +227,33 @@ in full by the next run. A dry run reports `rows_pending`, `rows_stale`, `excess
 `excess_stale` and writes nothing. After a change to how rows are derived, bump `REPEAT_VERSION`
 in `repeat_tables.py` so the next apply rebuilds.
 
+### Voter geography (`voter_geo`, `voter_geo_meta`)
+
+One row per VUID with a live roster row: `county_fips`, `pctkey`, `cd`, `sd`, `hd`, `split_flag`
+(bits 1 cd, 2 sd, 4 hd) and `flags` (1 more than one precinct, 2 more than one county). Values come
+from the voter's first appearance and the geography tables. See `docs/adr/015-voter-geography.md`.
+
+**Not in the scheduled sync.** The first build writes about one row per distinct live VUID (about
+3.68M for 53815), which does not fit the 5-minute workflow cap. Run the first apply by hand, only
+with the owner's approval. Load geography first (`geo_load`), because the build reads the stored
+aliases.
+
+```bash
+# Cloudflare credentials as for the sync: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_KV_NAMESPACE_ID
+uv run python -m texas_turnout_scraper.voter_geo_build --election-id 53815 --dry-run
+uv run python -m texas_turnout_scraper.voter_geo_build --election-id 53815 --apply
+```
+
+The output is counts only. `matched_row_share` is the share of live rows whose pair has a state
+precinct, the figure ADR-010 measured at 99.3%. `multi_precinct_vuids` and `multi_county_vuids`
+count voters whose listings disagree; they take their first appearance. An apply whose signature
+matches reports `status=unchanged` and writes nothing. After a change to how rows are derived, bump
+`VOTER_GEO_VERSION` in `voter_geo_tables.py`.
+
+**Reading it.** `GET /elections/{id}/roster/{ev_date}/geo?page=0` through `63` with a roster-scoped
+token. The pages partition the day's live VUIDs. A 503 `voter_geo_not_loaded` means the tables do
+not exist yet.
+
 ### An election has stopped updating on Pages (held back for size)
 
 `data-refresh.yml` runs `.github/scripts/skip_oversize_data.py` before it commits. GitHub rejects any single file over 100 MiB, so a file over 95 MiB holds back its whole election: the election folder goes back to its last published state (or is removed if it was never published) and its `index.json` entry is restored. Other elections still publish.
