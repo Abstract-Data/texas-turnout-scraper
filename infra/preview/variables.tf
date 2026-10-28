@@ -64,6 +64,17 @@ variable "preview_api_hostname" {
   }
 }
 
+variable "ev_sync_mode" {
+  type        = string
+  description = "Kill switch for the EV sync Worker Workflow: off, dry_run, or apply. Default off so merge applies inert."
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "dry_run", "apply"], var.ev_sync_mode)
+    error_message = "ev_sync_mode must be off, dry_run, or apply."
+  }
+}
+
 variable "github_dispatch_token" {
   type        = string
   description = "Fine-grained GitHub token with only Actions: write on Abstract-Data/texas-turnout-scraper. The Worker cron uses it to dispatch early-vote-sync.yml. Empty leaves the binding off and the cron skips. From the EV_DISPATCH_GITHUB_TOKEN preview environment secret."

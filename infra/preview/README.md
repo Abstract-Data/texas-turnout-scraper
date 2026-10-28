@@ -28,9 +28,9 @@ A push to `main` or `workflow_dispatch` on `main` runs two jobs in the GitHub En
 
 ## Early-vote cron trigger
 
-`cloudflare_workers_cron_trigger.ev_sync` runs the Worker's `scheduled` handler on `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 the handler dispatches `early-vote-sync.yml` on `main` with `trigger=cron`; at every other firing it does nothing. It does not scrape and does not write D1 or KV. See `docs/adr/013-worker-cron-dispatches-sync.md` and the runbook section "Early-vote schedule (Worker cron)".
+`cloudflare_workers_cron_trigger.ev_sync` targets **`tx-turnout-ev-sync-preview`** (`ev_sync.tf`), not the read API Worker. The schedule is `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 the sync Worker's `scheduled` handler creates an `EvSyncWorkflow` instance when `EV_SYNC_MODE` is not `off`. Default **`ev_sync_mode = off`** so merge applies inert.
 
-The dispatch token comes from the `preview` environment secret `EV_DISPATCH_GITHUB_TOKEN` (a fine-grained token with only Actions: write on this repository). The plan step passes it as `TF_VAR_github_dispatch_token`; the variable is `sensitive` and defaults to empty, and the `GITHUB_DISPATCH_TOKEN` `secret_text` binding is added only when it is non-empty. The saved plan carries the value, so the apply step does not need it. The token also lands in the Terraform state in the same private bucket and in the Worker binding; rotate it by changing the secret and running the Terraform workflow.
+The read API Worker may still carry an optional `GITHUB_DISPATCH_TOKEN` binding for manual dispatch during cutover; this cron no longer calls GitHub. See `docs/adr/014-cloudflare-workflow-ingest.md`.
 
 ## Workflow ingest spike (temporary)
 

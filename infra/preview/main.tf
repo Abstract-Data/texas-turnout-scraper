@@ -163,19 +163,6 @@ resource "cloudflare_workers_deployment" "preview" {
   }]
 }
 
-# 10:00, 17:00 and 22:00 America/Chicago in both CDT and CST, as UTC hours. The handler
-# (worker/src/ev_api/cron.py CRON_SCHEDULE) keeps the three that match the date and stops
-# after 11:59 PM Central on 2026-11-03. It only dispatches the early-vote-sync workflow.
-resource "cloudflare_workers_cron_trigger" "ev_sync" {
-  account_id  = var.account_id
-  script_name = cloudflare_worker.ev_api.name
-  schedules = [{
-    cron = "0 15,16,22,23,3,4 * * *"
-  }]
-
-  depends_on = [cloudflare_workers_deployment.preview]
-}
-
 resource "cloudflare_zero_trust_access_service_token" "preview" {
   account_id = var.account_id
   name       = local.worker_name

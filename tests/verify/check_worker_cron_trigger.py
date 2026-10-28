@@ -23,10 +23,10 @@ def _block(text: str, header: str) -> str:
 
 
 def test_terraform_cron_matches_the_handler_schedule() -> None:
-    main = (PREVIEW / "main.tf").read_text()
-    trigger = _block(main, 'resource "cloudflare_workers_cron_trigger" "ev_sync"')
+    ev_sync = (PREVIEW / "ev_sync.tf").read_text()
+    trigger = _block(ev_sync, 'resource "cloudflare_workers_cron_trigger" "ev_sync"')
     assert re.findall(r'cron\s*=\s*"([^"]+)"', trigger) == [CRON_SCHEDULE]
-    assert "script_name = cloudflare_worker.ev_api.name" in trigger
+    assert "script_name = cloudflare_worker.ev_sync.name" in trigger
 
 
 def test_dispatch_token_variable_is_sensitive_and_bound_as_a_secret() -> None:
