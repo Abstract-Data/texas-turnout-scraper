@@ -188,8 +188,11 @@ class ConsumerTokenAdmin:
         *,
         set_expiry: bool = False,
         now: dt.datetime | None = None,
-    ) -> str:
-        """Push the expiry to ``max(now, current) + days``; returns the new ``expires_at``."""
+    ) -> tuple[str, str]:
+        """Push the expiry to ``max(now, current) + days``.
+
+        Returns ``(expires_at, scope)``. Scope is ``aggregates`` when the row has none.
+        """
         self.ensure_schema()
         rows = self._query_rows(SELECT_BY_ID_SQL, [token_id])
         if not rows:
@@ -202,16 +205,20 @@ class ConsumerTokenAdmin:
             raise TokenNotFoundError("unknown token_id")
         if not row.get("expires_at") and not set_expiry:
             raise TokenNoExpiryError("token has no expiry")
-        scope = row.get("scope")
+        raw_scope = row.get("scope")
+        try:
+            scope = parse_scope(raw_scope) if isinstance(raw_scope, str) else SCOPE_AGGREGATES
+        except ValueError:
+            scope = SCOPE_AGGREGATES
         moment = now or dt.datetime.now(tz=dt.timezone.utc)
         new_expiry = extended_expiry(row.get("expires_at"), moment, days)
         self._statements([(UPDATE_EXPIRY_SQL, [new_expiry, token_id])])
         self._kv_put(
             kv_key_for_hash(digest),
-            kv_value_for_scope(scope if isinstance(scope, str) and scope else SCOPE_AGGREGATES),
+            kv_value_for_scope(scope),
             expiration_ttl=kv_ttl_seconds(new_expiry, moment),
         )
-        return new_expiry
+        return new_expiry, scope
 
     def list_tokens(self) -> list[ConsumerTokenRecord]:
         self.ensure_schema()

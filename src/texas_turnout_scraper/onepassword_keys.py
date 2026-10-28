@@ -14,6 +14,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from .consumer_tokens import SCOPE_AGGREGATES, SCOPE_ROSTER, parse_scope
+
 VAULT_ID = "qxyxd4oqdy5mpmg4t4qh3bfflm"
 VAULT_ENV = "TX_TURNOUT_OP_VAULT"
 ITEM_TITLE_PREFIX = "texas-turnout-scraper: "
@@ -24,11 +26,14 @@ API_BASE_URL_ENV = "TX_TURNOUT_API_BASE_URL"
 
 FIELD_CREDENTIAL_ID = "credential"
 FIELD_API_KEY = "API key"
+FIELD_ENDPOINT = "Endpoint"
+FIELD_SCOPE = "Scope"
 FIELD_NAME = "Name"
 FIELD_EMAIL = "Email Address"
 FIELD_EXPIRES = "Expires"
 FIELD_TOKEN_ID = "Token ID"
 FIELD_INSTRUCTIONS = "Instructions"
+FIELD_NOTES = "notesPlain"
 
 _OP_TIMEOUT_SECONDS = 60
 _AUTH_MARKERS = (
@@ -40,21 +45,53 @@ _AUTH_MARKERS = (
 )
 
 INSTRUCTIONS_TEMPLATE = """\
-This is an Abstract Data texas-turnout-scraper API key for the early-vote read API.
+This note is the handoff for an Abstract Data texas-turnout-scraper API key.
+Give an agent this note and this 1Password item. The agent reads the fields below.
+It does not copy the API key into a chat, a log, a commit, or this note.
 
-Paste these lines into the .env file of your project, replacing each <...> with the value
-of that field in this item, and keep .env out of git:
+Fields on this item:
+  API key — concealed. Send it on every request. Never print it.
+  Endpoint — {endpoint}
+  Scope — {scope}
+  Name — who the key is for.
+  Email Address — contact. It is stored only in this item.
+  Expires — {expires}. Abstract Data can extend it.
+  Token ID — identifies the key. It is not the API key.
+
+.env lines, if the project loads one. Keep .env out of git. Copy each value from this item:
   TX_TURNOUT_API_KEY=<the "API key" field>
   TX_TURNOUT_API_NAME=<the "Name" field>
   TX_TURNOUT_API_EMAIL=<the "Email Address" field>
+  TX_TURNOUT_API_ENDPOINT=<the "Endpoint" field>
 
-For an agent: send the key to the read API at {base_url} as either
-  Authorization: Bearer $TX_TURNOUT_API_KEY
-  X-API-Key: $TX_TURNOUT_API_KEY
-The API also sits behind Cloudflare Access. Its service-token headers (CF-Access-Client-Id and
-CF-Access-Client-Secret) are provided separately by Abstract Data.
-
-Expiry: this key expires on {expires}. Abstract Data can extend it.
+Call the API:
+  1. First request: GET {endpoint}
+     Optional filter: ?q= followed by part of a source_election_id.
+  2. Send the API key as either header:
+       Authorization: Bearer $TX_TURNOUT_API_KEY
+       X-API-Key: $TX_TURNOUT_API_KEY
+     From this item, that value is the API key field, not the Token ID.
+  3. Also send Cloudflare Access headers. They are not in this item:
+       CF-Access-Client-Id
+       CF-Access-Client-Secret
+     Abstract Data provides them separately. Without them the edge stops the
+     request before the API key is checked.
+  4. GET {endpoint} returns JSON with an elections array. Each election has
+     source_election_id, first_ev_date, last_ev_date, total_rows, and days
+     (ev_date, rows, sha256, byte_length). Those are counts. There are no voter names.
+  5. One election: GET {base_url}/elections/<source_election_id>
+  6. Counts for that election, with this same key:
+       GET {base_url}/elections/<source_election_id>/aggregates/totals
+       GET {base_url}/elections/<source_election_id>/aggregates/county
+       GET {base_url}/elections/<source_election_id>/aggregates/by-method
+       GET {base_url}/elections/<source_election_id>/aggregates/by-day
+       GET {base_url}/elections/<source_election_id>/aggregates/county-by-day
+     Add ?ev_date=YYYY-MM-DD for that day only. Leave it off for the cumulative total.
+       GET {base_url}/elections/<source_election_id>/geo/precincts
+     returns precinct points and boxes, not voters.
+{scope_steps}
+  7. 401 means the Access headers or the API key was rejected. 403 on a roster
+     route means this key's scope is aggregates. Do not invent another key.
 
 Never commit this key. Never paste it into a chat or a log.
 """
@@ -124,12 +161,41 @@ def api_base_url() -> str:
     return os.environ.get(API_BASE_URL_ENV, "").strip().rstrip("/") or API_BASE_URL
 
 
+def entrypoint_url() -> str:
+    """Catalog route an agent calls first. Counts only; no voter rows."""
+    return f"{api_base_url()}/elections"
+
+
 def vault_id() -> str:
     return os.environ.get(VAULT_ENV, "").strip() or VAULT_ID
 
 
-def render_instructions(expires_date: str) -> str:
-    return INSTRUCTIONS_TEMPLATE.format(base_url=api_base_url(), expires=expires_date)
+def _scope_steps(scope: str, base_url: str) -> str:
+    if scope == SCOPE_ROSTER:
+        return (
+            "  Scope roster: this key can also download voter rows. The CSV includes\n"
+            "  ID_VOTER and VOTER_NAME. Do not log names or VUIDs.\n"
+            f"    GET {base_url}/elections/<source_election_id>/roster\n"
+            f"    GET {base_url}/elections/<source_election_id>/roster/<YYYY-MM-DD>\n"
+            "  An aggregates key gets 403 on those routes."
+        )
+    return (
+        "  Scope aggregates: this key reads counts only. Do not call a /roster route.\n"
+        "  It returns 403. Voter rows need a different key whose Scope field is roster."
+    )
+
+
+def render_instructions(expires_date: str, *, scope: str = SCOPE_AGGREGATES) -> str:
+    """Agent handoff note. The API key is not included."""
+    clean_scope = parse_scope(scope)
+    base_url = api_base_url()
+    return INSTRUCTIONS_TEMPLATE.format(
+        base_url=base_url,
+        endpoint=entrypoint_url(),
+        expires=expires_date,
+        scope=clean_scope,
+        scope_steps=_scope_steps(clean_scope, base_url),
+    )
 
 
 def build_item_template(
@@ -139,8 +205,10 @@ def build_item_template(
     api_key: str,
     token_id: str,
     expires_date: str,
+    scope: str = SCOPE_AGGREGATES,
 ) -> dict[str, object]:
     """JSON item template for ``op item create -``. Holds the key; pass it on stdin only."""
+    note = render_instructions(expires_date, scope=scope)
     return {
         "title": item_title(name),
         "category": "API_CREDENTIAL",
@@ -152,6 +220,18 @@ def build_item_template(
                 "label": FIELD_API_KEY,
                 "value": api_key,
             },
+            {
+                "id": "endpoint",
+                "type": "URL",
+                "label": FIELD_ENDPOINT,
+                "value": entrypoint_url(),
+            },
+            {
+                "id": "scope",
+                "type": "STRING",
+                "label": FIELD_SCOPE,
+                "value": parse_scope(scope),
+            },
             {"id": "name", "type": "STRING", "label": FIELD_NAME, "value": name},
             {"id": "email_address", "type": "EMAIL", "label": FIELD_EMAIL, "value": email},
             {"id": "expires_on", "type": "DATE", "label": FIELD_EXPIRES, "value": expires_date},
@@ -160,7 +240,14 @@ def build_item_template(
                 "id": "instructions",
                 "type": "STRING",
                 "label": FIELD_INSTRUCTIONS,
-                "value": render_instructions(expires_date),
+                "value": note,
+            },
+            {
+                "id": FIELD_NOTES,
+                "type": "STRING",
+                "purpose": "NOTES",
+                "label": FIELD_NOTES,
+                "value": note,
             },
         ],
     }
@@ -181,6 +268,7 @@ class OnePasswordKeyStore:
         api_key: str,
         token_id: str,
         expires_date: str,
+        scope: str = SCOPE_AGGREGATES,
     ) -> OnePasswordItem:
         template = build_item_template(
             name=name,
@@ -188,6 +276,7 @@ class OnePasswordKeyStore:
             api_key=api_key,
             token_id=token_id,
             expires_date=expires_date,
+            scope=scope,
         )
         out = self._runner.run(
             ["item", "create", "-", "--vault", self._vault, "--format", "json"],
@@ -226,8 +315,12 @@ class OnePasswordKeyStore:
                 return found
         return None
 
-    def update_expiry(self, item_id: str, expires_date: str) -> None:
-        """Set Expires and re-render Instructions. Neither value is secret."""
+    def update_expiry(
+        self, item_id: str, expires_date: str, *, scope: str = SCOPE_AGGREGATES
+    ) -> None:
+        """Set Expires and re-render the agent note. Neither value is secret."""
+        note = render_instructions(expires_date, scope=scope)
+        clean_scope = parse_scope(scope)
         self._runner.run(
             [
                 "item",
@@ -236,7 +329,10 @@ class OnePasswordKeyStore:
                 "--vault",
                 self._vault,
                 f"{FIELD_EXPIRES}[date]={expires_date}",
-                f"{FIELD_INSTRUCTIONS}[text]={render_instructions(expires_date)}",
+                f"{FIELD_ENDPOINT}[url]={entrypoint_url()}",
+                f"{FIELD_SCOPE}[text]={clean_scope}",
+                f"{FIELD_INSTRUCTIONS}[text]={note}",
+                f"{FIELD_NOTES}[text]={note}",
             ]
         )
 
