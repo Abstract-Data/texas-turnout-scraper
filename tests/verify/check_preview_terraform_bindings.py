@@ -1,4 +1,4 @@
-"""Preview Worker Terraform must wire shell DB, election D1 and EV_D1_BINDINGS, and no Access pair."""
+"""Preview Worker Terraform wires DB, election D1 and EV_D1_BINDINGS, and no Access pair."""
 
 from __future__ import annotations
 
