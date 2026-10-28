@@ -54,9 +54,9 @@ them. Geography is computed after the roster load and stored. It is never comput
    a non-table model validates, the table model generates the DDL). The DDL and SQL are committed
    in `voter_geo_tables.py`, which imports no sqlmodel, sqlalchemy or duckdb, and a drift test
    pins them. `early_vote_sync` creates them with the other tables.
-7. **Read route.** `GET /elections/{id}/roster/{ev_date}/geo?page=k`, `k` in `0..63`, behind the
+7. **Read route.** `GET /elections/{id}/roster/{ev_date}/geo?page=k`, `k` in `0..255`, behind the
    roster gate: only an active roster-scoped consumer token. The Access service credential gets
-   401 and an aggregates token gets 403, as on the roster routes. Page `k` is the `k`th of 64
+   401 and an aggregates token gets 403, as on the roster routes. Page `k` is the `k`th of 256
    row-hash ranges of that day's live rows. The pages partition the day's rows, so every live VUID
    of the day is on at least one page and is distinct within a page. A VUID listed twice on one
    day under two row hashes (ADR-012's same-day repeat, 1,046 voters on 2026-10-24) can appear on
@@ -65,13 +65,16 @@ them. Geography is computed after the roster load and stored. It is never comput
    returns the page as one row with a count and a JSON text cell (`json_group_array`, the ADR-010
    §12 trick), and the
    Worker wraps it without parsing, so Worker CPU stays constant per page. That is why this join
-   is affordable per request when parsing a stored roster day is not: it reads about 6,000 indexed
+   is affordable per request when parsing a stored roster day is not: it reads about 4,000 indexed
    rows and never touches the stored file. Each voter carries `vuid`, `county_fips`, `pctkey`,
    `cd`, `sd`, `hd`, `district_source`, `split_flag`, `flags`, `lat`, `lon`, `geocode_source`,
    `geocode_quality`, `address_points_vintage` and `matched_at`, and never a name, voting method
    or county text. The response is
    `Cache-Control: private, no-cache` with an ETag from the day's version, the build signature and
-   the page. Missing tables give 503 `voter_geo_not_loaded`.
+   the page. Missing tables give 503 `voter_geo_not_loaded`. The JSON cell is one D1 string, and
+   D1 caps a string at 2 MB. A voter with a point takes about 340 bytes, so 256 pages keep a
+   1,000,000-row day (2026-10-24 re-listed 656,734 earlier voters on top of its own) under
+   1.5 MB per page. `tests/unit/test_voter_geo_page_size.py` pins it.
 8. **Point invariant.** `lat` and `lon` are not null if and only if `geocode_quality` is
    `address_point`. Stage 1 never emits a point: `geocode_quality` is `stated_precinct` with a
    `pctkey`, `not_located` without one, and NULL when the VUID has no row yet. A precinct interior
