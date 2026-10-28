@@ -126,16 +126,6 @@ resource "cloudflare_worker_version" "preview" {
     },
     {
       type = "plain_text"
-      name = "ACCESS_CLIENT_ID"
-      text = cloudflare_zero_trust_access_service_token.preview.client_id
-    },
-    {
-      type = "secret_text"
-      name = "ACCESS_CLIENT_SECRET"
-      text = cloudflare_zero_trust_access_service_token.preview.client_secret
-    },
-    {
-      type = "plain_text"
       name = "EV_D1_BINDINGS"
       text = local.ev_d1_bindings
     },
@@ -168,9 +158,8 @@ resource "cloudflare_zero_trust_access_service_token" "preview" {
   name       = local.worker_name
   duration   = "8760h"
 
-  # Rotate the secret through Terraform so state and the Worker's ACCESS_CLIENT_SECRET
-  # binding learn the new value. A dashboard rotation leaves state stale because the API
-  # never returns the secret again. Raising the version makes the provider rotate and read
+  # Rotate the secret through Terraform so state learns the new value. A dashboard rotation
+  # leaves state stale because the API never returns the secret again. Raising the version makes the provider rotate and read
   # the new secret. Cloudflare was at version 2 after a manual rotation, so use 3.
   # The previous secret stays valid until the timestamp, which gives time to update
   # 1Password from `terraform output -raw access_client_secret`.
