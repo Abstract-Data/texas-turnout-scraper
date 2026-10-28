@@ -1,6 +1,7 @@
 {
 	"$schema": "./node_modules/wrangler/config-schema.json",
-	// ADR-017. Step 1 is the portal egress spike: no cron, so nothing runs on a schedule.
+	// ADR-017. The cron starts the loader at 10:00, 17:00 and 22:00 Central through 2026-11-03.
+	// EV_SYNC_MODE gates it: off (default, nothing runs), dry_run, or apply.
 	"name": "tx-turnout-ev-ingest-preview",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-10-27",
@@ -29,5 +30,13 @@
 	"exports": {
 		"EvIngest": { "type": "durable-object", "storage": "sqlite" }
 	},
-	"secrets": { "required": ["RUN_TOKEN"] }
+	"triggers": { "crons": ["0 15,16,22,23,3,4 * * *"] },
+	"vars": {
+		"EV_SYNC_MODE": "off",
+		"CLOUDFLARE_ACCOUNT_ID": "e83f342a6c0f6e20b80697363714bf7b",
+		"CLOUDFLARE_KV_NAMESPACE_ID": "007c96df66594720afac0ed2d5afc3d8",
+		"EV_SNAPSHOT_BUCKET": "tx-turnout-ev-snapshots-preview"
+	},
+	// Copies of the 1Password Environment values; re-set them with `wrangler secret put` on rotation.
+	"secrets": { "required": ["RUN_TOKEN", "CLOUDFLARE_API_TOKEN", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"] }
 }

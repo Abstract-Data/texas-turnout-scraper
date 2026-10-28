@@ -4,6 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"check": "tsc --noEmit",
+		"test": "node --test test/*.test.ts",
 		"types": "wrangler types",
 		"deploy": "wrangler deploy"
 	},

@@ -4,5 +4,6 @@
 !README.md
 !src/
 !data/geo/tx_geo.json
+!scripts/ev_ingest_steps.sh
 src/**/__pycache__
 src/texas_turnout_scraper/tmp/

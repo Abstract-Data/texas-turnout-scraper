@@ -28,9 +28,9 @@ A push to `main` or `workflow_dispatch` on `main` runs two jobs in the GitHub En
 
 ## Early-vote cron trigger
 
-`cloudflare_workers_cron_trigger.ev_sync` targets **`tx-turnout-ev-sync-preview`** (`ev_sync.tf`), not the read API Worker. The schedule is `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 the sync Worker's `scheduled` handler creates an `EvSyncWorkflow` instance when `EV_SYNC_MODE` is not `off`. Default **`ev_sync_mode = off`** so merge applies inert.
+Terraform manages no cron. The early-vote schedule is on the ingest Container Worker `tx-turnout-ev-ingest-preview` (`infra/ev_ingest`, ADR-017), which `wrangler deploy` manages because the Terraform provider has no Container resource. The Python sync Worker `tx-turnout-ev-sync-preview` keeps its `scheduled` handler but no trigger fires it.
 
-The read API Worker may still carry an optional `GITHUB_DISPATCH_TOKEN` binding for manual dispatch during cutover; this cron no longer calls GitHub. See `docs/adr/014-cloudflare-workflow-ingest.md`.
+The read API Worker may still carry an optional `GITHUB_DISPATCH_TOKEN` binding from the GitHub-dispatch era (ADR-013); no cron uses it. See `docs/adr/017-cloudflare-container-ingest.md`.
 
 ## Workflow ingest spike (temporary)
 
@@ -130,7 +130,7 @@ Do the GitHub settings before adding secrets. Do not try to apply from this pull
 | `TF_STATE_BUCKET` | State bucket name, such as `tx-turnout-tfstate-preview`. |
 | `TF_STATE_ENDPOINT` | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
 | `OP_SERVICE_ACCOUNT_TOKEN` | 1Password service account token that can read Environment `s6tljdcafkgqxfuxhcnj3m5x5a`. |
-| `EV_DISPATCH_GITHUB_TOKEN` | Optional. Fine-grained GitHub token, this repository only, Actions: write only. The Worker cron uses it to dispatch the early-vote sync. |
+| `EV_DISPATCH_GITHUB_TOKEN` | Optional. Fine-grained GitHub token, this repository only, Actions: write only. Binds `GITHUB_DISPATCH_TOKEN` on the read API Worker; no cron dispatches with it since ADR-017. |
 
 6. In that 1Password Environment, name these variables exactly:
 
