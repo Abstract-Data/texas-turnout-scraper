@@ -19,6 +19,7 @@ from texas_turnout_scraper.early_vote_aggregates import (
     build_by_day_series,
     build_county_by_day_series,
     build_cumulative_totals,
+    slice_by_method,
 )
 from texas_turnout_scraper.early_vote_roster_rows import (
     ROW_TABLE_SQL,
@@ -296,6 +297,37 @@ def test_one_day_and_county_by_day_publish_new_voters() -> None:
     day3 = {row["county"]: row for row in series["series"][1]["by_county"]}
     assert (day3["LASALLE"]["new_voters"], day3["LASALLE"]["restated_rows"]) == (0, 2)
     assert (day3["TRAVIS"]["new_voters"], day3["TRAVIS"]["county_fips"]) == (1, "48453")
+
+
+def test_by_method_bodies_without_a_total_still_get_rows_and_unique_voters() -> None:
+    totals = build_cumulative_totals(source_election_id=ELECTION, days=_DAYS)
+    body = _any(slice_by_method(totals))
+    body["days"] = totals["days"]
+    annotate(body, "by-method", _SEEN, ev_date=None)
+    assert body["statewide"] == {
+        "in_person": 4,
+        "mail_in": 1,
+        "rows_reported": 5,
+        "unique_voters": 3,
+        "unique_in_person": 2,
+        "unique_mail_in": 1,
+    }
+    lasalle = body["by_county"][0]
+    assert (lasalle["rows_reported"], lasalle["unique_voters"]) == (4, 2)
+
+
+def test_a_fallback_body_with_no_stored_day_is_missing_not_current() -> None:
+    cumulative = _any(dict(_DAYS[1][1]))
+    del cumulative["ev_date"]
+    annotate(cumulative, "totals", _SEEN, ev_date=None)
+    assert cumulative["dedupe"]["status"] == "missing"
+    assert cumulative["statewide"]["unique_voters"] is None
+    assert not cacheable(cumulative)
+    latest = _any(build_by_day_series(source_election_id=ELECTION, days=(("latest", _DAYS[1][1]),)))
+    annotate(latest, "by-day", _SEEN, ev_date=None)
+    assert latest["dedupe"]["status"] == "missing"
+    assert latest["series"][0]["new_voters"] is None
+    assert not cacheable(latest)
 
 
 @pytest.mark.parametrize("status", ["stale", "missing"])

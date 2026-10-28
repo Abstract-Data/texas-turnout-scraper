@@ -191,20 +191,27 @@ async def load_first_seen(db: D1Database, election_id: str) -> FirstSeen:
     return FirstSeen("current", counts)
 
 
+def _row_total(obj: Mapping[str, object]) -> int | None:
+    """The object's row count: ``total``, or ``in_person + mail_in`` where there is no total."""
+    if "total" in obj:
+        return _d1_int(obj["total"])
+    in_person, mail_in = _d1_int(obj.get("in_person")), _d1_int(obj.get("mail_in"))
+    return None if in_person is None or mail_in is None else in_person + mail_in
+
+
 def _add_counts(obj: dict[str, object], prefix: str, found: tuple[int, int] | None) -> None:
-    """Add ``{prefix}_voters`` / ``_in_person`` / ``_mail_in`` next to the row counts."""
+    """Add ``rows_reported`` and ``{prefix}_voters`` / ``_in_person`` / ``_mail_in``."""
     in_person: int | None = None
     mail_in: int | None = None
-    total: int | None = None
+    voters: int | None = None
     if found is not None:
         in_person, mail_in = found
-        total = in_person + mail_in
-    if "total" in obj:
-        obj["rows_reported"] = obj["total"]
-        obj[f"{prefix}_voters"] = total
-        if prefix == "new":
-            rows = _d1_int(obj["total"])
-            obj["restated_rows"] = None if total is None or rows is None else max(rows - total, 0)
+        voters = in_person + mail_in
+    rows = _row_total(obj)
+    obj["rows_reported"] = rows
+    obj[f"{prefix}_voters"] = voters
+    if prefix == "new":
+        obj["restated_rows"] = None if voters is None or rows is None else max(rows - voters, 0)
     if "in_person" in obj:
         obj[f"{prefix}_in_person"] = in_person
     if "mail_in" in obj:
@@ -238,19 +245,29 @@ def _annotate_by_day(body: dict[str, object], first_seen: FirstSeen) -> None:
     for entry in series if isinstance(series, list) else []:
         if not isinstance(entry, dict):
             continue
-        ev_date = entry.get("ev_date")
-        # The "latest" placeholder of a body with no stored days has no first appearances.
-        known = first_seen if _is_iso_date(ev_date) else FirstSeen("missing")
-        day = {str(ev_date)}
+        day = {str(entry.get("ev_date"))}
         if "by_county" in entry:
-            _annotate_counts(entry, known, day, "new")
+            _annotate_counts(entry, first_seen, day, "new")
             continue
-        _add_counts(entry, "new", known.totals(day) if known.current else None)
+        _add_counts(entry, "new", first_seen.totals(day) if first_seen.current else None)
         restated = entry.get("restated_rows")
         entry["restated"] = restated > 0 if isinstance(restated, int) else None
         new = entry.get("new_voters")
         running = running + new if running is not None and isinstance(new, int) else None
         entry["cumulative_unique_voters"] = running
+
+
+def _matchable(body: Mapping[str, object], resource: str, ev_date: str | None) -> bool:
+    """False for a body whose days cannot be matched to first appearances.
+
+    A cumulative body built without a ``days`` list, or a series whose only entry is the
+    ``"latest"`` placeholder, falls back to the published file and names no stored day.
+    """
+    if resource in ("by-day", "county-by-day"):
+        series = body.get("series")
+        entries = series if isinstance(series, list) else []
+        return all(isinstance(e, dict) and _is_iso_date(e.get("ev_date")) for e in entries)
+    return ev_date is not None or isinstance(body.get("days"), list)
 
 
 def _county_rows(body: dict[str, object]) -> Iterable[dict[str, object]]:
@@ -277,6 +294,8 @@ def annotate(
     if body.get("payload_kind") == "turnout":
         body["dedupe"] = {"status": "not_applicable"}
         return body
+    if first_seen.current and not _matchable(body, resource, ev_date):
+        first_seen = FirstSeen("missing")
     body["dedupe"] = {"status": first_seen.status, "basis": "first_appearance"}
     if resource in ("by-day", "county-by-day"):
         _annotate_by_day(body, first_seen)
@@ -284,11 +303,8 @@ def annotate(
         _annotate_counts(body, first_seen, {ev_date}, "new")
     else:
         days = body.get("days")
-        # A cumulative body built without a day list cannot be matched to first appearances.
-        if isinstance(days, list):
-            _annotate_counts(body, first_seen, {str(d) for d in days}, "unique")
-        else:
-            _annotate_counts(body, FirstSeen("missing"), set(), "unique")
+        listed = {str(d) for d in days} if isinstance(days, list) else set()
+        _annotate_counts(body, first_seen, listed, "unique")
     return body
 
 
