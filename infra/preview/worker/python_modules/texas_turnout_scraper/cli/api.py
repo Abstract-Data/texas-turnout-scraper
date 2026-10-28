@@ -130,6 +130,7 @@ def api_generate(
                 api_key=issued.plaintext,
                 token_id=issued.token_id,
                 expires_date=issued.expires_at[:10],
+                scope=issued.scope,
             )
         except OnePasswordError as exc:
             raise _fail(f"{exc} Nothing was written to Cloudflare.", EXIT_SERVICE) from exc
@@ -197,7 +198,7 @@ def api_extend(
     """Extend a key: max(now, current expiry) + N days (D1, KV, 1Password)."""
     admin = _admin()
     try:
-        new_expiry = admin.extend(token_id, days, set_expiry=set_expiry)
+        new_expiry, scope = admin.extend(token_id, days, set_expiry=set_expiry)
     except TokenNotFoundError as exc:
         raise _fail("unknown token_id", EXIT_SERVICE) from exc
     except TokenRevokedError as exc:
@@ -224,7 +225,7 @@ def api_extend(
                 err=True,
             )
             return
-        store.update_expiry(item_id, new_expiry[:10])
+        store.update_expiry(item_id, new_expiry[:10], scope=scope)
     except OnePasswordError as exc:
         raise _fail(
             f"{exc} Cloudflare was extended to {new_expiry[:10]} but the 1Password item was not "

@@ -98,6 +98,7 @@ from texas_turnout_scraper.early_vote_roster_rows import (
     legacy_drain_sql,
     legacy_remaining_sql,
 )
+from texas_turnout_scraper.early_vote_workflow_tables import WORKFLOW_SCHEMA_CREATES
 from texas_turnout_scraper.geo_tables import (
     AREA_COLUMNS_SQL,
     GEO_SCHEMA_CREATES,
@@ -445,6 +446,7 @@ _SCHEMA_CREATES: tuple[str, ...] = (
     *GEO_SCHEMA_CREATES,
     *VOTER_SCHEMA_CREATES,
     *REPEAT_SCHEMA_CREATES,
+    *WORKFLOW_SCHEMA_CREATES,
     *VOTER_GEO_SCHEMA_CREATES,
 )
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"

@@ -33,7 +33,9 @@ _INPUTS = {
     "trigger": "cron",
 }
 
-Send = Callable[[str, dict[str, str], dict[str, object]], Awaitable[int]]
+_BODY_LOG_MAX = 300
+
+Send = Callable[[str, dict[str, str], dict[str, object]], Awaitable[tuple[int, str]]]
 
 
 class DispatchError(RuntimeError):
@@ -56,6 +58,21 @@ def dispatch_request(token: str) -> tuple[str, dict[str, str], dict[str, object]
     return _DISPATCH_URL, headers, {"ref": "main", "inputs": dict(_INPUTS)}
 
 
+def body_text_for_log(raw: str) -> str:
+    """Collapse whitespace and cap length for safe operational logs."""
+    compact = " ".join(raw.split())
+    if len(compact) <= _BODY_LOG_MAX:
+        return compact
+    return f"{compact[:_BODY_LOG_MAX]}…"
+
+
+def dispatch_error_message(status: int, body: str) -> str:
+    message = f"early-vote dispatch failed: HTTP {status}"
+    if status == 422 and "disabled" in body.lower():
+        message += "; workflow appears disabled"
+    return message
+
+
 async def run_scheduled(env: object, now: datetime, send: Send) -> None:
     if not should_dispatch(now):
         return
@@ -63,7 +80,13 @@ async def run_scheduled(env: object, now: datetime, send: Send) -> None:
     if not token:
         logger.warning("early-vote dispatch skipped: GITHUB_DISPATCH_TOKEN is not set")
         return
-    status = await send(*dispatch_request(token))
+    status, body = await send(*dispatch_request(token))
     if status != 204:
-        raise DispatchError(f"early-vote dispatch failed: HTTP {status}")
+        logged_body = body_text_for_log(body)
+        logger.error(
+            "early-vote dispatch rejected: HTTP %s body=%s",
+            status,
+            logged_body or "(empty)",
+        )
+        raise DispatchError(dispatch_error_message(status, body))
     logger.info("early-vote dispatch accepted: HTTP 204")

@@ -9,7 +9,7 @@ via simple HTTP GET, without running a server.
 
 ## Decision
 Commit CSV/JSON output to `data/elections/` in the repo. GitHub Actions runs
-`tx-turnout` on a schedule and commits new data. GitHub Pages serves `data/` as a
+`tx-turnout` on a schedule and commits new data. **Update (2026-10):** `data-refresh.yml` no longer runs on `schedule`; production ingest is D1/KV via `early-vote-sync`. GitHub Pages serves `data/` as a
 static API: `https://{org}.github.io/texas-turnout-scraper/data/elections/index.json`.
 
 The Flat Viewer (flat.githubocto.com) can read any committed CSV/JSON via its viewer

@@ -28,9 +28,9 @@ A push to `main` or `workflow_dispatch` on `main` runs two jobs in the GitHub En
 
 ## Early-vote cron trigger
 
-`cloudflare_workers_cron_trigger.ev_sync` runs the Worker's `scheduled` handler on `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 the handler dispatches `early-vote-sync.yml` on `main` with `trigger=cron`; at every other firing it does nothing. It does not scrape and does not write D1 or KV. See `docs/adr/013-worker-cron-dispatches-sync.md` and the runbook section "Early-vote schedule (Worker cron)".
+`cloudflare_workers_cron_trigger.ev_sync` targets **`tx-turnout-ev-sync-preview`** (`ev_sync.tf`), not the read API Worker. The schedule is `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 the sync Worker's `scheduled` handler creates an `EvSyncWorkflow` instance when `EV_SYNC_MODE` is not `off`. Default **`ev_sync_mode = off`** so merge applies inert.
 
-The dispatch token comes from the `preview` environment secret `EV_DISPATCH_GITHUB_TOKEN` (a fine-grained token with only Actions: write on this repository). The plan step passes it as `TF_VAR_github_dispatch_token`; the variable is `sensitive` and defaults to empty, and the `GITHUB_DISPATCH_TOKEN` `secret_text` binding is added only when it is non-empty. The saved plan carries the value, so the apply step does not need it. The token also lands in the Terraform state in the same private bucket and in the Worker binding; rotate it by changing the secret and running the Terraform workflow.
+The read API Worker may still carry an optional `GITHUB_DISPATCH_TOKEN` binding for manual dispatch during cutover; this cron no longer calls GitHub. See `docs/adr/014-cloudflare-workflow-ingest.md`.
 
 ## Workflow ingest spike (temporary)
 
@@ -257,7 +257,7 @@ Optional overrides: `TX_TURNOUT_OP_VAULT` (1Password vault id, default the `AD: 
 | Command | What it does |
 | --- | --- |
 | `api generate --name N --email E [--days 30] [--scope aggregates\|roster] [--show] [--non-interactive]` | Prompts for a missing name or email on a TTY. With `--non-interactive` or no TTY a missing option exits 2. Prints `token_id`, name, scope, `expires_at` and the 1Password item. The key prints only with `--show`. The email is never printed. |
-| `api extend <token_id> [--days 30]` | New expiry is the later of now and the current expiry, plus N days. Updates D1, re-puts the KV entry with the new TTL, then updates the item's `Expires` and `Instructions` fields (found by tag `token:<token_id>`; a missing item warns). A revoked token is refused. A key that never expires is refused too unless you pass `--set-expiry`, which gives it now plus N. If the 1Password update fails after Cloudflare was extended, the command prints the new date to set by hand; do not run `extend` again, it would add the days a second time. |
+| `api extend <token_id> [--days 30]` | New expiry is the later of now and the current expiry, plus N days. Updates D1, re-puts the KV entry with the new TTL, then updates the item's `Expires`, `Instructions`, and notes (found by tag `token:<token_id>`; a missing item warns). A revoked token is refused. A key that never expires is refused too unless you pass `--set-expiry`, which gives it now plus N. If the 1Password update fails after Cloudflare was extended, the command prints the new date to set by hand; do not run `extend` again, it would add the days a second time. |
 | `api list` | `token_id`, status (`active`, `expired`, `revoked`), scope, created, expires (`never` for keys minted before expiry existed), label. |
 | `api revoke <token_id>` | Unchanged: D1 `revoked_at` plus KV delete. The 1Password item is left in place. |
 
@@ -265,7 +265,7 @@ Exit codes: 0 ok, 1 service or auth error (Cloudflare or `op`), 2 usage or valid
 
 Write order: the key is generated locally, the 1Password item is created first, then the D1 row, then the KV entry. If D1 or KV fails, the item is archived (best effort), the partial token is revoked, and the command exits 1 naming only the Cloudflare error class. If 1Password fails nothing is written to Cloudflare. The key reaches `op` on stdin inside a JSON item template, never in argv.
 
-1Password item: vault `qxyxd4oqdy5mpmg4t4qh3bfflm`, category API Credential, title `texas-turnout-scraper: <Name>`, tags `texas-turnout-scraper` and `token:<token_id>`. Fields: `credential` (the key, concealed), `Name`, `Email Address`, `Expires`, `Token ID`, `Instructions`. The email lives only in 1Password; D1 stores the name as the label.
+1Password item: vault `qxyxd4oqdy5mpmg4t4qh3bfflm`, category API Credential, title `texas-turnout-scraper: <Name>`, tags `texas-turnout-scraper` and `token:<token_id>`. Fields: `credential` (the key, concealed), `Endpoint` (URL, `{base}/elections`), `Scope` (`aggregates` or `roster`), `Name`, `Email Address`, `Expires`, `Token ID`, `Instructions`, and the same text in the item notes. The instructions are an agent handoff: the entrypoint, both auth headers, the Access headers this item does not contain, and what the scope can call. The email lives only in 1Password; D1 stores the name as the label. The key is not written into the note.
 
 Expiry: `consumer_api_token.expires_at` (ISO-8601 UTC, nullable). The KV entry is written with `expiration_ttl` (REST query parameter, minimum 60 seconds). The Worker keeps `SELECT *` and checks `expires_at` in Python: a non-empty value at or before now, or one that does not parse, is rejected; a missing column or empty value never expires. A KV hit is bounded by its TTL. Keys minted before this change have no expiry and never expire.
 

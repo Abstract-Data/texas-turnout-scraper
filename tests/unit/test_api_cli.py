@@ -170,7 +170,17 @@ def test_item_shape_and_instructions(env: Env) -> None:
     token_id = env.field("Token ID")
     assert template["tags"] == ["texas-turnout-scraper", f"token:{token_id}"]
     labels = [f["label"] for f in template["fields"]]  # type: ignore[attr-defined]
-    assert labels == ["API key", "Name", "Email Address", "Expires", "Token ID", "Instructions"]
+    assert labels == [
+        "API key",
+        "Endpoint",
+        "Scope",
+        "Name",
+        "Email Address",
+        "Expires",
+        "Token ID",
+        "Instructions",
+        "notesPlain",
+    ]
     expires = env.field("Expires")
     expected = (dt.datetime.now(tz=dt.timezone.utc) + dt.timedelta(days=7)).date().isoformat()
     assert expires in {
@@ -186,6 +196,7 @@ def test_item_shape_and_instructions(env: Env) -> None:
         "Authorization: Bearer $TX_TURNOUT_API_KEY",
         "X-API-Key: $TX_TURNOUT_API_KEY",
         "https://ev-api-preview.abstractdata.io",
+        "https://ev-api-preview.abstractdata.io/elections",
         "CF-Access-Client-Id",
         "CF-Access-Client-Secret",
         expires,
@@ -195,6 +206,11 @@ def test_item_shape_and_instructions(env: Env) -> None:
         assert needle.lower() in text.lower(), needle
     key = next(f["value"] for f in template["fields"] if f["label"] == "API key")  # type: ignore[attr-defined]
     assert key not in text
+    assert env.field("Endpoint") == "https://ev-api-preview.abstractdata.io/elections"
+    assert env.field("Scope") == "aggregates"
+    assert env.field("notesPlain") == text
+    endpoint = next(f for f in template["fields"] if f["label"] == "Endpoint")  # type: ignore[attr-defined]
+    assert endpoint["type"] == "URL"
 
 
 def test_write_order_is_1password_then_d1_then_kv_with_ttl(env: Env) -> None:
@@ -214,6 +230,11 @@ def test_roster_scope_is_explicit(env: Env) -> None:
     env.invoke("generate", "--name", NAME, "--email", EMAIL, "--scope", "roster")
     assert env.cf.db.execute("SELECT scope FROM consumer_api_token").fetchone()["scope"] == "roster"
     assert next(iter(env.cf.kv.values()))[0] == "roster"
+    assert env.field("Scope") == "roster"
+    note = env.field("Instructions")
+    assert "Scope roster" in note
+    assert "/roster/<YYYY-MM-DD>" in note
+    assert env.field("notesPlain") == note
 
 
 def test_bad_scope_exits_2_before_any_write(env: Env) -> None:
@@ -318,7 +339,15 @@ def test_extend_updates_d1_kv_and_1password(env: Env) -> None:
     assert abs(int(params["expiration_ttl"]) - delta.total_seconds()) < 120
     args, _ = env.op.calls[-1]
     assert f"Expires[date]={expires[:10]}" in args
-    assert any(a.startswith("Instructions[text]=") and expires[:10] in a for a in args)
+    instructions = next(a for a in args if a.startswith("Instructions[text]="))
+    notes = next(a for a in args if a.startswith("notesPlain[text]="))
+    assert expires[:10] in instructions
+    assert "/elections" in instructions
+    assert notes.removeprefix("notesPlain[text]=") == instructions.removeprefix(
+        "Instructions[text]="
+    )
+    assert "Endpoint[url]=https://ev-api-preview.abstractdata.io/elections" in args
+    assert "Scope[text]=aggregates" in args
     assert not _leaks(" ".join(args), EMAIL, NAME)
 
 
@@ -410,6 +439,8 @@ def test_instructions_show_the_exact_env_lines_to_paste(env: Env) -> None:
     assert 'TX_TURNOUT_API_KEY=<the "API key" field>' in text
     assert 'TX_TURNOUT_API_NAME=<the "Name" field>' in text
     assert 'TX_TURNOUT_API_EMAIL=<the "Email Address" field>' in text
+    assert 'TX_TURNOUT_API_ENDPOINT=<the "Endpoint" field>' in text
+    assert "GET https://ev-api-preview.abstractdata.io/elections" in text
 
 
 def test_a_permission_error_is_not_reported_as_a_signin_problem(
