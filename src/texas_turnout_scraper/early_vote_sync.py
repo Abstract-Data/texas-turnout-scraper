@@ -98,6 +98,7 @@ from texas_turnout_scraper.early_vote_roster_rows import (
     legacy_drain_sql,
     legacy_remaining_sql,
 )
+from texas_turnout_scraper.early_vote_workflow_tables import WORKFLOW_SCHEMA_CREATES
 from texas_turnout_scraper.geo_tables import (
     AREA_COLUMNS_SQL,
     GEO_SCHEMA_CREATES,
@@ -109,7 +110,6 @@ from texas_turnout_scraper.r2_snapshots import (
     snapshot_store_from_env,
     warn_missing_snapshot_env,
 )
-from texas_turnout_scraper.early_vote_workflow_tables import WORKFLOW_SCHEMA_CREATES
 from texas_turnout_scraper.repeat_tables import REPEAT_SCHEMA_CREATES
 from texas_turnout_scraper.voter_tables import VOTER_SCHEMA_CREATES
 
