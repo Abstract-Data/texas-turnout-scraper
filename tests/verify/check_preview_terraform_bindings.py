@@ -1,4 +1,4 @@
-"""Preview Worker Terraform must wire Access, shell DB, election D1, and EV_D1_BINDINGS."""
+"""Preview Worker Terraform wires DB, election D1 and EV_D1_BINDINGS, and no Access pair."""
 
 from __future__ import annotations
 
@@ -11,16 +11,15 @@ from tests.verify.preview_tf_bindings import (
 )
 
 
-def test_preview_worker_version_binds_access_and_d1_map() -> None:
+def test_preview_worker_version_binds_d1_map_and_no_access_pair() -> None:
     text = preview_tf_text()
-    assert 'name = "ACCESS_CLIENT_ID"' in text
-    assert 'name = "ACCESS_CLIENT_SECRET"' in text
-    assert 'type = "secret_text"' in text
+    # The Worker accepts only minted tokens (ev_api/auth.py); Access checks the pair at the edge.
+    assert "ACCESS_CLIENT_ID" not in text
+    assert "ACCESS_CLIENT_SECRET" not in text
     assert 'name = "EV_D1_BINDINGS"' in text
     assert "local.ev_d1_bindings" in text
     assert "local.preview_election_d1_binding" in text
-    assert "cloudflare_zero_trust_access_service_token.preview.client_id" in text
-    assert "cloudflare_zero_trust_access_service_token.preview.client_secret" in text
+    assert "cloudflare_zero_trust_access_service_token.preview" in text
     assert "cloudflare_workers_custom_domain.preview" in text
     assert "preview_api_hostname" in text
     assert re.search(r'name\s*=\s*"DB"', text) is not None

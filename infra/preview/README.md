@@ -110,7 +110,7 @@ Terraform attaches `cloudflare_workers_custom_domain` and keeps the existing Acc
 
 Every caller sends the Access service token headers to get past the edge and a minted consumer token to get past the Worker. Verified on the preview route on 2026-10-23 with a short-lived minted token: `/health` and all five aggregate routes returned 200, and `If-None-Match` returned 304.
 
-The Worker authenticates only minted consumer tokens. Every consumer holds the same Access pair, so accepting it at the Worker would give each consumer a credential that revoking their key does not remove. One FastAPI dependency (`ev_api/auth.py`) checks aggregates scope on every route, and roster routes add roster scope; a test fails if any route answers a request without a token. The `ACCESS_CLIENT_ID` / `ACCESS_CLIENT_SECRET` Worker bindings are no longer read and can be dropped from Terraform. Do not log token values.
+The Worker authenticates only minted consumer tokens. Every consumer holds the same Access pair, so accepting it at the Worker would give each consumer a credential that revoking their key does not remove. One FastAPI dependency (`ev_api/auth.py`) checks aggregates scope on every route, and roster routes add roster scope; a test fails if any route answers a request without a token. The Worker has no Access bindings. Do not log token values.
 
 ## Bootstrap
 
@@ -176,13 +176,13 @@ endpoints = { s3 = "<TF_STATE_ENDPOINT>" }
 
 Send the id as `CF-Access-Client-Id` and the secret as `CF-Access-Client-Secret`. Do not log either value.
 
-The preview Worker version binds `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (from the Access service token above), shell D1 `DB` (consumer tokens), an imported election D1 (default `EV_53815` → `ev-53815`), and `EV_D1_BINDINGS` (JSON map from `preview_source_election_id` to that election binding name). Rotating the service token requires `terraform apply` so the Worker bindings pick up the new values.
+The preview Worker version binds shell D1 `DB` (consumer tokens), an imported election D1 (default `EV_53815` → `ev-53815`), and `EV_D1_BINDINGS` (JSON map from `preview_source_election_id` to that election binding name). It has no Access bindings: Access checks the pair at the edge.
 
 ## Rotating the Access service token
 
-Rotate through Terraform, not the dashboard. The Worker's `ACCESS_CLIENT_SECRET` binding comes from `cloudflare_zero_trust_access_service_token.preview.client_secret` in state, and Cloudflare never returns that secret again. A dashboard rotation updates Access but leaves state and the Worker binding on the old value, so Access passes the request and the Worker answers 401.
+Rotate through Terraform, not the dashboard. `terraform output -raw access_client_secret` reads `cloudflare_zero_trust_access_service_token.preview.client_secret` from state, and Cloudflare never returns that secret again. A dashboard rotation updates Access but leaves state on the old value, so the output no longer matches the secret Access accepts.
 
-To rotate: raise `client_secret_version` in `main.tf` above the version Cloudflare reports for the token (a dashboard rotation also raises it), and set `previous_client_secret_expires_at` to when the old secret should stop working. The provider then rotates, reads the new secret into state, and the next Worker version binds it. After apply, read the new secret with the `terraform output -raw access_client_secret` command above and store it in 1Password as `ACCESS_CLIENT_SECRET`.
+To rotate: raise `client_secret_version` in `main.tf` above the version Cloudflare reports for the token (a dashboard rotation also raises it), and set `previous_client_secret_expires_at` to when the old secret should stop working. The provider then rotates and reads the new secret into state. After apply, read the new secret with the `terraform output -raw access_client_secret` command above and store it in 1Password as `ACCESS_CLIENT_SECRET`. Issued keys carry their own copy of the pair, so then run `tx-turnout api attach-access --all` with `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` set to the new values; it replaces the pair on every issued item. The pair also lives wherever a consumer copied it, such as a deployed client's `.env`. Before `previous_client_secret_expires_at`, while both secrets still work, tell every consumer to switch to the new secret and update each deployed client configuration that holds a copy; after that time the old secret gets an Access block page.
 
 ## Consumer bearer tokens (minted)
 

@@ -8,6 +8,8 @@ from pathlib import Path
 PREVIEW_DIR = Path(__file__).resolve().parents[2] / "infra" / "preview"
 MAIN_TF = PREVIEW_DIR / "main.tf"
 ELECTION_D1_TF = PREVIEW_DIR / "election_d1.tf"
+# Holds local.spike_bindings, which main.tf concatenates into the Worker version bindings.
+SPIKE_INGEST_TF = PREVIEW_DIR / "spike_ingest.tf"
 VARIABLES_TF = PREVIEW_DIR / "variables.tf"
 
 
@@ -15,6 +17,8 @@ def preview_tf_text() -> str:
     parts = [MAIN_TF.read_text(encoding="utf-8")]
     if ELECTION_D1_TF.is_file():
         parts.append(ELECTION_D1_TF.read_text(encoding="utf-8"))
+    if SPIKE_INGEST_TF.is_file():
+        parts.append(SPIKE_INGEST_TF.read_text(encoding="utf-8"))
     return "\n".join(parts)
 
 
