@@ -26,9 +26,10 @@ def install_entrypoint() -> type | None:
     except ImportError:
         return None
 
-    async def send(url: str, headers: dict[str, str], body: dict[str, object]) -> int:
+    async def send(url: str, headers: dict[str, str], body: dict[str, object]) -> tuple[int, str]:
         response = await fetch(url, method="POST", headers=headers, body=json.dumps(body))
-        return response.status
+        text = await response.text()
+        return int(response.status), text
 
     class Default(WorkerEntrypoint):
         async def fetch(self, request):

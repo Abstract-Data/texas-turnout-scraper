@@ -194,9 +194,9 @@ class _Env:
 def _run_scheduled(env: _Env, now: datetime, status: int) -> tuple[list[object], list[str]]:
     calls: list[object] = []
 
-    async def send(url: str, headers: dict[str, str], body: dict[str, object]) -> int:
+    async def send(url: str, headers: dict[str, str], body: dict[str, object]) -> tuple[int, str]:
         calls.append((url, headers, body))
-        return status
+        return status, ""
 
     logger = logging.getLogger("ev_api.cron")
     records = _Records()

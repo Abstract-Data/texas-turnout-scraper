@@ -24,6 +24,9 @@ class FakeResponse:
     def __init__(self, status: int) -> None:
         self.status = status
 
+    async def text(self) -> str:
+        return ""
+
 
 class FakeWorkers(types.ModuleType):
     def __init__(self, status: int) -> None:
