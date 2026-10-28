@@ -127,7 +127,7 @@ def _db(*, voter_geo: bool = True, signature: bool = True) -> tuple[_Db, list[st
 def _client(db: _Db | None) -> TestClient:
     deps = ReadDeps(
         kv=_Kv(),
-        store=None,  # type: ignore[arg-type]
+        store=None,  # type: ignore[arg-type]  # reason: the geo route never reads the store
         access_client_id="id.access",
         access_client_secret="secret-not-real",
         ttl_seconds=60,
@@ -345,7 +345,8 @@ def test_a_page_costs_one_page_query_and_the_route_is_mounted_once() -> None:
     _page(client, 0)
     # list_days, present check, signature, page.
     assert db.queries - before == 4
-    paths = [getattr(r, "path", "") for r in client.app.routes]  # type: ignore[attr-defined]
+    routes = client.app.routes  # type: ignore[attr-defined]  # reason: app is typed as bare ASGI
+    paths = [getattr(r, "path", "") for r in routes]
     assert paths.count("/elections/{source_election_id}/roster/{ev_date}/geo") == 1
     assert "/elections/{source_election_id}/roster/{ev_date}" in paths
 

@@ -583,7 +583,10 @@ def test_the_sync_schema_creates_the_repeat_tables() -> None:
         assert sql in _SCHEMA_CREATES
 
 
-_HEAVY = "('sqlmodel', 'sqlalchemy', 'duckdb', 'shapely', 'pyproj')"
+_HEAVY = (
+    "('sqlmodel', 'sqlalchemy', 'duckdb', 'shapely', 'pyproj', 'polars', 'geopandas', "
+    "'voterfile_audit_pipeline')"
+)
 
 
 @pytest.mark.parametrize(
