@@ -25,11 +25,9 @@ from ev_api.spike_stage import (
     stage_day,
     write_range,
 )
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tests.unit.test_ev_spike_portal import (
-    ACCESS,
     BEARER,
     MARKER,
     TODAY,
@@ -38,6 +36,7 @@ from tests.unit.test_ev_spike_portal import (
     FakeResponse,
     Recorder,
     Rosters,
+    app_behind_auth,
     envelope_for,
     json_headers,
     make_deps,
@@ -169,8 +168,8 @@ def stage_client(
     clock: Clock | None = None,
     today: date = TODAY,
 ) -> TestClient:
-    app = FastAPI()
     active = deps or make_deps()
+    app = app_behind_auth(active)
     register_stage_routes(
         app,
         lambda request: active,
@@ -455,7 +454,7 @@ def test_a_consumer_bearer_token_is_accepted() -> None:
 def test_rejected_requests_never_reach_the_portal(query: str, detail: str) -> None:
     fetch = Recorder(ok_response(roster(5)))
     bucket = FakeBucket()
-    response = stage_client(fetch, bucket).get(f"/spike/stage?{query}", headers=ACCESS)
+    response = stage_client(fetch, bucket).get(f"/spike/stage?{query}", headers=BEARER)
     assert response.status_code == 400
     assert response.json() == {"detail": detail}
     assert fetch.calls == [] and bucket.objects == {}
@@ -465,7 +464,7 @@ def test_rejected_requests_never_reach_the_portal(query: str, detail: str) -> No
 def test_a_bad_range_is_refused_before_any_read(value: str) -> None:
     bucket = FakeBucket()
     client = stage_client(Recorder(ok_response(roster(5))), bucket)
-    response = client.post(f"{RANGE_WRITE}&range={value}", headers=ACCESS)
+    response = client.post(f"{RANGE_WRITE}&range={value}", headers=BEARER)
     assert response.status_code == 400
     assert response.json() == {"detail": "bad_range"}
 
@@ -474,9 +473,9 @@ def test_one_portal_call_per_ten_seconds_and_rejects_do_not_use_the_slot() -> No
     clock = Clock()
     fetch = Recorder(ok_response(roster(5)))
     client = stage_client(fetch, FakeBucket(), clock=clock)
-    assert client.get(STAGE, headers=ACCESS).status_code == 200
+    assert client.get(STAGE, headers=BEARER).status_code == 200
     clock.now += 3
-    refused = client.get(STAGE, headers=ACCESS)
+    refused = client.get(STAGE, headers=BEARER)
     assert refused.status_code == 429
     assert refused.json() == {"detail": "rate_limited"}
     assert refused.headers["retry-after"] == "8"
@@ -484,7 +483,7 @@ def test_one_portal_call_per_ten_seconds_and_rejects_do_not_use_the_slot() -> No
     assert client.get(STAGE).status_code == 401
     clock.now += 7
     fetch.response = ok_response(roster(5))
-    assert client.get(STAGE, headers=ACCESS).status_code == 200
+    assert client.get(STAGE, headers=BEARER).status_code == 200
     assert len(fetch.calls) == 2
 
 
@@ -499,7 +498,7 @@ def test_cleanup_deletes_only_this_runs_objects_and_makes_no_portal_call() -> No
             "staging/spike-other/2026-10-20/file.csv": b"keep",
         }
     )
-    response = stage_client(fetch, bucket).get(f"{STAGE}&cleanup=1", headers=ACCESS)
+    response = stage_client(fetch, bucket).get(f"{STAGE}&cleanup=1", headers=BEARER)
     assert response.status_code == 200
     assert response.json()["objects_deleted"] == 2
     assert sorted(bucket.objects) == [
@@ -519,10 +518,10 @@ def test_the_mounted_app_exposes_both_routes_behind_the_same_auth() -> None:
 
 def test_stage_reports_a_missing_staging_binding_without_fetching() -> None:
     fetch = Recorder(ok_response(roster(5)))
-    app = FastAPI()
     deps = make_deps()
+    app = app_behind_auth(deps)
     register_stage_routes(app, lambda request: deps, fetch=fetch, today=lambda: TODAY)
-    response = TestClient(app).get(STAGE, headers=ACCESS)
+    response = TestClient(app).get(STAGE, headers=BEARER)
     assert response.json() == {"error": "no_staging_binding"}
     assert fetch.calls == []
 
@@ -558,19 +557,19 @@ def test_the_stored_day_hash_is_compared_with_the_canonical_hash(stored_db: Any)
     deps = make_deps(Rosters({"53815": stored_db}))
 
     same = stage_client(Recorder(ok_response(raw)), FakeBucket(), deps=deps)
-    body = same.get(STAGE, headers=ACCESS).json()
+    body = same.get(STAGE, headers=BEARER).json()
     assert body["stored_sha256"] == hashlib.sha256(canonical).hexdigest()
     assert body["sha256"] == body["stored_sha256"]
     assert body["stored_matches_canonical"] is True
 
     changed = stage_client(Recorder(ok_response(roster(4))), FakeBucket(), deps=deps)
-    other = changed.get(STAGE, headers=ACCESS).json()
+    other = changed.get(STAGE, headers=BEARER).json()
     assert other["stored_matches_canonical"] is False
 
 
 def test_no_roster_binding_is_reported_not_guessed() -> None:
     client = stage_client(Recorder(ok_response(roster(3))), FakeBucket())
-    body = client.get(STAGE, headers=ACCESS).json()
+    body = client.get(STAGE, headers=BEARER).json()
     assert body["stored_lookup"] == "no_binding"
     assert body["stored_sha256"] is None and body["stored_matches_canonical"] is None
 

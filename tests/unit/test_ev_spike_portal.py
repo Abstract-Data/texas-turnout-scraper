@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from ev_api import spike_portal
 from ev_api.app import ReadDeps, create_app
+from ev_api.auth import AuthDenied, scope_dependency
 from ev_api.spike_portal import (
     EnvelopeError,
     EnvelopeStreamDecoder,
@@ -24,15 +25,19 @@ from ev_api.spike_portal import (
     probe_portal,
     register_spike_routes,
 )
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
 from tests.unit.test_early_vote_roster_stream import DAY1, _Db, _store_day
 from texas_turnout_scraper import early_vote_sync
-from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
+from texas_turnout_scraper.consumer_tokens import (
+    SCOPE_AGGREGATES,
+    hash_token,
+    kv_key_for_hash,
+)
 from texas_turnout_scraper.early_vote_sync import _SCHEMA_CREATES
 
-ACCESS = {"CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "secret-not-real"}
 BEARER = {"Authorization": "Bearer agg-secret"}
 PREFIX = b'{"upload":"'
 MARKER = b"SYNTHETIC-VOTER-NAME"
@@ -262,10 +267,20 @@ def make_deps(rosters: Rosters | None = None) -> ReadDeps:
     return ReadDeps(
         kv=Kv(),
         store=None,  # type: ignore[arg-type]
-        access_client_id="id.access",
-        access_client_secret="secret-not-real",
         rosters=rosters or Rosters({}),
     )
+
+
+def app_behind_auth(active: ReadDeps) -> FastAPI:
+    app = FastAPI(
+        dependencies=[Depends(scope_dependency(lambda request: active, SCOPE_AGGREGATES))]
+    )
+
+    @app.exception_handler(AuthDenied)
+    async def auth_denied(request: Request, exc: AuthDenied) -> Response:
+        return exc.response
+
+    return app
 
 
 def spike_client(
@@ -275,8 +290,8 @@ def spike_client(
     clock: Clock | None = None,
     today: date = TODAY,
 ) -> TestClient:
-    app = FastAPI()
     active = deps or make_deps()
+    app = app_behind_auth(active)
     register_spike_routes(
         app, lambda request: active, fetch=fetch, clock=clock or Clock(), today=lambda: today
     )
@@ -297,7 +312,7 @@ def test_report_for_a_complete_download_has_counts_and_hashes_only() -> None:
     raw = synthetic_raw(2 * 1024 * 1024)
     fetch = Recorder(ok_response(raw))
     client = spike_client(fetch)
-    response = client.get(URL, headers=ACCESS)
+    response = client.get(URL, headers=BEARER)
     assert response.status_code == 200
     report = response.json()
     assert report["http_status"] == 200
@@ -329,19 +344,19 @@ def test_stored_hash_comparison_uses_the_d1_day_row(stored_db: _Db) -> None:
     stored = hashlib.sha256(DAY1).hexdigest()
     deps = make_deps(Rosters({"53815": stored_db}))
 
-    same = spike_client(Recorder(ok_response(DAY1)), deps=deps).get(URL, headers=ACCESS).json()
+    same = spike_client(Recorder(ok_response(DAY1)), deps=deps).get(URL, headers=BEARER).json()
     assert same["stored_sha256"] == stored
     assert same["decoded_sha256"] == stored
     assert same["stored_matches_raw_decoded"] is True
 
     other = spike_client(Recorder(ok_response(DAY1 + b"\r\n")), deps=deps)
-    differs = other.get(URL, headers=ACCESS).json()
+    differs = other.get(URL, headers=BEARER).json()
     assert differs["stored_sha256"] == stored
     assert differs["stored_matches_raw_decoded"] is False
     assert differs["stored_hash_is_over_canonical_bytes"] is True
 
     missing = spike_client(Recorder(ok_response(DAY1)), deps=deps)
-    no_day = missing.get(URL.replace("10-20", "10-21"), headers=ACCESS).json()
+    no_day = missing.get(URL.replace("10-20", "10-21"), headers=BEARER).json()
     assert no_day["stored_sha256"] is None
     assert no_day["stored_matches_raw_decoded"] is None
 
@@ -373,7 +388,7 @@ def test_non_200_is_reported_with_headers_and_the_body_is_not_read_past_the_firs
     headers = json_headers(**{"retry-after": "30", "cf-mitigated": "challenge"})
     headers["content-type"] = "text/html"
     client = spike_client(Recorder(FakeResponse(403, headers, body)))
-    report = client.get(URL, headers=ACCESS).json()
+    report = client.get(URL, headers=BEARER).json()
     assert report["http_status"] == 403
     assert report["response_headers"]["retry-after"] == "30"
     assert report["response_headers"]["cf-mitigated"] == "challenge"
@@ -385,7 +400,7 @@ def test_non_200_is_reported_with_headers_and_the_body_is_not_read_past_the_firs
 
 def test_non_200_json_error_is_not_a_challenge() -> None:
     fetch = Recorder(FakeResponse(503, json_headers(), FakeBody([b'{"error":"busy"}'])))
-    report = spike_client(fetch).get(URL, headers=ACCESS).json()
+    report = spike_client(fetch).get(URL, headers=BEARER).json()
     assert report["http_status"] == 503
     assert report["body_looks_like_html_challenge"] is False
     assert report["decoded_sha256"] is None
@@ -395,7 +410,7 @@ def test_truncated_body_reports_the_error_class_and_reason_only() -> None:
     body, _ = envelope_for(synthetic_raw(1000))
     truncated = FakeBody([body[:300]])
     report = spike_client(Recorder(FakeResponse(200, json_headers(), truncated)))
-    result = report.get(URL, headers=ACCESS).json()
+    result = report.get(URL, headers=BEARER).json()
     assert result["error"] == {"class": "EnvelopeError", "reason": "truncated"}
     assert result["decoded_sha256"] is None
     assert result["decoded_bytes"] > 0
@@ -403,7 +418,7 @@ def test_truncated_body_reports_the_error_class_and_reason_only() -> None:
 
 def test_fetch_failure_reports_the_exception_class_without_its_message() -> None:
     failure = OSError("connect failed for SYNTHETIC-SECRET-DETAIL")
-    response = spike_client(Recorder(failure)).get(URL, headers=ACCESS)
+    response = spike_client(Recorder(failure)).get(URL, headers=BEARER)
     assert response.status_code == 200
     report = response.json()
     assert report["error"] == {"class": "OSError"}
@@ -480,7 +495,7 @@ def test_future_out_of_calendar_and_malformed_requests_never_reach_the_portal(
     query: str, detail: str
 ) -> None:
     fetch = Recorder(ok_response(synthetic_raw(10)))
-    response = spike_client(fetch).get(f"/spike/portal-fetch?{query}", headers=ACCESS)
+    response = spike_client(fetch).get(f"/spike/portal-fetch?{query}", headers=BEARER)
     assert response.status_code == 400
     assert response.json() == {"detail": detail}
     assert fetch.calls == []
@@ -489,23 +504,23 @@ def test_future_out_of_calendar_and_malformed_requests_never_reach_the_portal(
 def test_the_last_calendar_day_is_allowed_once_it_is_not_in_the_future() -> None:
     fetch = Recorder(ok_response(synthetic_raw(10)))
     client = spike_client(fetch, today=date(2026, 10, 30))
-    assert client.get(URL.replace("10-20", "10-30"), headers=ACCESS).status_code == 200
+    assert client.get(URL.replace("10-20", "10-30"), headers=BEARER).status_code == 200
 
 
 def test_one_call_per_ten_seconds_per_isolate() -> None:
     clock = Clock()
     fetch = Recorder(ok_response(synthetic_raw(10)))
     client = spike_client(fetch, clock=clock)
-    assert client.get(URL, headers=ACCESS).status_code == 200
+    assert client.get(URL, headers=BEARER).status_code == 200
     clock.now += 3
-    refused = client.get(URL, headers=ACCESS)
+    refused = client.get(URL, headers=BEARER)
     assert refused.status_code == 429
     assert refused.json() == {"detail": "rate_limited"}
     assert refused.headers["retry-after"] == "8"
     assert len(fetch.calls) == 1
     clock.now += 7
     fetch.response = ok_response(synthetic_raw(10))
-    assert client.get(URL, headers=ACCESS).status_code == 200
+    assert client.get(URL, headers=BEARER).status_code == 200
     assert len(fetch.calls) == 2
 
 
@@ -513,8 +528,8 @@ def test_rejected_and_unauthenticated_requests_do_not_use_up_the_slot() -> None:
     fetch = Recorder(ok_response(synthetic_raw(10)))
     client = spike_client(fetch)
     assert client.get(URL).status_code == 401
-    assert client.get(URL.replace("2026-10-20", "2026-12-01"), headers=ACCESS).status_code == 400
-    assert client.get(URL, headers=ACCESS).status_code == 200
+    assert client.get(URL.replace("2026-10-20", "2026-12-01"), headers=BEARER).status_code == 400
+    assert client.get(URL, headers=BEARER).status_code == 200
 
 
 def test_challenge_detector_ignores_base64_text() -> None:

@@ -63,8 +63,6 @@ def client(stored: _Db) -> TestClient:
     deps = ReadDeps(
         kv=_Kv(),
         store=None,  # type: ignore[arg-type]
-        access_client_id="id.access",
-        access_client_secret="secret-not-real",
         rosters=_Rosters({"53815": stored}),
     )
     return TestClient(create_app(deps))
@@ -129,8 +127,9 @@ def test_bad_inputs(client: TestClient) -> None:
 
 def test_elections_list_is_open_to_any_valid_credential_and_has_no_rows(client: TestClient) -> None:
     assert client.get("/elections").status_code == 401
-    for headers in (ROSTER, AGGREGATES, ACCESS):
+    for headers in (ROSTER, AGGREGATES):
         assert client.get("/elections", headers=headers).status_code == 200
+    assert client.get("/elections", headers=ACCESS).status_code == 401
     body = client.get("/elections", headers=AGGREGATES).json()
     (election,) = body["elections"]
     assert election["source_election_id"] == "53815"

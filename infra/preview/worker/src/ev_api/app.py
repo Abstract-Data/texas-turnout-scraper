@@ -7,10 +7,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from ev_api.auth import read_request_authorized
+from ev_api.auth import AuthDenied, scope_dependency
 from ev_api.bindings import (
     WorkersAggregateStore,
     WorkersKvNamespace,
@@ -33,6 +33,7 @@ from ev_api.spike_stage import register_stage_routes
 from ev_api.spike_workflow import register_spike_workflow_routes
 from ev_api.voter_geo_routes import register_voter_geo_routes
 from texas_turnout_scraper.civix.read_client import http_path
+from texas_turnout_scraper.consumer_tokens import SCOPE_AGGREGATES
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +58,6 @@ class _ClosedRosters:
 class ReadDeps:
     kv: KvNamespace
     store: AggregateStore
-    access_client_id: str
-    access_client_secret: str
     token_db: object | None = None
     ttl_seconds: int = DEFAULT_KV_TTL_SECONDS
     rosters: RosterStore = field(default_factory=_ClosedRosters)
@@ -91,15 +90,11 @@ def deps_from_env(env: object) -> ReadDeps:
     kv: KvNamespace = _ClosedKv() if kv_namespace is None else WorkersKvNamespace(kv_namespace)
     mapping = binding_map_from_env(getattr(env, "EV_D1_BINDINGS", ""))
     store: AggregateStore = WorkersAggregateStore(env, mapping)
-    client_id = getattr(env, "ACCESS_CLIENT_ID", "") or ""
-    client_secret = getattr(env, "ACCESS_CLIENT_SECRET", "") or ""
     token_db = getattr(env, "DB", None)
     return ReadDeps(
         kv=kv,
         store=store,
         rosters=WorkersRosterStore(env, mapping),
-        access_client_id=str(client_id),
-        access_client_secret=str(client_secret),
         token_db=token_db,
     )
 
@@ -151,7 +146,17 @@ def _is_valid_request(source_election_id: str, resource: str, ev_date: str | Non
 
 
 def create_app(deps: ReadDeps | None = None) -> FastAPI:
-    app = FastAPI(title="Early vote read API", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(
+        title="Early vote read API",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        dependencies=[Depends(scope_dependency(_deps_for_request, SCOPE_AGGREGATES))],
+    )
+
+    @app.exception_handler(AuthDenied)
+    async def auth_denied(request: Request, exc: AuthDenied) -> Response:
+        return exc.response
 
     @app.exception_handler(Exception)
     async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
@@ -161,8 +166,6 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
     app.state.read_deps = deps or ReadDeps(
         kv=_ClosedKv(),
         store=_ClosedStore(),
-        access_client_id="",
-        access_client_secret="",
     )
 
     async def _serve(
@@ -172,14 +175,6 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
         ev_date: str | None = None,
     ) -> Response:
         active = _deps_for_request(request)
-        if not await read_request_authorized(
-            request.headers,
-            access_client_id=active.access_client_id,
-            access_client_secret=active.access_client_secret,
-            kv=active.kv,
-            token_db=active.token_db,
-        ):
-            return Response(status_code=401)
         if not _is_valid_request(source_election_id, resource, ev_date):
             return JSONResponse({"detail": "bad_request"}, status_code=400)
         segments = _segments(resource, ev_date)
@@ -196,16 +191,7 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
         return outcome_response(outcome)
 
     @app.get("/health")
-    async def health(request: Request) -> Response:
-        active = _deps_for_request(request)
-        if not await read_request_authorized(
-            request.headers,
-            access_client_id=active.access_client_id,
-            access_client_secret=active.access_client_secret,
-            kv=active.kv,
-            token_db=active.token_db,
-        ):
-            return Response(status_code=401)
+    async def health() -> Response:
         return JSONResponse({"status": "ok"})
 
     @app.get("/elections/{source_election_id}/aggregates/totals")

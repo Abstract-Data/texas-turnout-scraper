@@ -114,9 +114,18 @@ assert create_app().title == "Early vote read API"
 _ = ArgsKwargs((), {})
 print("pyodide startup import smoke: OK")
 
+_consumer_plaintext = "pyodide-smoke-consumer-credential"
+_consumer_digest = hash_token(_consumer_plaintext)
+_consumer_headers = {"Authorization": f"Bearer {_consumer_plaintext}"}
+_access_only_headers = {
+    "CF-Access-Client-Id": "pyodide-smoke-client-id",
+    "CF-Access-Client-Secret": "pyodide-smoke-client-secret",
+}
+
+
 class _SmokeKv:
     def __init__(self, values: dict[str, str]) -> None:
-        self._values = dict(values)
+        self._values = {kv_key_for_hash(_consumer_digest): "aggregates", **values}
 
     async def get(self, key: str) -> str | None:
         return self._values.get(key)
@@ -128,17 +137,13 @@ class _SmokeKv:
         self._values.pop(key, None)
 
 
-_consumer_plaintext = "pyodide-smoke-consumer-credential"
-_consumer_digest = hash_token(_consumer_plaintext)
-_smoke_kv = _SmokeKv({kv_key_for_hash(_consumer_digest): "1"})
+_smoke_kv = _SmokeKv({})
 
 # Stub D1/KV via in-process deps (no Cloudflare bindings).
 app = create_app(
     ReadDeps(
         kv=_smoke_kv,
         store=_ClosedStore(),
-        access_client_id="pyodide-smoke-client-id",
-        access_client_secret="pyodide-smoke-client-secret",
     )
 )
 
@@ -149,16 +154,12 @@ health_path = "/health"
 
 async def _http_smoke() -> tuple[int, int, int, int, int, float]:
     transport = ASGITransport(app=app)
-    access_headers = {
-        "CF-Access-Client-Id": app.state.read_deps.access_client_id,
-        "CF-Access-Client-Secret": app.state.read_deps.access_client_secret,
-    }
     bearer_unknown = {"Authorization": "Bearer pyodide-smoke-unknown-token"}
     bearer_valid = {"Authorization": f"Bearer {_consumer_plaintext}"}
     async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
         health = await client.get(health_path)
         protected = await client.get(protected_path)
-        health_authorized = await client.get(health_path, headers=access_headers)
+        health_access_only = await client.get(health_path, headers=_access_only_headers)
         bearer_t0 = time.perf_counter()
         health_bearer_unknown = await client.get(health_path, headers=bearer_unknown)
         health_bearer_valid = await client.get(health_path, headers=bearer_valid)
@@ -166,7 +167,7 @@ async def _http_smoke() -> tuple[int, int, int, int, int, float]:
         return (
             health.status_code,
             protected.status_code,
-            health_authorized.status_code,
+            health_access_only.status_code,
             health_bearer_unknown.status_code,
             health_bearer_valid.status_code,
             bearer_wall_ms,
@@ -176,7 +177,7 @@ async def _http_smoke() -> tuple[int, int, int, int, int, float]:
 (
     health_status,
     protected_status,
-    health_authorized_status,
+    health_access_only_status,
     health_bearer_unknown_status,
     health_bearer_valid_status,
     bearer_auth_wall_ms,
@@ -184,7 +185,7 @@ async def _http_smoke() -> tuple[int, int, int, int, int, float]:
 
 print(f"pyodide http GET /health status={health_status}")
 print(f"pyodide http GET {protected_path} unauthenticated status={protected_status}")
-print(f"pyodide http GET /health authorized status={health_authorized_status}")
+print(f"pyodide http GET /health access-only status={health_access_only_status}")
 print(f"pyodide http GET /health bearer-unknown status={health_bearer_unknown_status}")
 print(f"pyodide http GET /health bearer-valid status={health_bearer_valid_status}")
 print(f"pyodide http bearer-auth wall_ms={bearer_auth_wall_ms:.1f}")
@@ -195,8 +196,8 @@ if health_status not in {401, 403}:
 if protected_status not in {401, 403}:
     print("expected unauthenticated protected route status=401 or 403", file=sys.stderr)
     sys.exit(1)
-if health_authorized_status != 200:
-    print("expected authorized GET /health status=200", file=sys.stderr)
+if health_access_only_status != 401:
+    print("expected access-only GET /health status=401", file=sys.stderr)
     sys.exit(1)
 if health_bearer_unknown_status != 401:
     print("expected bearer-unknown GET /health status=401", file=sys.stderr)
@@ -398,8 +399,6 @@ def _agg_app(kv: _SmokeKv) -> object:
         ReadDeps(
             kv=kv,
             store=WorkersAggregateStore(_Env(), {_AGG_ELECTION: _AGG_BINDING}),
-            access_client_id=app.state.read_deps.access_client_id,
-            access_client_secret=app.state.read_deps.access_client_secret,
         )
     )
 
@@ -429,21 +428,15 @@ miswired_app = create_app(
     ReadDeps(
         kv=miswired_kv,
         store=WorkersAggregateStore(_EnvMissingBinding(), {_AGG_ELECTION: _AGG_BINDING}),
-        access_client_id=app.state.read_deps.access_client_id,
-        access_client_secret=app.state.read_deps.access_client_secret,
     )
 )
 
 
 async def _miswired_binding_smoke() -> int:
     transport = ASGITransport(app=miswired_app)
-    access_headers = {
-        "CF-Access-Client-Id": miswired_app.state.read_deps.access_client_id,
-        "CF-Access-Client-Secret": miswired_app.state.read_deps.access_client_secret,
-    }
     path = http_path(_AGG_ELECTION, "aggregates", "totals")
     async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
-        response = await client.get(path, headers=access_headers)
+        response = await client.get(path, headers=_consumer_headers)
     return response.status_code
 
 
@@ -479,8 +472,6 @@ county_by_day_empty_app = create_app(
     ReadDeps(
         kv=empty_days_kv,
         store=WorkersAggregateStore(_EnvNoDays(), {_AGG_ELECTION: _AGG_BINDING}),
-        access_client_id=app.state.read_deps.access_client_id,
-        access_client_secret=app.state.read_deps.access_client_secret,
     )
 )
 
@@ -488,38 +479,34 @@ county_by_day_empty_app = create_app(
 async def _route_roundtrip(
     client: AsyncClient,
     path: str,
-    access_headers: dict[str, str],
+    request_headers: dict[str, str],
 ) -> tuple[int, bool, int]:
-    first = await client.get(path, headers=access_headers)
+    first = await client.get(path, headers=request_headers)
     etag = first.headers.get("etag")
     second = await client.get(
         path,
-        headers={**access_headers, "If-None-Match": etag or ""},
+        headers={**request_headers, "If-None-Match": etag or ""},
     )
     return first.status_code, bool(etag), second.status_code
 
 
 async def _aggregate_smoke() -> list[tuple[str, int, bool, int]]:
     transport = ASGITransport(app=agg_app)
-    access_headers = {
-        "CF-Access-Client-Id": agg_app.state.read_deps.access_client_id,
-        "CF-Access-Client-Secret": agg_app.state.read_deps.access_client_secret,
-    }
     outcomes: list[tuple[str, int, bool, int]] = []
     async with AsyncClient(transport=transport, base_url="http://pyodide-smoke") as client:
         for resource in _agg_routes:
             path = http_path(_AGG_ELECTION, "aggregates", resource)
-            status, etag_ok, inm = await _route_roundtrip(client, path, access_headers)
+            status, etag_ok, inm = await _route_roundtrip(client, path, _consumer_headers)
             outcomes.append((resource, status, etag_ok, inm))
         missing = await client.get(
             http_path("99999", "aggregates", "totals"),
-            headers=access_headers,
+            headers=_consumer_headers,
         )
         outcomes.append(("unknown-election", missing.status_code, False, 0))
     empty_transport = ASGITransport(app=county_by_day_empty_app)
     async with AsyncClient(transport=empty_transport, base_url="http://pyodide-smoke") as client:
         path = http_path(_AGG_ELECTION, "aggregates", "county-by-day")
-        status, etag_ok, inm = await _route_roundtrip(client, path, access_headers)
+        status, etag_ok, inm = await _route_roundtrip(client, path, _consumer_headers)
         outcomes.append(("county-by-day-empty", status, etag_ok, inm))
     return outcomes
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-from ev_api.auth import consumer_token_authorized, consumer_token_scope
+from ev_api.auth import consumer_token_scope
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -139,8 +139,6 @@ async def _scope(secret: str, db: _Db, kv: _Kv | None = None) -> str | None:
 async def test_worker_rejects_an_expired_d1_row() -> None:
     db = _Db({hash_token("s"): {"token_id": "t", "expires_at": _iso(-dt.timedelta(seconds=5))}})
     assert await _scope("s", db) is None
-    headers = {"Authorization": "Bearer s"}
-    assert not await consumer_token_authorized(headers, kv=_Kv({}), token_db=db)
 
 
 @pytest.mark.asyncio

@@ -9,10 +9,10 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import Any
 
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ev_api.auth import consumer_token_scope, read_request_authorized
+from ev_api.auth import scope_dependency
 from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.consumer_tokens import SCOPE_ROSTER
 from texas_turnout_scraper.early_vote_d1_roster import (
@@ -144,30 +144,12 @@ class _RosterApi:
     def __init__(self, deps_for_request: Callable[[Request], Any]) -> None:
         self._deps = deps_for_request
 
-    async def _read_allowed(self, request: Request) -> bool:
-        active = self._deps(request)
-        return await read_request_authorized(
-            request.headers,
-            access_client_id=active.access_client_id,
-            access_client_secret=active.access_client_secret,
-            kv=active.kv,
-            token_db=active.token_db,
-        )
-
-    async def _roster_gate(
-        self, request: Request, source_election_id: str
-    ) -> tuple[Response | None, Any]:
-        active = self._deps(request)
-        scope = await consumer_token_scope(request.headers, kv=active.kv, token_db=active.token_db)
-        if scope is None:
-            return Response(status_code=401), None
-        if scope != SCOPE_ROSTER:
-            return JSONResponse({"detail": "forbidden"}, status_code=403), None
+    def _roster_db(self, request: Request, source_election_id: str) -> tuple[Response | None, Any]:
         try:
             election_id = require_election_id(source_election_id)
         except ValueError:
             return JSONResponse({"detail": "bad_request"}, status_code=400), None
-        db = active.rosters.database(election_id)
+        db = self._deps(request).rosters.database(election_id)
         if db is None:
             return JSONResponse({"detail": "not_found"}, status_code=404), None
         return None, db
@@ -199,8 +181,6 @@ class _RosterApi:
         )
 
     async def elections_index(self, request: Request, q: str | None = Query(default=None)):
-        if not await self._read_allowed(request):
-            return Response(status_code=401)
         active = self._deps(request)
         needle = (q or "").strip().lower()
         elections = []
@@ -214,8 +194,6 @@ class _RosterApi:
         )
 
     async def election_detail(self, source_election_id: str, request: Request):
-        if not await self._read_allowed(request):
-            return Response(status_code=401)
         try:
             election_id = require_election_id(source_election_id)
         except ValueError:
@@ -226,7 +204,7 @@ class _RosterApi:
         return JSONResponse(_election_summary(election_id, await list_days(db, election_id)))
 
     async def roster_all_days(self, source_election_id: str, request: Request):
-        denied, db = await self._roster_gate(request, source_election_id)
+        denied, db = self._roster_db(request, source_election_id)
         if denied is not None:
             return denied
         election_id = require_election_id(source_election_id)
@@ -245,7 +223,7 @@ class _RosterApi:
         )
 
     async def roster_one_day(self, source_election_id: str, ev_date: str, request: Request):
-        denied, db = await self._roster_gate(request, source_election_id)
+        denied, db = self._roster_db(request, source_election_id)
         if denied is not None:
             return denied
         if _EV_DATE_RE.fullmatch(ev_date) is None:
@@ -294,6 +272,11 @@ class _RosterApi:
         )
 
 
+def roster_scope(deps_for_request: Callable[[Request], Any]) -> list[Any]:
+    """Route dependencies for names and VUIDs: a roster-scoped token on top of the app's check."""
+    return [Depends(scope_dependency(deps_for_request, SCOPE_ROSTER))]
+
+
 def register_roster_routes(app: FastAPI, deps_for_request: Callable[[Request], Any]) -> None:
     api = _RosterApi(deps_for_request)
     app.add_api_route("/elections", api.elections_index, methods=["GET"], response_model=None)
@@ -305,10 +288,12 @@ def register_roster_routes(app: FastAPI, deps_for_request: Callable[[Request], A
         api.roster_all_days,
         methods=["GET"],
         response_model=None,
+        dependencies=roster_scope(deps_for_request),
     )
     app.add_api_route(
         "/elections/{source_election_id}/roster/{ev_date}",
         api.roster_one_day,
         methods=["GET"],
         response_model=None,
+        dependencies=roster_scope(deps_for_request),
     )
