@@ -23,8 +23,11 @@ from texas_turnout_scraper.consumer_tokens import (
 UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 11, 1, 12, 0, 0, tzinfo=UTC)
 
+# hypothesis requires naive bounds; `timezones` attaches UTC to each drawn value.
 instants = st.datetimes(
-    min_value=dt.datetime(2000, 1, 1), max_value=dt.datetime(2100, 1, 1), timezones=st.just(UTC)
+    min_value=dt.datetime(2000, 1, 1),  # noqa: DTZ001
+    max_value=dt.datetime(2100, 1, 1),  # noqa: DTZ001
+    timezones=st.just(UTC),
 )
 day_counts = st.integers(min_value=1, max_value=3650)
 

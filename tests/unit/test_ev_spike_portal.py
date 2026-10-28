@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import itertools
 import json
 import random
 import sqlite3
@@ -55,7 +56,7 @@ def synthetic_raw(size: int, seed: int = 7) -> bytes:
 
 def split_at(data: bytes, cuts: list[int]) -> list[bytes]:
     points = [0, *sorted(set(cuts)), len(data)]
-    return [data[a:b] for a, b in zip(points, points[1:], strict=False) if b > a]
+    return [data[a:b] for a, b in itertools.pairwise(points) if b > a]
 
 
 def random_cuts(length: int, seed: int, pieces: int) -> list[int]:
@@ -77,7 +78,7 @@ def test_multi_megabyte_stream_equals_whole_body_decode() -> None:
     assert len(body) > 5_000_000
     group_start = len(PREFIX) + 4096 + 2
     cuts = [4, len(PREFIX) - 1, len(PREFIX), group_start, group_start + 1]
-    cuts += random_cuts(len(body), seed=11, pieces=300) + [len(body) - 2, len(body) - 1]
+    cuts += [*random_cuts(len(body), seed=11, pieces=300), len(body) - 2, len(body) - 1]
     decoder = decode(split_at(body, cuts))
     whole = base64.b64decode(body[len(PREFIX) : -2])
     assert decoder.decoded_bytes == len(whole) == len(raw)
@@ -164,7 +165,7 @@ class FakeJsStream:
         self.cancelled = False
         self.pulled = 0
 
-    def getReader(self) -> FakeJsStream:  # noqa: N802 - mirrors the JS ReadableStream API
+    def getReader(self) -> FakeJsStream:
         return self
 
     async def read(self) -> SimpleNamespace:
