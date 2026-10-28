@@ -1,0 +1,8 @@
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!data/geo/tx_geo.json
+src/**/__pycache__
+src/texas_turnout_scraper/tmp/

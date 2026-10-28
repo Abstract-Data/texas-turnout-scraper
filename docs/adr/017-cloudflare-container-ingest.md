@@ -17,24 +17,36 @@ Run the existing Python loader, unchanged, in a Cloudflare Container started by 
 
 - **Image.** Python 3.12, the package installed with `uv sync --locked --extra waf --extra loader`, entrypoint the same five steps as `scripts/local_ev_backfill.sh`. `repeat_build` stays paused (ADR-014).
 - **Size.** `standard-2` (1 vCPU, 6 GiB) to start. Cloudflare's limits page lists up to 4 vCPU and 12 GiB per instance, so `repeat_build` fits later.
-- **Trigger.** The cron moves from the Python sync Worker to a small TypeScript Worker. Its `scheduled` handler calls a Durable Object, which starts the Container. Every Containers example and the `ctx.container` API reference are JavaScript or TypeScript; nothing shows a Python Worker starting a Container. The schedule (`0 15,16,22,23,3,4 * * *` UTC, cut off at 11:59 PM Central on 2026-11-03) and the `EV_SYNC_MODE` gate carry over.
-- **Run length.** Containers have no fixed maximum runtime. Code inside the Container does not count as activity, so the Durable Object sets an alarm every minute until the process exits, and `setInactivityTimeout` (at most 6 hours) covers gaps. One run at a time: the Durable Object refuses a start while one is running.
-- **Secrets.** Worker secrets passed to the Container as environment variables, replacing `op run`. The Container needs internet access for the portal and the Cloudflare REST API.
+- **Trigger.** The cron moves from the Python sync Worker to a small TypeScript Worker (`infra/ev_ingest`). Its `scheduled` handler calls a Durable Object, which starts the Container. Every Containers example and the `ctx.container` API reference are JavaScript or TypeScript; nothing shows a Python Worker starting a Container. The schedule (`0 15,16,22,23,3,4 * * *` UTC, cut off at 11:59 PM Central on 2026-11-03) and the `EV_SYNC_MODE` gate carry over. The Terraform-managed `cloudflare_workers_cron_trigger.ev_sync` on the Python sync Worker is removed in the same change that gives the new Worker its cron, so the schedule never fires twice.
+- **Run length.** The Container has no fixed maximum runtime; the Worker invocation that starts it does. Cloudflare's cron example awaits `monitor()`, but its own page says to keep the task within Cron Trigger limits, and a pending `monitor()` holds the Durable Object for at most 15 minutes. So the Durable Object starts the Container, sets `setInactivityTimeout` (at most 6 hours) and an alarm, and returns. Code inside the Container does not count as activity; the alarm re-checks `running` and re-arms until the process exits. One run at a time: the Durable Object refuses a start while one is running.
+- **Secrets.** `CLOUDFLARE_API_TOKEN`, `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` are Worker secrets, passed to the Container through `start({ env })`, replacing `op run`. `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_KV_NAMESPACE_ID` and `EV_SNAPSHOT_BUCKET` are plain variables. 1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a` stays the source of truth; the Worker secrets are copies, set with `wrangler secret put` and re-set when a value rotates. The Container needs internet access for the portal and the Cloudflare REST API.
 - **Writes.** Unchanged. The loader writes D1 and KV through the REST API, so a full rewrite of changed days still takes tens of minutes. Nothing in a Container caps that.
 - **Interruption.** A host restart sends SIGTERM and waits up to 15 minutes. Every step is already idempotent (a day whose hash matches is skipped; the counts and geo builds compare signatures), so the next cron run finishes the work.
 
-## Open decision: deploys
+## Deploys
 
-Cloudflare Terraform provider 5.28.0, pinned here, has no Container resource. Its binary carries the `containers/applications` API path but defines no resource for it. Containers deploy with `wrangler deploy`, which builds the image with Docker and pushes it to Cloudflare's registry. ADR-014 R5 says a wrangler-only resource breaks the Terraform-managed rule and goes to the owner. Options:
+Cloudflare Terraform provider 5.28.0, pinned here, has no Container resource. Its binary carries the `containers/applications` API path but defines no resource for it. Containers deploy with `wrangler deploy`, which builds the image with Docker and pushes it to Cloudflare's registry. ADR-014 R5 says a wrangler-only resource breaks the Terraform-managed rule and goes to the owner.
 
-1. Terraform keeps everything else; the Container Worker deploys with `wrangler deploy` run by the owner.
-2. The same, deployed by Workers Builds on push to `main`, so no laptop deploy and no GitHub workflow.
-3. Wait for a provider release that adds a Container resource. Not before 2026-11-03.
+The owner accepted (2026-10-28) an exception for this one Worker:
+
+- **Normal deploys: Workers Builds** on push to `main`, running `npx wrangler deploy`. Cloudflare's Containers deploy guide says Dockerfile builds can run in the Workers Builds environment on the production branch; non-production branches run `wrangler versions upload`, which does not publish an image.
+- **First deploy and fallback: the owner runs `wrangler deploy`** with Docker running (`infra/ev_ingest/README.md`).
+- Terraform keeps every other resource, including the D1 database, KV namespace and R2 buckets the loader writes to.
+
+## Evidence (2026-10-28)
+
+Built from `Dockerfile.ev-ingest` for `linux/amd64` and run locally with Docker, with a 6 GiB memory cap:
+
+- `early_vote_sync --dry-run --sync-mode single --date 10/24/2026` fetched the day through cloudscraper, decoded 29,648,664 bytes, exited 0 in 10 s, peak memory 304 MiB.
+- `--sync-mode latest` picked 2026-10-28, which held 4 rows; 10/27 decoded 1,108,969 bytes. The portal was still publishing those days.
+- The image carries the `waf` and `loader` extras and `data/geo/tx_geo.json`.
+- `wrangler deploy --dry-run` built the same image and listed the `EvIngest` Container.
 
 ## Unverified
 
-- Whether the Civix portal accepts requests from a Container's egress. The ADR-014 spike fetched a day from a Worker with HTTP 200; a Container leaves from a different network path. The first spike settles it.
+- Whether the Civix portal accepts requests from a Container's egress. The local run proves the image, not Cloudflare's network path. `POST /spike` on the deployed Worker settles it.
 - Container start time and the cost of a 6 GiB instance for about 45 minutes, six times a day.
+- Peak memory of an apply run. The dry run peaked at 304 MiB; the apply path also holds the stored version, so `standard-2` stays the starting size until a measured apply.
 
 ## Consequences
 
