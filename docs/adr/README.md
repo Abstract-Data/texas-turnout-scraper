@@ -39,3 +39,4 @@ What are the trade-offs and outcomes?
 | [014](./014-cloudflare-workflow-ingest.md) | Early-vote ingest as a Cloudflare Workflow | Proposed | 2026-10-26 |
 | [015](./015-voter-geography.md) | Per-voter geography in D1 | Proposed | 2026-10-27 |
 | [016](./016-first-appearance-voter-counts.md) | Distinct voters and county FIPS in the aggregate API | Accepted | 2026-10-27 |
+| [017](./017-cloudflare-container-ingest.md) | Early-vote ingest in a Cloudflare Container | Proposed | 2026-10-28 |
