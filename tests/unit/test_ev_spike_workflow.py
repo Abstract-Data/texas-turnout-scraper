@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from ev_api.app import ReadDeps, create_app
+from ev_api.auth import AuthDenied, scope_dependency
 from ev_api.spike_workflow import (
     DEFAULT_STEPS,
     FAILING_STEP_CONFIG,
@@ -25,12 +26,16 @@ from ev_api.spike_workflow import (
     register_spike_workflow_routes,
     run_spike,
 )
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
-from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
+from texas_turnout_scraper.consumer_tokens import (
+    SCOPE_AGGREGATES,
+    hash_token,
+    kv_key_for_hash,
+)
 
-ACCESS = {"CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "secret-not-real"}
 BEARER = {"Authorization": "Bearer agg-secret"}
 START = "/spike/workflow/start?suffix=run1"
 STATUS = "/spike/workflow/status?id=spike-run1"
@@ -136,14 +141,17 @@ def make_deps() -> ReadDeps:
     return ReadDeps(
         kv=Kv(),
         store=None,  # type: ignore[arg-type]
-        access_client_id="id.access",
-        access_client_secret="secret-not-real",
     )
 
 
 def workflow_client(binding: FakeWorkflow | None) -> TestClient:
-    app = FastAPI()
     deps = make_deps()
+    app = FastAPI(dependencies=[Depends(scope_dependency(lambda request: deps, SCOPE_AGGREGATES))])
+
+    @app.exception_handler(AuthDenied)
+    async def auth_denied(request: Request, exc: AuthDenied) -> Response:
+        return exc.response
+
     register_spike_workflow_routes(
         app, lambda request: deps, workflow_for_request=lambda request: binding
     )
@@ -245,7 +253,7 @@ def test_a_consumer_bearer_token_is_accepted_on_both_routes() -> None:
 
 def test_a_started_instance_returns_its_id_steps_and_status() -> None:
     binding = FakeWorkflow()
-    report = workflow_client(binding).post(START, headers=ACCESS).json()
+    report = workflow_client(binding).post(START, headers=BEARER).json()
     assert report["instance_id"] == "spike-run1"
     assert report["created"] is True
     assert report["duplicate"] is False
@@ -261,7 +269,7 @@ def test_a_started_instance_returns_its_id_steps_and_status() -> None:
 def test_the_requested_step_count_is_capped_through_the_route() -> None:
     binding = FakeWorkflow()
     url = "/spike/workflow/start?suffix=run1&steps=9999&fail_at=7"
-    report = workflow_client(binding).post(url, headers=ACCESS).json()
+    report = workflow_client(binding).post(url, headers=BEARER).json()
     assert report["steps"] == MAX_STEPS
     assert report["fail_at"] == 7
     assert binding.created[0][1]["steps"] == MAX_STEPS
@@ -270,9 +278,9 @@ def test_the_requested_step_count_is_capped_through_the_route() -> None:
 def test_starting_twice_with_the_same_id_reports_the_duplicate() -> None:
     binding = FakeWorkflow()
     client = workflow_client(binding)
-    assert client.post(START, headers=ACCESS).json()["created"] is True
+    assert client.post(START, headers=BEARER).json()["created"] is True
 
-    second = client.post(START, headers=ACCESS).json()
+    second = client.post(START, headers=BEARER).json()
     assert second["created"] is False
     assert second["duplicate"] is True
     assert second["create_error"] == {"class": "RuntimeError"}
@@ -287,7 +295,7 @@ def test_a_create_failure_with_no_existing_instance_is_not_called_a_duplicate() 
             raise TimeoutError("upstream")
 
     binding = Broken()
-    report = workflow_client(binding).post(START, headers=ACCESS).json()
+    report = workflow_client(binding).post(START, headers=BEARER).json()
     assert report["created"] is False
     assert report["duplicate"] is False
     assert report["create_error"] == {"class": "TimeoutError"}
@@ -305,9 +313,9 @@ def test_the_status_route_returns_counts_only() -> None:
     }
     binding = FakeWorkflow(output)
     client = workflow_client(binding)
-    client.post(START, headers=ACCESS)
+    client.post(START, headers=BEARER)
 
-    response = client.get(STATUS, headers=ACCESS)
+    response = client.get(STATUS, headers=BEARER)
     body = response.json()
     assert body["found"] is True
     assert body["get_error"] is None
@@ -326,7 +334,7 @@ def test_the_status_route_returns_counts_only() -> None:
 
 def test_an_unknown_instance_id_reports_the_error_class_only() -> None:
     binding = FakeWorkflow()
-    body = workflow_client(binding).get(STATUS, headers=ACCESS).json()
+    body = workflow_client(binding).get(STATUS, headers=BEARER).json()
     assert body["found"] is False
     assert body["get_error"] == {"class": "RuntimeError"}
     assert binding.gets == ["spike-run1"]
@@ -334,7 +342,7 @@ def test_an_unknown_instance_id_reports_the_error_class_only() -> None:
 
 def test_a_missing_workflow_binding_is_reported_not_crashed() -> None:
     client = workflow_client(None)
-    for response in (client.post(START, headers=ACCESS), client.get(STATUS, headers=ACCESS)):
+    for response in (client.post(START, headers=BEARER), client.get(STATUS, headers=BEARER)):
         assert response.status_code == 503
         assert response.json() == {"detail": "workflow_binding_missing"}
 
@@ -345,7 +353,7 @@ def test_a_missing_workflow_binding_is_reported_not_crashed() -> None:
 )
 def test_a_malformed_suffix_never_reaches_the_binding(query: str) -> None:
     binding = FakeWorkflow()
-    response = workflow_client(binding).post(f"/spike/workflow/start{query}", headers=ACCESS)
+    response = workflow_client(binding).post(f"/spike/workflow/start{query}", headers=BEARER)
     assert response.status_code == 400
     assert response.json() == {"detail": "bad_request"}
     assert not binding.touched()
@@ -354,7 +362,7 @@ def test_a_malformed_suffix_never_reaches_the_binding(query: str) -> None:
 @pytest.mark.parametrize("query", ["", "?id=", "?id=run1", "?id=spike-Run1", "?id=spike-"])
 def test_a_malformed_instance_id_never_reaches_the_binding(query: str) -> None:
     binding = FakeWorkflow()
-    response = workflow_client(binding).get(f"/spike/workflow/status{query}", headers=ACCESS)
+    response = workflow_client(binding).get(f"/spike/workflow/status{query}", headers=BEARER)
     assert response.status_code == 400
     assert not binding.touched()
 

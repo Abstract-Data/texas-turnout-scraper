@@ -33,7 +33,6 @@ from typing import Any, Protocol
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from ev_api.auth import read_request_authorized
 from ev_api.spike_portal import (
     _DATE_RE,
     ELECTION_CALENDARS,
@@ -1036,18 +1035,6 @@ class _StageApi:
         self._scratch = scratch
         self._gate = _CallGate(clock)
 
-    async def _authorized(self, request: Request) -> Any | None:
-        active = self._deps(request)
-        if not await read_request_authorized(
-            request.headers,
-            access_client_id=active.access_client_id,
-            access_client_secret=active.access_client_secret,
-            kv=active.kv,
-            token_db=active.token_db,
-        ):
-            return None
-        return active
-
     def _bucket(self, request: Request) -> StagingBucket | None:
         if self._staging is not None:
             return self._staging
@@ -1067,9 +1054,7 @@ class _StageApi:
         suffix: str | None = Query(default=None),
         cleanup: str | None = Query(default=None),
     ) -> Response:
-        active = await self._authorized(request)
-        if active is None:
-            return Response(status_code=401)
+        active = self._deps(request)
         try:
             parsed = parse_stage_request(election_id, ev_date, suffix, today=self._today())
         except SpikeRequestError as exc:
@@ -1102,8 +1087,6 @@ class _StageApi:
         hash_range: str | None = Query(default=None, alias="range"),
         verify: str | None = Query(default=None),
     ) -> Response:
-        if await self._authorized(request) is None:
-            return Response(status_code=401)
         try:
             parsed = parse_stage_request(election_id, ev_date, suffix, today=self._today())
             index = checked_range(hash_range)

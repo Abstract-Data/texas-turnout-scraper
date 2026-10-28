@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 import respx
-from ev_api.auth import consumer_token_scope, roster_request_authorized
+from ev_api.auth import consumer_token_scope
 
 from texas_turnout_scraper.consumer_token_admin import ConsumerTokenAdmin
 from texas_turnout_scraper.consumer_tokens import (
@@ -17,7 +17,8 @@ from texas_turnout_scraper.consumer_tokens import (
     kv_key_for_hash,
     kv_value_for_scope,
     parse_scope,
-    scope_from_kv_value,
+    scope_allows,
+    scope_from_stored,
 )
 
 ACCOUNT, D1_ID, KV_ID = "acct", "db-uuid", "kv-ns"
@@ -63,10 +64,21 @@ def test_parse_scope() -> None:
 
 
 def test_kv_values_round_trip_and_legacy_one_is_aggregates() -> None:
-    assert scope_from_kv_value(kv_value_for_scope(SCOPE_ROSTER)) == SCOPE_ROSTER
-    assert scope_from_kv_value(kv_value_for_scope(SCOPE_AGGREGATES)) == SCOPE_AGGREGATES
-    assert scope_from_kv_value("1") == SCOPE_AGGREGATES
-    assert scope_from_kv_value("garbage") == SCOPE_AGGREGATES
+    assert scope_from_stored(kv_value_for_scope(SCOPE_ROSTER)) == SCOPE_ROSTER
+    assert scope_from_stored(kv_value_for_scope(SCOPE_AGGREGATES)) == SCOPE_AGGREGATES
+    assert scope_from_stored("1") == SCOPE_AGGREGATES
+
+
+@pytest.mark.parametrize("stored", ["garbage", "admin", "Roster", "", "0", None, 1])
+def test_an_unrecognized_stored_scope_grants_nothing(stored: object) -> None:
+    assert scope_from_stored(stored) is None
+
+
+def test_a_roster_token_may_read_aggregates_but_not_the_reverse() -> None:
+    assert scope_allows(SCOPE_ROSTER, SCOPE_AGGREGATES)
+    assert scope_allows(SCOPE_ROSTER, SCOPE_ROSTER)
+    assert scope_allows(SCOPE_AGGREGATES, SCOPE_AGGREGATES)
+    assert not scope_allows(SCOPE_AGGREGATES, SCOPE_ROSTER)
 
 
 @pytest.mark.asyncio
@@ -97,22 +109,15 @@ async def test_d1_row_without_a_scope_column_is_aggregates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_roster_requires_a_roster_token_not_access_headers_or_aggregates() -> None:
-    kv = _Kv(
-        {
-            kv_key_for_hash(hash_token("roster-secret")): "roster",
-            kv_key_for_hash(hash_token("agg-secret")): "aggregates",
-        }
-    )
+async def test_an_unknown_scope_in_kv_or_d1_is_no_scope() -> None:
+    kv = _Kv({kv_key_for_hash(hash_token("kv-odd")): "superuser"})
+    db = _Db({hash_token("d1-odd"): {"token_id": "t2", "scope": "superuser"}})
 
-    async def allowed(headers: dict[str, str]) -> bool:
-        return await roster_request_authorized(headers, kv=kv, token_db=None)
+    async def scope(secret: str) -> str | None:
+        return await consumer_token_scope({"X-API-Key": secret}, kv=kv, token_db=db)
 
-    assert await allowed({"Authorization": "Bearer roster-secret"})
-    assert await allowed({"X-API-Key": "roster-secret"})
-    assert not await allowed({"Authorization": "Bearer agg-secret"})
-    assert not await allowed({"CF-Access-Client-Id": "id", "CF-Access-Client-Secret": "secret"})
-    assert not await allowed({})
+    assert await scope("kv-odd") is None
+    assert await scope("d1-odd") is None
 
 
 def _admin() -> ConsumerTokenAdmin:

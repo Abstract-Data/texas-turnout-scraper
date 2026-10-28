@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-from ev_api.auth import consumer_token_authorized, consumer_token_scope
+from ev_api.auth import consumer_token_scope
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -23,8 +23,11 @@ from texas_turnout_scraper.consumer_tokens import (
 UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 11, 1, 12, 0, 0, tzinfo=UTC)
 
+# hypothesis requires naive bounds; `timezones` attaches UTC to each drawn value.
 instants = st.datetimes(
-    min_value=dt.datetime(2000, 1, 1), max_value=dt.datetime(2100, 1, 1), timezones=st.just(UTC)
+    min_value=dt.datetime(2000, 1, 1),  # noqa: DTZ001
+    max_value=dt.datetime(2100, 1, 1),  # noqa: DTZ001
+    timezones=st.just(UTC),
 )
 day_counts = st.integers(min_value=1, max_value=3650)
 
@@ -139,8 +142,6 @@ async def _scope(secret: str, db: _Db, kv: _Kv | None = None) -> str | None:
 async def test_worker_rejects_an_expired_d1_row() -> None:
     db = _Db({hash_token("s"): {"token_id": "t", "expires_at": _iso(-dt.timedelta(seconds=5))}})
     assert await _scope("s", db) is None
-    headers = {"Authorization": "Bearer s"}
-    assert not await consumer_token_authorized(headers, kv=_Kv({}), token_db=db)
 
 
 @pytest.mark.asyncio

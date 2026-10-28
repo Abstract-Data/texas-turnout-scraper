@@ -1,62 +1,50 @@
-"""Preview read API authentication: Cloudflare Access and minted consumer tokens.
+"""Preview read API authentication: minted consumer tokens, checked by one route dependency.
 
-Access service tokens use ``CF-Access-Client-Id`` / ``CF-Access-Client-Secret``.
-Consumers may send ``Authorization: Bearer`` or ``X-API-Key``. Only digests are stored;
-plaintext tokens are never logged.
+Consumers send ``Authorization: Bearer`` or ``X-API-Key``. Only digests are stored; plaintext
+tokens are never logged. The Cloudflare Access service token is enforced at the edge, and the
+Worker does not accept it as a credential: every consumer holds the same pair, so only the
+minted token can be revoked per consumer.
+
+The app applies :func:`scope_dependency` for aggregates scope to every route, and roster routes
+add one for roster scope, so a new route is authenticated without its handler doing anything.
 
 A consumer token whose ``expires_at`` is set and at or before now is rejected on the D1 path.
 Its KV entry carries an expiration TTL, so a KV hit is bounded by it.
-
-https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import hmac
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from fastapi import Request
+from fastapi.responses import JSONResponse, Response
+
 from ev_api.read import KvNamespace
-from texas_turnout_scraper.civix.read_client import (
-    CF_ACCESS_CLIENT_ID_HEADER,
-    CF_ACCESS_CLIENT_SECRET_HEADER,
-)
 from texas_turnout_scraper.consumer_tokens import (
     ACTIVE_BY_HASH_SQL,
     SCOPE_AGGREGATES,
-    SCOPE_ROSTER,
     extract_consumer_credential,
     hash_token,
     is_expired,
     kv_key_for_hash,
-    scope_from_kv_value,
+    scope_allows,
+    scope_from_stored,
 )
 from texas_turnout_scraper.early_vote_d1_read import D1Database
 
-
-def _header(headers: Mapping[str, str], name: str) -> str:
-    folded = name.lower()
-    for key, value in headers.items():
-        if key.lower() == folded:
-            return value
-    return ""
+# Request state attribute holding the looked-up scope, so stacked dependencies look it up once.
+_SCOPE_STATE = "consumer_scope"
+_UNSET = object()
 
 
-def access_authorized(
-    headers: Mapping[str, str],
-    *,
-    client_id: str,
-    client_secret: str,
-) -> bool:
-    """True only when both configured credentials match. Empty config is closed."""
-    if client_id == "" or client_secret == "":
-        return False
-    presented_id = _header(headers, CF_ACCESS_CLIENT_ID_HEADER)
-    presented_secret = _header(headers, CF_ACCESS_CLIENT_SECRET_HEADER)
-    id_ok = hmac.compare_digest(presented_id.encode("utf-8"), client_id.encode("utf-8"))
-    secret_ok = hmac.compare_digest(presented_secret.encode("utf-8"), client_secret.encode("utf-8"))
-    return id_ok and secret_ok
+class AuthDenied(Exception):
+    """Raised by the auth dependency; the app turns it into ``response``."""
+
+    def __init__(self, response: Response) -> None:
+        super().__init__(response.status_code)
+        self.response = response
 
 
 def _row_value(row: object, key: str) -> object | None:
@@ -75,7 +63,8 @@ async def _token_scope_in_d1(db: D1Database, digest: str) -> str | None:
     if is_expired(_row_value(row, "expires_at"), dt.datetime.now(tz=dt.timezone.utc)):
         return None
     scope = _row_value(row, "scope")
-    return SCOPE_ROSTER if scope == SCOPE_ROSTER else SCOPE_AGGREGATES
+    # A table not yet migrated has no scope column; every token in it predates roster scope.
+    return SCOPE_AGGREGATES if scope is None else scope_from_stored(scope)
 
 
 async def consumer_token_scope(
@@ -84,56 +73,36 @@ async def consumer_token_scope(
     kv: KvNamespace,
     token_db: Any | None,
 ) -> str | None:
-    """Scope of the minted consumer credential, or None when it is missing or not active."""
+    """Scope of the minted consumer credential, or None when it is missing, inactive or unknown."""
     raw = extract_consumer_credential(headers)
     if not raw:
         return None
     digest = hash_token(raw)
     cached = await kv.get(kv_key_for_hash(digest))
     if cached is not None and cached.strip():
-        return scope_from_kv_value(cached)
+        return scope_from_stored(cached)
     if token_db is None:
         return None
     return await _token_scope_in_d1(token_db, digest)
 
 
-async def consumer_token_authorized(
-    headers: Mapping[str, str],
-    *,
-    kv: KvNamespace,
-    token_db: Any | None,
-) -> bool:
-    """True when a minted consumer credential (any scope) matches KV or preview D1."""
-    return await consumer_token_scope(headers, kv=kv, token_db=token_db) is not None
+def scope_dependency(
+    deps_for_request: Callable[[Request], Any],
+    required: str,
+) -> Callable[[Request], Awaitable[None]]:
+    """FastAPI dependency: 401 without an active token, 403 when its scope is below ``required``."""
 
+    async def require_scope(request: Request) -> None:
+        scope = getattr(request.state, _SCOPE_STATE, _UNSET)
+        if scope is _UNSET:
+            active = deps_for_request(request)
+            scope = await consumer_token_scope(
+                request.headers, kv=active.kv, token_db=active.token_db
+            )
+            setattr(request.state, _SCOPE_STATE, scope)
+        if not isinstance(scope, str):
+            raise AuthDenied(Response(status_code=401))
+        if not scope_allows(scope, required):
+            raise AuthDenied(JSONResponse({"detail": "forbidden"}, status_code=403))
 
-async def roster_request_authorized(
-    headers: Mapping[str, str],
-    *,
-    kv: KvNamespace,
-    token_db: Any | None,
-) -> bool:
-    """Row-level access: only an active roster-scoped consumer token.
-
-    The shared Access service credential and aggregates-scoped tokens never qualify.
-    """
-    scope = await consumer_token_scope(headers, kv=kv, token_db=token_db)
-    return scope == SCOPE_ROSTER
-
-
-async def read_request_authorized(
-    headers: Mapping[str, str],
-    *,
-    access_client_id: str,
-    access_client_secret: str,
-    kv: KvNamespace,
-    token_db: Any | None,
-) -> bool:
-    """Dual auth: valid Access service token OR active consumer bearer/API key."""
-    if access_authorized(
-        headers,
-        client_id=access_client_id,
-        client_secret=access_client_secret,
-    ):
-        return True
-    return await consumer_token_authorized(headers, kv=kv, token_db=token_db)
+    return require_scope

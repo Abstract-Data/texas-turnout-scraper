@@ -22,7 +22,6 @@ from typing import Any
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from ev_api.auth import read_request_authorized
 from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.early_vote_d1_read import _d1_fetch_first, _row_value
 from texas_turnout_scraper.early_vote_sync import _DAY_SELECT_HASH_SQL
@@ -336,14 +335,6 @@ def register_spike_routes(
         ev_date: str | None = Query(default=None, alias="date"),
     ) -> Response:
         active = deps_for_request(request)
-        if not await read_request_authorized(
-            request.headers,
-            access_client_id=active.access_client_id,
-            access_client_secret=active.access_client_secret,
-            kv=active.kv,
-            token_db=active.token_db,
-        ):
-            return Response(status_code=401)
         try:
             normalized_id = require_election_id(election_id)
         except ValueError:

@@ -82,8 +82,6 @@ def _client(db: _Db | None, kv: _Kv | None = None) -> tuple[TestClient, _Kv]:
     deps = ReadDeps(
         kv=kv,
         store=None,  # type: ignore[arg-type]
-        access_client_id="id.access",
-        access_client_secret="secret-not-real",
         ttl_seconds=TTL,
         rosters=_Rosters({} if db is None else {"53815": db}),
     )
@@ -93,13 +91,13 @@ def _client(db: _Db | None, kv: _Kv | None = None) -> tuple[TestClient, _Kv]:
 def test_unauthenticated_requests_are_refused_before_any_d1_or_kv_work() -> None:
     db = _geo_db()
     client, kv = _client(db)
-    for headers in ({}, {"Authorization": "Bearer nope"}, {"CF-Access-Client-Id": "id.access"}):
+    for headers in ({}, {"Authorization": "Bearer nope"}, ACCESS):
         assert client.get(URL, headers=headers).status_code == 401
     assert db.queries == 0
     assert kv.puts == []
 
 
-@pytest.mark.parametrize("headers", [ACCESS, ROSTER, AGGREGATES])
+@pytest.mark.parametrize("headers", [ROSTER, AGGREGATES])
 def test_any_authorized_credential_may_read_geography(headers: dict[str, str]) -> None:
     client, _ = _client(_geo_db())
     assert client.get(URL, headers=headers).status_code == 200

@@ -19,7 +19,7 @@ from typing import Any
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from ev_api.roster_routes import _EV_DATE_RE, _etag_matches, _quoted, _RosterApi
+from ev_api.roster_routes import _EV_DATE_RE, _etag_matches, _quoted, _RosterApi, roster_scope
 from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.early_vote_d1_read import D1Database, _d1_fetch_all, _d1_int, _row_value
 from texas_turnout_scraper.early_vote_d1_roster import day_etag, find_day
@@ -76,7 +76,7 @@ class _VoterGeoApi(_RosterApi):
         request: Request,
         page: str | None = Query(default=None),
     ) -> Response:
-        denied, db = await self._roster_gate(request, source_election_id)
+        denied, db = self._roster_db(request, source_election_id)
         if denied is not None:
             return denied
         number = _page_number(page)
@@ -134,4 +134,5 @@ def register_voter_geo_routes(app: FastAPI, deps_for_request: Callable[[Request]
         api.roster_geo,
         methods=["GET"],
         response_model=None,
+        dependencies=roster_scope(deps_for_request),
     )

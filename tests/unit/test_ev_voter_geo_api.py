@@ -128,8 +128,6 @@ def _client(db: _Db | None) -> TestClient:
     deps = ReadDeps(
         kv=_Kv(),
         store=None,  # type: ignore[arg-type]  # reason: the geo route never reads the store
-        access_client_id="id.access",
-        access_client_secret="secret-not-real",
         ttl_seconds=60,
         rosters=_Rosters({} if db is None else {"53815": db}),
     )

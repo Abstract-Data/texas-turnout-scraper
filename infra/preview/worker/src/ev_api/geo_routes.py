@@ -16,7 +16,6 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from ev_api.auth import read_request_authorized
 from ev_api.read import ReadOutcome, ResourceQuery, read_resource, response_headers
 from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.civix.read_client import version_from_etag
@@ -131,14 +130,6 @@ class _GeoApi:
 
     async def geo_precincts(self, source_election_id: str, request: Request) -> Response:
         active = self._deps(request)
-        if not await read_request_authorized(
-            request.headers,
-            access_client_id=active.access_client_id,
-            access_client_secret=active.access_client_secret,
-            kv=active.kv,
-            token_db=active.token_db,
-        ):
-            return Response(status_code=401)
         try:
             election_id = require_election_id(source_election_id)
         except ValueError:

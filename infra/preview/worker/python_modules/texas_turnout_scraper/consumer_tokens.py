@@ -23,6 +23,7 @@ KV_PREFIX = "consumer_token:"
 # aggregates: counts only (every token minted before scopes existed). roster: row-level access.
 SCOPE_AGGREGATES = "aggregates"
 SCOPE_ROSTER = "roster"
+# Lowest to highest: a token may call any route that needs its scope or a lower one.
 SCOPES = (SCOPE_AGGREGATES, SCOPE_ROSTER)
 
 # Active digest scheme (fast on Pyodide; shared by CLI mint and Worker auth).
@@ -106,9 +107,26 @@ def kv_value_for_scope(scope: str) -> str:
     return parse_scope(scope)
 
 
-def scope_from_kv_value(value: str) -> str:
-    """Map a KV cache value to a scope; the legacy value ``1`` and unknowns mean aggregates."""
-    return SCOPE_ROSTER if value.strip() == SCOPE_ROSTER else SCOPE_AGGREGATES
+# KV entries written before scopes existed hold "1"; every one of those tokens is aggregates.
+_LEGACY_KV_AGGREGATES = "1"
+
+
+def scope_from_stored(value: object) -> str | None:
+    """Scope of a stored KV value or D1 ``scope`` cell, or None for anything unrecognized.
+
+    Fails closed: a value this code does not know grants nothing rather than the lowest scope.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text == _LEGACY_KV_AGGREGATES:
+        return SCOPE_AGGREGATES
+    return text if text in SCOPES else None
+
+
+def scope_allows(granted: str, required: str) -> bool:
+    """True when a token of ``granted`` scope may call a route that needs ``required``."""
+    return SCOPES.index(granted) >= SCOPES.index(required)
 
 
 def kv_key_for_hash(token_hash: str) -> str:

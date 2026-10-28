@@ -27,8 +27,6 @@ from typing import Any
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from ev_api.auth import read_request_authorized
-
 DEFAULT_STEPS = 300
 MAX_STEPS = 400
 MAX_LABEL_CHARS = 32
@@ -257,24 +255,12 @@ def register_spike_workflow_routes(
     *,
     workflow_for_request: Callable[[Request], Any] = _workflow_from_request,
 ) -> None:
-    async def authorized(request: Request) -> bool:
-        active = deps_for_request(request)
-        return await read_request_authorized(
-            request.headers,
-            access_client_id=active.access_client_id,
-            access_client_secret=active.access_client_secret,
-            kv=active.kv,
-            token_db=active.token_db,
-        )
-
     async def workflow_start(
         request: Request,
         suffix: str | None = Query(default=None),
         steps: int | None = Query(default=None),
         fail_at: int | None = Query(default=None),
     ) -> Response:
-        if not await authorized(request):
-            return Response(status_code=401)
         if suffix is None or _SUFFIX_RE.fullmatch(suffix) is None:
             return _no_store({"detail": "bad_request"}, 400)
         binding = workflow_for_request(request)
@@ -287,8 +273,6 @@ def register_spike_workflow_routes(
         request: Request,
         instance_id: str | None = Query(default=None, alias="id"),
     ) -> Response:
-        if not await authorized(request):
-            return Response(status_code=401)
         if instance_id is None or not instance_id.startswith(INSTANCE_PREFIX):
             return _no_store({"detail": "bad_request"}, 400)
         if _SUFFIX_RE.fullmatch(instance_id[len(INSTANCE_PREFIX) :]) is None:

@@ -14,6 +14,7 @@ from ev_api.read import (
     ResourceQuery,
     read_resource,
 )
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from texas_turnout_scraper.civix.read_client import (
@@ -29,10 +30,12 @@ from texas_turnout_scraper.early_vote_sync import hash_key
 
 _ACCESS_ID = "preview-client.access"
 _ACCESS_SECRET = "preview-secret-not-a-voter-id"
-_AUTH = {
+_ACCESS = {
     "CF-Access-Client-Id": _ACCESS_ID,
     "CF-Access-Client-Secret": _ACCESS_SECRET,
 }
+_TOKEN = "preview-consumer-secret-not-a-voter-id"
+_AUTH = {"Authorization": f"Bearer {_TOKEN}"}
 _ELECTION = "049664"
 _VERSION = 42
 _SHA = "abc123"
@@ -40,7 +43,7 @@ _SHA = "abc123"
 
 class MemoryKv:
     def __init__(self, values: dict[str, str] | None = None) -> None:
-        self.values = dict(values or {})
+        self.values = {kv_key_for_hash(hash_token(_TOKEN)): "aggregates", **(values or {})}
         self.puts: list[tuple[str, str, int | None]] = []
         self.deletes: list[str] = []
 
@@ -119,8 +122,6 @@ def _client(
         ReadDeps(
             kv=kv,
             store=store,
-            access_client_id=_ACCESS_ID,
-            access_client_secret=_ACCESS_SECRET,
             token_db=token_db,
         )
     )
@@ -330,8 +331,6 @@ def test_http_aggregate_totals_internal_error_json() -> None:
             ReadDeps(
                 kv=kv,
                 store=BrokenStore(),
-                access_client_id=_ACCESS_ID,
-                access_client_secret=_ACCESS_SECRET,
             )
         ),
         raise_server_exceptions=False,
@@ -402,7 +401,12 @@ def test_http_health_requires_credentials() -> None:
     assert response.status_code == 401
 
 
-def test_http_health_access_service_token_200() -> None:
+def test_http_health_access_service_token_alone_is_401() -> None:
+    response = _client(MemoryKv(), RecordingStore()).get("/health", headers=_ACCESS)
+    assert response.status_code == 401
+
+
+def test_http_health_minted_token_200() -> None:
     response = _client(MemoryKv(), RecordingStore()).get("/health", headers=_AUTH)
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
@@ -521,3 +525,52 @@ def test_http_invalid_election_id_is_400_not_500() -> None:
 def test_http_invalid_election_id_without_credentials_is_still_401() -> None:
     response = _client(MemoryKv(), RecordingStore()).get("/elections/00000/aggregates/totals")
     assert response.status_code == 401
+
+
+def _route_calls() -> list[tuple[str, str, bool]]:
+    app = create_app(ReadDeps(kv=MemoryKv(), store=RecordingStore()))
+    calls: list[tuple[str, str, bool]] = []
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        path = route.path.replace("{source_election_id}", "53815").replace(
+            "{ev_date}", "2026-10-24"
+        )
+        for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
+            calls.append((method, path, "/roster" in route.path))
+    return calls
+
+
+def test_every_route_refuses_a_request_without_credentials() -> None:
+    calls = _route_calls()
+    assert len(calls) > 10
+    client = TestClient(
+        create_app(ReadDeps(kv=MemoryKv(), store=RecordingStore())),
+        raise_server_exceptions=False,
+    )
+    unguarded = [
+        (method, path)
+        for method, path, _ in calls
+        if client.request(method, path).status_code != 401
+        or client.request(method, path, headers=_ACCESS).status_code != 401
+    ]
+    assert unguarded == []
+
+
+def test_every_roster_route_forbids_an_aggregates_token() -> None:
+    roster_calls = [(method, path) for method, path, is_roster in _route_calls() if is_roster]
+    assert {path for _, path in roster_calls} == {
+        "/elections/53815/roster",
+        "/elections/53815/roster/2026-10-24",
+        "/elections/53815/roster/2026-10-24/geo",
+    }
+    client = TestClient(
+        create_app(ReadDeps(kv=MemoryKv(), store=RecordingStore())),
+        raise_server_exceptions=False,
+    )
+    allowed = [
+        (method, path)
+        for method, path in roster_calls
+        if client.request(method, path, headers=_AUTH).status_code != 403
+    ]
+    assert allowed == []
