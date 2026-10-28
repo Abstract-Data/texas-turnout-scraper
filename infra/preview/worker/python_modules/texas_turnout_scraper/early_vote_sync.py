@@ -111,6 +111,7 @@ from texas_turnout_scraper.r2_snapshots import (
     warn_missing_snapshot_env,
 )
 from texas_turnout_scraper.repeat_tables import REPEAT_SCHEMA_CREATES
+from texas_turnout_scraper.voter_geo_tables import VOTER_GEO_SCHEMA_CREATES
 from texas_turnout_scraper.voter_tables import VOTER_SCHEMA_CREATES
 
 logger = logging.getLogger(__name__)
@@ -446,6 +447,7 @@ _SCHEMA_CREATES: tuple[str, ...] = (
     *VOTER_SCHEMA_CREATES,
     *REPEAT_SCHEMA_CREATES,
     *WORKFLOW_SCHEMA_CREATES,
+    *VOTER_GEO_SCHEMA_CREATES,
 )
 _CHUNK_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_chunk')"
 _FILE_SCHEMA_SQL = "SELECT name FROM pragma_table_info('early_vote_file')"
