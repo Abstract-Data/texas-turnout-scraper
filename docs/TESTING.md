@@ -30,7 +30,7 @@ tests/
 ```bash
 uv sync --dev
 uv run ty check
-uv run pytest tests/unit -q
+uv run pytest tests/unit -q -n auto                # parallel, as CI runs it (pytest-xdist)
 uv run pytest tests/integration/ -q              # all live tests skipped
 uv run pytest tests/integration/ -v --live        # network + cloudscraper default
 uv run pytest tests/verify -q
@@ -66,7 +66,7 @@ Fixtures use synthetic names/VUIDs. Tests must not log row contents or assert on
 
 ### Live integration gate
 
-`tests/conftest.py` skips tests marked `@pytest.mark.live` unless pytest is invoked with `--live`. Live legacy tests use `LegacySession()` (cloudscraper default).
+`tests/conftest.py` skips tests marked `@pytest.mark.live` unless pytest is invoked with `--live`. `tests/unit/conftest.py` stubs `time.sleep` in the paced modules (`session`, `http_transport`, `early_vote_sync`, `civix.evr`) so request pacing and retry backoff do not wait against mocked HTTP; mark a test `@pytest.mark.real_sleep` when it measures the real delay. Live legacy tests use `LegacySession()` (cloudscraper default).
 
 ## Property and stateful tests (Hypothesis)
 

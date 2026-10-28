@@ -63,6 +63,10 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "live: mark test as requiring live network access",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_sleep: keep the real time.sleep in the paced modules (tests/unit/conftest.py)",
+    )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

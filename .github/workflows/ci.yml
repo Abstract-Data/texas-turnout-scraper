@@ -47,7 +47,8 @@ jobs:
         run: uv run ty check
 
       - name: Unit tests
-        run: uv run pytest tests/unit -q --tb=short
+        # -n auto: one xdist worker per runner core. Pacing sleeps are stubbed in tests/unit/conftest.py.
+        run: uv run pytest tests/unit -q --tb=short -n auto
 
       - name: Verify structural checks
         run: uv run pytest tests/verify -q
