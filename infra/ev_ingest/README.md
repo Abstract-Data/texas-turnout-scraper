@@ -15,7 +15,8 @@ Docker must be running; `wrangler deploy` builds the image and pushes it to Clou
 ```bash
 cd infra/ev_ingest
 npm ci
-openssl rand -hex 32 | tee /dev/stderr | npx wrangler secret put RUN_TOKEN   # keep the printed token
+export RUN_TOKEN="$(openssl rand -hex 32)"   # keep it for the spike request below
+printf '%s' "$RUN_TOKEN" | npx wrangler secret put RUN_TOKEN
 npx wrangler deploy
 ```
 
