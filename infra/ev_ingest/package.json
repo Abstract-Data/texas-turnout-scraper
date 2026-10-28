@@ -1,0 +1,14 @@
+{
+	"name": "tx-turnout-ev-ingest",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"types": "wrangler types",
+		"deploy": "wrangler deploy"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.0",
+		"wrangler": "^4.154.0"
+	}
+}

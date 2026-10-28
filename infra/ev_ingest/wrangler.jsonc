@@ -1,0 +1,33 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	// ADR-017. Step 1 is the portal egress spike: no cron, so nothing runs on a schedule.
+	"name": "tx-turnout-ev-ingest-preview",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-27",
+	"account_id": "e83f342a6c0f6e20b80697363714bf7b",
+	"workers_dev": true,
+	"preview_urls": false,
+	"observability": {
+		"enabled": true,
+		"logs": { "enabled": true, "invocation_logs": false }
+	},
+	"containers": [
+		{
+			"class_name": "EvIngest",
+			"scheduling_policy": "durable_object",
+			"images": {
+				"ingest": {
+					"dockerfile": "../../Dockerfile.ev-ingest",
+					"build_context": "../.."
+				}
+			}
+		}
+	],
+	"durable_objects": {
+		"bindings": [{ "name": "EV_INGEST", "class_name": "EvIngest" }]
+	},
+	"exports": {
+		"EvIngest": { "type": "durable-object", "storage": "sqlite" }
+	},
+	"secrets": { "required": ["RUN_TOKEN"] }
+}
