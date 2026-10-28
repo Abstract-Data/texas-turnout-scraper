@@ -103,8 +103,14 @@ class FakeOp:
                 if tag in t["tags"]  # type: ignore[operator]  # reason: test fake, tags is a list
             ]
             return json.dumps(found)
+        if verb == "get":
+            return json.dumps({"id": args[2], **self.items[args[2]]})
         if verb == "edit":
             self.events.append("op:edit")
+            if stdin is not None:
+                edited = json.loads(stdin)
+                edited.pop("id", None)
+                self.items[args[2]] = edited
             return ""
         if verb == "delete":
             self.events.append("op:archive")

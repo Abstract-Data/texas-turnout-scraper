@@ -199,9 +199,14 @@ John manages tokens locally (1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a` 
 | `CLOUDFLARE_API_TOKEN` | Same scopes as early-vote sync |
 | `CLOUDFLARE_PREVIEW_D1_DATABASE_ID` | `terraform output -raw d1_database_id` |
 | `CLOUDFLARE_KV_NAMESPACE_ID` | `terraform output -raw kv_namespace_id` |
+| `CF_ACCESS_CLIENT_ID` | `terraform output -raw access_client_id` |
+| `CF_ACCESS_CLIENT_SECRET` | `terraform output -raw access_client_secret` |
+
+`generate` refuses to mint a key without both Access variables. It writes the pair onto the key's 1Password item, the secret concealed, so the item alone is enough to call the API. `attach-access` adds the pair to items issued before this; it sends the item to `op` on stdin, never in argv.
 
 ```bash
 tx-turnout api generate --name "Partner Name" --email partner@example.org   # key stored in 1Password
+tx-turnout api attach-access --all             # or: attach-access <token_id> ...
 tx-turnout api extend <token_id> --days 30
 tx-turnout api list
 tx-turnout api revoke <token_id>

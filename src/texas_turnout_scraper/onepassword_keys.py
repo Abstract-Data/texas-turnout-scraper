@@ -11,7 +11,7 @@ import json
 import os
 import subprocess
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from .consumer_tokens import SCOPE_AGGREGATES, SCOPE_ROSTER, parse_scope
@@ -34,6 +34,13 @@ FIELD_EXPIRES = "Expires"
 FIELD_TOKEN_ID = "Token ID"
 FIELD_INSTRUCTIONS = "Instructions"
 FIELD_NOTES = "notesPlain"
+# Labels match the request headers, so an agent copies the label and value as they are.
+FIELD_ACCESS_CLIENT_ID = "CF-Access-Client-Id"
+FIELD_ACCESS_CLIENT_SECRET = "CF-Access-Client-Secret"
+_ACCESS_FIELD_IDS = ("access_client_id", "access_client_secret")
+
+ACCESS_CLIENT_ID_ENV = "CF_ACCESS_CLIENT_ID"
+ACCESS_CLIENT_SECRET_ENV = "CF_ACCESS_CLIENT_SECRET"
 
 _OP_TIMEOUT_SECONDS = 60
 _AUTH_MARKERS = (
@@ -51,6 +58,8 @@ It does not copy the API key into a chat, a log, a commit, or this note.
 
 Fields on this item:
   API key — concealed. Send it on every request. Never print it.
+  CF-Access-Client-Id and CF-Access-Client-Secret (concealed) — the Cloudflare Access
+    pair. Send both on every request too. Never print the secret.
   Endpoint — {endpoint}
   Scope — {scope}
   Name — who the key is for.
@@ -63,6 +72,8 @@ Fields on this item:
   TX_TURNOUT_API_NAME=<the "Name" field>
   TX_TURNOUT_API_EMAIL=<the "Email Address" field>
   TX_TURNOUT_API_ENDPOINT=<the "Endpoint" field>
+  CF_ACCESS_CLIENT_ID=<the "CF-Access-Client-Id" field>
+  CF_ACCESS_CLIENT_SECRET=<the "CF-Access-Client-Secret" field>
 
 Call the API:
   1. First request: GET {endpoint}
@@ -71,11 +82,11 @@ Call the API:
        Authorization: Bearer $TX_TURNOUT_API_KEY
        X-API-Key: $TX_TURNOUT_API_KEY
      From this item, that value is the API key field, not the Token ID.
-  3. Also send Cloudflare Access headers. They are not in this item:
-       CF-Access-Client-Id
-       CF-Access-Client-Secret
-     Abstract Data provides them separately. Without them the edge stops the
-     request before the API key is checked.
+  3. Also send the Cloudflare Access headers from this item:
+       CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID
+       CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET
+     Without them the edge stops the request before the API key is checked.
+     They do not replace the API key: the API answers 401 to them alone.
   4. GET {endpoint} returns JSON with an elections array. Each election has
      source_election_id, first_ev_date, last_ev_date, total_rows, and days
      (ev_date, rows, sha256, byte_length). Those are counts. There are no voter names.
@@ -116,7 +127,7 @@ class SubprocessOnePasswordRunner:
 
     def run(self, args: Sequence[str], stdin: str | None = None) -> str:
         try:
-            completed = subprocess.run(  # noqa: S603 - fixed binary, argv holds no secret
+            completed = subprocess.run(
                 ["op", *args],
                 input=stdin,
                 capture_output=True,
@@ -141,6 +152,44 @@ class SubprocessOnePasswordRunner:
                 )
             raise OnePasswordError(f"op exited with status {completed.returncode}")
         return completed.stdout
+
+
+@dataclass(frozen=True)
+class AccessPair:
+    """The Cloudflare Access service token every consumer sends to pass the edge."""
+
+    client_id: str
+    client_secret: str = field(repr=False)
+
+
+def access_pair_from_env() -> AccessPair:
+    """Read the pair from the environment. The error names the variables, never a value."""
+    client_id = os.environ.get(ACCESS_CLIENT_ID_ENV, "").strip()
+    client_secret = os.environ.get(ACCESS_CLIENT_SECRET_ENV, "").strip()
+    if not client_id or not client_secret:
+        msg = (
+            f"{ACCESS_CLIENT_ID_ENV} and {ACCESS_CLIENT_SECRET_ENV} must both be set; "
+            "every issued key carries the Cloudflare Access pair"
+        )
+        raise OnePasswordError(msg)
+    return AccessPair(client_id=client_id, client_secret=client_secret)
+
+
+def access_fields(access: AccessPair) -> list[dict[str, object]]:
+    return [
+        {
+            "id": _ACCESS_FIELD_IDS[0],
+            "type": "STRING",
+            "label": FIELD_ACCESS_CLIENT_ID,
+            "value": access.client_id,
+        },
+        {
+            "id": _ACCESS_FIELD_IDS[1],
+            "type": "CONCEALED",
+            "label": FIELD_ACCESS_CLIENT_SECRET,
+            "value": access.client_secret,
+        },
+    ]
 
 
 @dataclass(frozen=True)
@@ -205,9 +254,10 @@ def build_item_template(
     api_key: str,
     token_id: str,
     expires_date: str,
+    access: AccessPair,
     scope: str = SCOPE_AGGREGATES,
 ) -> dict[str, object]:
-    """JSON item template for ``op item create -``. Holds the key; pass it on stdin only."""
+    """JSON item template for ``op item create -``. Holds secrets; pass it on stdin only."""
     note = render_instructions(expires_date, scope=scope)
     return {
         "title": item_title(name),
@@ -220,6 +270,7 @@ def build_item_template(
                 "label": FIELD_API_KEY,
                 "value": api_key,
             },
+            *access_fields(access),
             {
                 "id": "endpoint",
                 "type": "URL",
@@ -268,6 +319,7 @@ class OnePasswordKeyStore:
         api_key: str,
         token_id: str,
         expires_date: str,
+        access: AccessPair,
         scope: str = SCOPE_AGGREGATES,
     ) -> OnePasswordItem:
         template = build_item_template(
@@ -276,6 +328,7 @@ class OnePasswordKeyStore:
             api_key=api_key,
             token_id=token_id,
             expires_date=expires_date,
+            access=access,
             scope=scope,
         )
         out = self._runner.run(
@@ -290,30 +343,58 @@ class OnePasswordKeyStore:
     def archive(self, item_id: str) -> None:
         self._runner.run(["item", "delete", item_id, "--archive", "--vault", self._vault])
 
-    def find_by_token_id(self, token_id: str) -> str | None:
+    def _item_ids_tagged(self, tag: str) -> list[str]:
         out = self._runner.run(
-            [
-                "item",
-                "list",
-                "--vault",
-                self._vault,
-                "--tags",
-                token_tag(token_id),
-                "--format",
-                "json",
-            ]
+            ["item", "list", "--vault", self._vault, "--tags", tag, "--format", "json"]
         )
         try:
             items = json.loads(out) if out.strip() else []
         except json.JSONDecodeError as exc:
             raise OnePasswordError("op returned unreadable item list") from exc
         if not isinstance(items, list):
-            return None
-        for item in items:
-            found = item.get("id") if isinstance(item, dict) else None
-            if isinstance(found, str) and found:
-                return found
-        return None
+            return []
+        found = (item.get("id") if isinstance(item, dict) else None for item in items)
+        return [item_id for item_id in found if isinstance(item_id, str) and item_id]
+
+    def find_by_token_id(self, token_id: str) -> str | None:
+        ids = self._item_ids_tagged(token_tag(token_id))
+        return ids[0] if ids else None
+
+    def issued_item_ids(self) -> list[str]:
+        """Every item this tool created, including keys issued before the Access pair existed."""
+        return self._item_ids_tagged(BASE_TAG)
+
+    def attach_access(self, item_id: str, access: AccessPair) -> None:
+        """Put the Access pair on an issued item and re-render its note.
+
+        The whole item goes back to ``op item edit`` on stdin, so no secret is in argv.
+        """
+        out = self._runner.run(["item", "get", item_id, "--vault", self._vault, "--format", "json"])
+        try:
+            item = json.loads(out)
+        except json.JSONDecodeError as exc:
+            raise OnePasswordError("op returned an unreadable item") from exc
+        fields = item.get("fields") if isinstance(item, dict) else None
+        if not isinstance(fields, list):
+            raise OnePasswordError("op returned an item without fields")
+        values = {f.get("label"): f.get("value") for f in fields if isinstance(f, dict)}
+        if not values.get(FIELD_API_KEY):
+            # Writing back an item whose key value was not returned would erase the key.
+            raise OnePasswordError("op returned the item without its API key value; not edited")
+        expires = values.get(FIELD_EXPIRES)
+        scope = values.get(FIELD_SCOPE) or SCOPE_AGGREGATES
+        if not isinstance(expires, str) or not isinstance(scope, str):
+            raise OnePasswordError("item has no Expires or Scope field; not edited")
+        note = render_instructions(expires, scope=scope)
+        kept = [f for f in fields if not (isinstance(f, dict) and f.get("id") in _ACCESS_FIELD_IDS)]
+        for f in kept:
+            if isinstance(f, dict) and f.get("label") in (FIELD_INSTRUCTIONS, FIELD_NOTES):
+                f["value"] = note
+        api_key_at = next(
+            i for i, f in enumerate(kept) if isinstance(f, dict) and f.get("label") == FIELD_API_KEY
+        )
+        item["fields"] = [*kept[: api_key_at + 1], *access_fields(access), *kept[api_key_at + 1 :]]
+        self._runner.run(["item", "edit", item_id, "--vault", self._vault], stdin=json.dumps(item))
 
     def update_expiry(
         self, item_id: str, expires_date: str, *, scope: str = SCOPE_AGGREGATES

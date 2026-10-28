@@ -18,9 +18,11 @@ from ..consumer_token_admin import (
 from ..consumer_tokens import DEFAULT_KEY_DAYS, MAX_KEY_DAYS, SCOPE_AGGREGATES
 from ..early_vote_sync import EarlyVoteSyncError
 from ..onepassword_keys import (
+    AccessPair,
     OnePasswordError,
     OnePasswordKeyStore,
     SubprocessOnePasswordRunner,
+    access_pair_from_env,
 )
 from ._typer_apps import api_app
 
@@ -49,6 +51,13 @@ def _stdin_is_tty() -> bool:
 def _fail(message: str, code: int) -> typer.Exit:
     typer.echo(f"Error: {message}", err=True)
     return typer.Exit(code=code)
+
+
+def _access_pair() -> AccessPair:
+    try:
+        return access_pair_from_env()
+    except OnePasswordError as exc:
+        raise _fail(str(exc), EXIT_USAGE) from exc
 
 
 def validate_name(raw: str) -> str:
@@ -114,7 +123,7 @@ def api_generate(
         clean_email = validate_email(raw_email)
     except ValueError as exc:
         raise _fail(str(exc), EXIT_USAGE) from exc
-
+    access = _access_pair()
     admin = _admin()
     try:
         try:
@@ -130,6 +139,7 @@ def api_generate(
                 api_key=issued.plaintext,
                 token_id=issued.token_id,
                 expires_date=issued.expires_at[:10],
+                access=access,
                 scope=issued.scope,
             )
         except OnePasswordError as exc:
@@ -272,3 +282,35 @@ def api_revoke(
     if not ok:
         raise _fail("unknown token_id", EXIT_SERVICE)
     typer.echo(f"revoked {token_id}")
+
+
+@api_app.command("attach-access")
+def api_attach_access(
+    token_ids: Annotated[
+        list[str] | None, typer.Argument(help="token_id of each key to update")
+    ] = None,
+    all_items: Annotated[
+        bool, typer.Option("--all", help="Update every key item this tool created")
+    ] = False,
+) -> None:
+    """Add the Cloudflare Access pair to keys issued without it (1Password only)."""
+    if bool(token_ids) == all_items:
+        raise _fail("pass token ids or --all, not both and not neither", EXIT_USAGE)
+    access = _access_pair()
+    store = _key_store()
+    try:
+        if all_items:
+            targets = [(item_id, item_id) for item_id in store.issued_item_ids()]
+        else:
+            targets = [(token_id, store.find_by_token_id(token_id)) for token_id in token_ids or []]
+        missing = [name for name, item_id in targets if item_id is None]
+        for name, item_id in targets:
+            if item_id is not None:
+                store.attach_access(item_id, access)
+                typer.echo(f"updated {name}")
+    except OnePasswordError as exc:
+        raise _fail(str(exc), EXIT_SERVICE) from exc
+    for name in missing:
+        typer.echo(f"Warning: no 1Password item is tagged token:{name}", err=True)
+    if missing:
+        raise typer.Exit(code=EXIT_SERVICE)
