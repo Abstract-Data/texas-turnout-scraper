@@ -9,6 +9,11 @@ from pathlib import Path
 import pytest
 from hypothesis import HealthCheck, settings
 
+# A git hook (pre-commit runs the unit suite) exports these. A test that builds its own repo
+# would inherit them and write into the outer repo: commits, its index, even core.bare.
+for _git_var in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY"):
+    os.environ.pop(_git_var, None)
+
 # The preview read API lives under infra/preview/worker and is not an installable
 # extra of the root package. Unit tests import it from this path.
 _PREVIEW_WORKER = Path(__file__).resolve().parents[1] / "infra" / "preview" / "worker"
