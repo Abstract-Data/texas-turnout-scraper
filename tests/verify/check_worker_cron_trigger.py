@@ -1,7 +1,8 @@
-"""The Worker cron trigger in Terraform fires on the hours the handler expects."""
+"""The early-vote cron fires on the hours the gate expects, from one Worker only (ADR-017)."""
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from ev_api.cron import CRON_SCHEDULE
 ROOT = Path(__file__).resolve().parents[2]
 PREVIEW = ROOT / "infra" / "preview"
 TERRAFORM_WORKFLOW = ROOT / ".github" / "workflows" / "terraform-preview.yml"
+EV_INGEST = ROOT / "infra" / "ev_ingest"
 
 
 def _block(text: str, header: str) -> str:
@@ -22,11 +24,25 @@ def _block(text: str, header: str) -> str:
     raise AssertionError(f"unterminated block {header}")
 
 
-def test_terraform_cron_matches_the_handler_schedule() -> None:
-    ev_sync = (PREVIEW / "ev_sync.tf").read_text()
-    trigger = _block(ev_sync, 'resource "cloudflare_workers_cron_trigger" "ev_sync"')
-    assert re.findall(r'cron\s*=\s*"([^"]+)"', trigger) == [CRON_SCHEDULE]
-    assert "script_name = cloudflare_worker.ev_sync.name" in trigger
+def _wrangler_config() -> dict:
+    lines = (EV_INGEST / "wrangler.jsonc").read_text().splitlines()
+    return json.loads("\n".join(line for line in lines if not line.lstrip().startswith("//")))
+
+
+def test_the_ingest_worker_cron_matches_the_gate_schedule() -> None:
+    config = _wrangler_config()
+    assert config["triggers"]["crons"] == [CRON_SCHEDULE]
+    schedule_ts = (EV_INGEST / "src" / "schedule.ts").read_text()
+    assert f'export const CRON_SCHEDULE = "{CRON_SCHEDULE}";' in schedule_ts
+
+
+def test_the_ingest_worker_ships_with_ev_sync_mode_off() -> None:
+    assert _wrangler_config()["vars"]["EV_SYNC_MODE"] == "off"
+
+
+def test_no_terraform_cron_trigger_remains() -> None:
+    for tf in PREVIEW.glob("*.tf"):
+        assert "cloudflare_workers_cron_trigger" not in tf.read_text(), tf.name
 
 
 def test_dispatch_token_variable_is_sensitive_and_bound_as_a_secret() -> None:

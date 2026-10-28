@@ -159,13 +159,4 @@ resource "cloudflare_workers_deployment" "ev_sync" {
   }]
 }
 
-# Cron moved off the read API Worker; GitHub dispatch binding on the read API is unchanged.
-resource "cloudflare_workers_cron_trigger" "ev_sync" {
-  account_id  = var.account_id
-  script_name = cloudflare_worker.ev_sync.name
-  schedules = [{
-    cron = "0 15,16,22,23,3,4 * * *"
-  }]
-
-  depends_on = [cloudflare_workers_deployment.ev_sync]
-}
+# No cron here: the schedule lives on the ingest Container Worker (infra/ev_ingest, ADR-017).

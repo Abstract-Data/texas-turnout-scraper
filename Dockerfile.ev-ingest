@@ -16,6 +16,7 @@ RUN uv sync --locked --no-dev --no-install-project --extra waf --extra loader
 
 COPY src ./src
 COPY data/geo/tx_geo.json ./data/geo/tx_geo.json
+COPY scripts/ev_ingest_steps.sh ./scripts/ev_ingest_steps.sh
 RUN uv sync --locked --no-dev --extra waf --extra loader
 
 CMD ["sleep", "infinity"]
