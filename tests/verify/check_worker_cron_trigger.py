@@ -36,8 +36,10 @@ def test_the_ingest_worker_cron_matches_the_gate_schedule() -> None:
     assert f'export const CRON_SCHEDULE = "{CRON_SCHEDULE}";' in schedule_ts
 
 
-def test_the_ingest_worker_ships_with_ev_sync_mode_off() -> None:
-    assert _wrangler_config()["vars"]["EV_SYNC_MODE"] == "off"
+def test_the_ingest_worker_ships_with_ev_sync_mode_apply() -> None:
+    # The schedule was turned on after the /spike egress check (ADR-017). A deploy resets the
+    # variable to this file's value, so it must match what the deployed Worker runs.
+    assert _wrangler_config()["vars"]["EV_SYNC_MODE"] == "apply"
 
 
 def test_no_terraform_cron_trigger_remains() -> None:
