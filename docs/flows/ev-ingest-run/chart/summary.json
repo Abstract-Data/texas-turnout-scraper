@@ -1,0 +1,52 @@
+{
+  "view": "customer",
+  "modelStates": 52,
+  "modelTransitions": 58,
+  "chartStates": 12,
+  "chartTransitions": 10,
+  "chartStatus": {
+    "works": 11,
+    "fixed": 0,
+    "wrong": 1
+  },
+  "chartGroups": [
+    {
+      "name": "API current",
+      "color": "#d1f2eb",
+      "states": 3
+    },
+    {
+      "name": "API stale",
+      "color": "#fdebd0",
+      "states": 3
+    }
+  ],
+  "mixedGroups": [],
+  "regions": {
+    "drawn": true,
+    "states": [
+      9,
+      3
+    ],
+    "transitions": 10,
+    "all": 15,
+    "flat": {
+      "states": 16,
+      "transitions": 19
+    }
+  },
+  "classes": [
+    {
+      "n": 1,
+      "end": "Last run failed: API shows old data, 1 downloaded day not published",
+      "invariant": "NoStrandedDay",
+      "rule": "Every day the portal handed over during a run is in the API once that run ends.",
+      "cause": "the portal failed on a later day, so the run stopped before publishing the days it had already downloaded",
+      "readerSteps": 4,
+      "modelSteps": 5,
+      "counterexamples": 2,
+      "fix": null
+    }
+  ],
+  "codeLike": []
+}
