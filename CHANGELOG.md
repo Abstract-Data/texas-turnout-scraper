@@ -6,6 +6,20 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.10](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.9...texas-turnout-scraper-v0.2.10) (2026-10-29)
+
+
+### Bug Fixes
+
+* **ev-ingest:** skip a day the portal refuses and publish the rest ([ad64c2a](https://github.com/Abstract-Data/texas-turnout-scraper/commit/ad64c2a5c45c3d2ca635241bff949e72e64e4593))
+* **ev-ingest:** skip a day the portal refuses and publish the rest ([8059f89](https://github.com/Abstract-Data/texas-turnout-scraper/commit/8059f89495c89cc59217edb75ae035c743e666f5))
+
+
+### Documentation
+
+* pipeline flow diagrams in the README and a TLC-checked model of the ingest run ([36b8d92](https://github.com/Abstract-Data/texas-turnout-scraper/commit/36b8d9217ffc1e02030c6378dd7e84c5edb34b00))
+* **readme:** add Mermaid diagrams for every pipeline flow ([8794297](https://github.com/Abstract-Data/texas-turnout-scraper/commit/8794297589a44c703b8cedaa6df788681be2f46a))
+
 ## [0.2.9](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.8...texas-turnout-scraper-v0.2.9) (2026-10-29)
 
 
