@@ -33,7 +33,8 @@ trap 'rm -f "$report"' EXIT
 step "${sync[@]}" --apply --defer-kv-bump | tee "$report"
 sync_sha="$(sed -n 's/^sha256=//p' "$report" | head -n 1)"
 sync_status="$(sed -n 's/^status=//p' "$report" | head -n 1)"
-[[ -n "$sync_sha" ]] || { echo "sync report has no sha256= line" >&2; exit 1; }
+# Empty when no day was fetched and D1 holds none of them (see days_failed= in the report).
+[[ -n "$sync_sha" ]] || { echo "sync published no day: nothing to precompute" >&2; exit 1; }
 
 precompute=(--election-id "$ELECTION_ID" --apply --finalize-kv-digest "$sync_sha")
 [[ "$sync_status" == "wrote" ]] && precompute+=(--finalize-kv-after-sync)
