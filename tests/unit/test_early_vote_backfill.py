@@ -271,3 +271,138 @@ def test_sync_defer_kv_bump_skips_version() -> None:
         defer_kv_bump=True,
     )
     assert store.bump_count == 0
+
+
+def _roster_response() -> httpx.Response:
+    payload = (
+        b"COUNTY,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT\nTEST,REDACTED,0000000001,IN-PERSON,1\n"
+    )
+    return httpx.Response(200, json={"upload": base64.b64encode(payload).decode("ascii")})
+
+
+def _portal_503(day: date) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://example.invalid/getFile")
+    return httpx.HTTPStatusError(
+        f"503 on {day.isoformat()}", request=request, response=httpx.Response(503, request=request)
+    )
+
+
+def _pull_failing_on(bad_day: date, exc: Exception | None = None):
+    def fake_pull(_eid: str, ev_day: date, **_: object) -> httpx.Response:
+        if ev_day == bad_day:
+            raise exc or _portal_503(ev_day)
+        return _roster_response()
+
+    return fake_pull
+
+
+def test_failed_newest_day_keeps_its_stored_hash_and_publishes_the_rest() -> None:
+    store = _BackfillStore()
+    ev_dates = (date(2026, 10, 14), date(2026, 10, 15))
+    stored_newest = "c" * 64
+    store.day_hashes[(DEFAULT_NOV_2026_GENERAL_ID, "2026-10-15")] = stored_newest
+
+    with patch(
+        "texas_turnout_scraper.early_vote_backfill.pull_statewide_roster_file",
+        side_effect=_pull_failing_on(date(2026, 10, 15)),
+    ):
+        result = run_backfill(
+            DEFAULT_NOV_2026_GENERAL_ID,
+            store,
+            _fixture_plan(ev_dates),
+            payload_kind="statewide_roster",
+        )
+
+    report = format_backfill_report(result)
+    assert result.days_wrote == 1
+    assert result.failed_dates == ("2026-10-15",)
+    assert result.exit_code == 0
+    assert f"sha256={stored_newest}" in report.splitlines()
+    assert "days_failed=1" in report.splitlines()
+    assert "failed_dates=2026-10-15" in report.splitlines()
+    # The newest day stays published as D1 last stored it.
+    assert store.published_ev_date == "2026-10-15"
+    assert store.kv_content_hash == stored_newest
+    assert store.day_hashes[(DEFAULT_NOV_2026_GENERAL_ID, "2026-10-15")] == stored_newest
+
+
+def test_failed_day_never_stored_is_left_out_of_the_publish() -> None:
+    store = _BackfillStore()
+    ev_dates = (date(2026, 10, 14), date(2026, 10, 15))
+
+    with patch(
+        "texas_turnout_scraper.early_vote_backfill.pull_statewide_roster_file",
+        side_effect=_pull_failing_on(date(2026, 10, 15)),
+    ):
+        result = run_backfill(
+            DEFAULT_NOV_2026_GENERAL_ID,
+            store,
+            _fixture_plan(ev_dates),
+            payload_kind="statewide_roster",
+        )
+
+    written = store.day_hashes[(DEFAULT_NOV_2026_GENERAL_ID, "2026-10-14")]
+    assert [day.ev_date_iso for day in result.days] == ["2026-10-14"]
+    assert result.manifest_sha256 == backfill_manifest_digest({"2026-10-14": written})
+    assert store.published_ev_date == "2026-10-14"
+    assert f"sha256={written}" in format_backfill_report(result).splitlines()
+
+
+def test_every_day_failing_with_nothing_stored_publishes_nothing() -> None:
+    store = _BackfillStore()
+    with patch(
+        "texas_turnout_scraper.early_vote_backfill.pull_statewide_roster_file",
+        side_effect=lambda _eid, ev_day, **_: (_ for _ in ()).throw(_portal_503(ev_day)),
+    ):
+        result = run_backfill(
+            DEFAULT_NOV_2026_GENERAL_ID,
+            store,
+            _fixture_plan((date(2026, 10, 14),)),
+            payload_kind="statewide_roster",
+        )
+    assert result.days == ()
+    assert store.bump_count == 0
+    assert "sha256=" in format_backfill_report(result).splitlines()
+
+
+def test_cloudscraper_http_error_is_caught_too() -> None:
+    requests = pytest.importorskip("requests")
+    response = requests.Response()
+    response.status_code = 503
+    store = _BackfillStore()
+    ev_dates = (date(2026, 10, 14), date(2026, 10, 15))
+
+    with patch(
+        "texas_turnout_scraper.early_vote_backfill.pull_statewide_roster_file",
+        side_effect=_pull_failing_on(
+            date(2026, 10, 14), requests.HTTPError("503", response=response)
+        ),
+    ):
+        result = run_backfill(
+            DEFAULT_NOV_2026_GENERAL_ID,
+            store,
+            _fixture_plan(ev_dates),
+            payload_kind="statewide_roster",
+        )
+    assert result.failed_dates == ("2026-10-14",)
+    assert result.days_wrote == 1
+
+
+def test_store_error_during_sync_still_aborts() -> None:
+    class _BrokenStore(_BackfillStore):
+        def write_database(self, *args: object, **kwargs: object) -> None:
+            raise EarlyVoteSyncError("D1 write failed")
+
+    with (
+        patch(
+            "texas_turnout_scraper.early_vote_backfill.pull_statewide_roster_file",
+            return_value=_roster_response(),
+        ),
+        pytest.raises(EarlyVoteSyncError, match="D1 write failed"),
+    ):
+        run_backfill(
+            DEFAULT_NOV_2026_GENERAL_ID,
+            _BrokenStore(),
+            _fixture_plan((date(2026, 10, 14),)),
+            payload_kind="statewide_roster",
+        )

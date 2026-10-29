@@ -10,7 +10,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 node "$STATECHART" from-spec ev-ingest-run/EvIngestRun.tla \
-  --expect-broken NoStrandedDay \
   --title "Scheduled early-vote ingest run" \
   --out ev-ingest-run/chart --png
 rm -rf ev-ingest-run/chart/tlc

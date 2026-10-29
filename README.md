@@ -179,49 +179,51 @@ config:
 ---
 stateDiagram-v2
   classDef plain fill:#f4f6f7,stroke:#566573,color:#1b2631
-  classDef plainWrong fill:#f4f6f7,stroke:#c0392b,stroke-width:4px,color:#7b241c
   classDef group0 fill:#d1f2eb,stroke:#697976,color:#1b2631
   classDef group1 fill:#fdebd0,stroke:#7f7668,color:#1b2631
-  classDef group1Wrong fill:#fdebd0,stroke:#c0392b,stroke-width:4px,color:#7b241c
+  classDef group2 fill:#fcf3cf,stroke:#7e7a68,color:#1b2631
   state "Legend" as legend {
     state "API current" as legendGroup0
     state "API stale" as legendGroup1
-    state "Breaks a rule" as legendWrong
+    state "API partly current" as legendGroup2
   }
   class legendGroup0 group0
   class legendGroup1 group1
-  class legendWrong plainWrong
+  class legendGroup2 group2
   state "At the same time" as regions {
     state "What the logs say" as region0 {
-      [*] --> r0s8
-      state "Last run failed" as r0s0
+      [*] --> r0s9
+      state "Last run skipped a day the<br/>portal refused" as r0s0
       state "Last run succeeded" as r0s1
       state "Run in progress, 0 of 2<br/>days downloaded" as r0s2
-      state "Run in progress, 1 of 2<br/>days downloaded" as r0s3
-      state "Run in progress, 2 of 2<br/>days downloaded" as r0s4
-      state "Run in progress, every day<br/>published" as r0s5
-      state "Run in progress, portal<br/>returned 503 after 0 days" as r0s6
-      state "Run in progress, portal<br/>returned 503 after 1 day" as r0s7
-      state "Waiting for the cron" as r0s8
-      r0s2 --> r0s3 : a day downloads
-      r0s2 --> r0s6 : the portal keeps returning 503<br/>for a day
-      r0s3 --> r0s4 : a day downloads
-      r0s3 --> r0s7 : the portal keeps returning 503<br/>for a day
-      r0s4 --> r0s5 : every day is published to the<br/>API
-      r0s5 --> r0s1 : after 60 s, the logs show the<br/>run finished
-      r0s7 --> r0s0 : after 60 s, the logs show the<br/>run finished
-      r0s8 --> r0s2 : the cron fires [10am, 5pm or<br/>10pm Central, mode apply]
+      state "Run in progress, 0 of 2<br/>days downloaded, a day<br/>skipped after 503s" as r0s3
+      state "Run in progress, 1 of 2<br/>days downloaded" as r0s4
+      state "Run in progress, 1 of 2<br/>days downloaded, a day<br/>skipped after 503s" as r0s5
+      state "Run in progress, 2 of 2<br/>days downloaded" as r0s6
+      state "Run in progress, every day<br/>published" as r0s7
+      state "Run in progress, published<br/>every day the portal<br/>handed over" as r0s8
+      state "Waiting for the cron" as r0s9
+      r0s2 --> r0s4 : a day downloads
+      r0s2 --> r0s3 : the portal keeps returning 503<br/>for a day, so the sync skips<br/>it
+      r0s3 --> r0s8 : every downloaded day is<br/>published to the API
+      r0s4 --> r0s6 : a day downloads
+      r0s4 --> r0s5 : the portal keeps returning 503<br/>for a day, so the sync skips<br/>it
+      r0s5 --> r0s8 : every downloaded day is<br/>published to the API
+      r0s6 --> r0s7 : every downloaded day is<br/>published to the API
+      r0s7 --> r0s1 : after 60 s, the logs show the<br/>run finished
+      r0s8 --> r0s0 : after 60 s, the logs show the<br/>run finished
+      r0s9 --> r0s2 : the cron fires [10am, 5pm or<br/>10pm Central, mode apply]
     }
     --
     state "What the API serves" as region1 {
-      [*] --> r1s1
-      state "API shows every day<br/>current" as r1s0
-      state "API shows old data" as r1s1
-      state "API shows old data, 1<br/>downloaded day not<br/>published" as r1s2
-      r1s1 --> r1s2 : after 60 s, the logs show the<br/>run finished [when Run in<br/>progress, portal returned 503<br/>after 1 day]
-      %% when r0s7
-      r1s1 --> r1s0 : every day is published to the<br/>API [when Run in progress, 2<br/>of 2 days downloaded]
-      %% when r0s4
+      [*] --> r1s2
+      state "API shows 1 of 2 days<br/>current" as r1s0
+      state "API shows every day<br/>current" as r1s1
+      state "API shows old data" as r1s2
+      r1s2 --> r1s1 : every downloaded day is<br/>published to the API [when Run<br/>in progress, 2 of 2 days<br/>downloaded]
+      %% when r0s6
+      r1s2 --> r1s0 : every downloaded day is<br/>published to the API [when Run<br/>in progress, 1 of 2 days<br/>downloaded, a day skipped<br/>after 503s]
+      %% when r0s5
     }
   }
   class r0s0 plain
@@ -229,19 +231,21 @@ stateDiagram-v2
   class r0s2 plain
   class r0s3 plain
   class r0s4 plain
-  class r0s5 group0
+  class r0s5 plain
   class r0s6 plain
-  class r0s7 plain
-  class r0s8 group1
-  class r1s0 group0
-  class r1s1 group1
-  class r1s2 group1Wrong
+  class r0s7 group0
+  class r0s8 plain
+  class r0s9 group1
+  class r1s0 group2
+  class r1s1 group0
+  class r1s2 group1
 ```
 
-The red state is a known bug: if the portal keeps returning 503 for one day, the run exits 1, and
-the days it had already downloaded are not published until the next successful run. It happened on
-2026-10-28 at 15:00 and 22:00 UTC. Details, the rules and what the model leaves out are in
-[`docs/flows/README.md`](docs/flows/README.md).
+If the portal keeps returning 503 for one day, the sync skips that day, keeps what D1 last stored
+for it, and publishes the rest. The run still exits 0, and the "ev-ingest finished" log lists the
+skipped days as `days_failed=` and `failed_dates=`. Before this fix, one such day ended the whole run
+and left the days already downloaded unpublished, as happened on 2026-10-28 at 15:00 and 22:00 UTC.
+The rules, the history and what the model leaves out are in [`docs/flows/README.md`](docs/flows/README.md).
 
 ### Loader steps
 
@@ -252,9 +256,9 @@ idempotent; the precompute is the only step that bumps the KV version the read A
 ```mermaid
 flowchart TD
     start(["ev_ingest_steps.sh apply"]) --> sync["1 · early_vote_sync<br/>--sync-mode backfill --apply --defer-kv-bump"]
-    sync -->|"exception, e.g. portal 503 after 5 attempts"| fail(["exit 1<br/>later steps skipped, KV version unchanged"])
+    sync -->|"exception, e.g. a D1 write error"| fail(["exit 1<br/>later steps skipped, KV version unchanged"])
     sync --> sha{"report has sha256=?"}
-    sha -->|no| fail
+    sha -->|"no: every day failed and<br/>D1 holds none of them"| fail
     sha -->|yes| pre["2 · early_vote_d1_precompute_backfill<br/>--finalize-kv-digest sha<br/>(+ --finalize-kv-after-sync when status=wrote)"]
     pre -.->|"sync wrote, aggregates were missing,<br/>or KV is behind"| kv[("KV<br/>ev:id:version + 1<br/>ev:id:sha256 = digest")]
     pre --> rows["3 · early_vote_roster_rows_backfill<br/>days whose rows marker is missing or stale"]
@@ -273,14 +277,14 @@ written to D1 with the day itself; the later steps only catch up what is missing
 flowchart TD
     plan["Load plan: every EV calendar day up to today<br/>(future days skipped)"] --> next{"next day?"}
     next -->|"yes"| get["GET getFile EVR_STATEWIDE for the day<br/>(cloudscraper)"]
-    get -->|"429 / 502 / 503 / 504:<br/>4 retries with backoff, then raise"| abort(["whole run aborts"])
+    get -->|"429 / 502 / 503 / 504:<br/>4 retries with backoff, then give up"| failed["listed in failed_dates=<br/>the day keeps what D1 last stored"] --> next
     get --> redact["decode envelope · redact roster · sha256"]
     redact --> empty{"0 rows?"}
     empty -->|yes| skip["skipped_empty"] --> next
     empty -->|no| same{"sha256 = stored<br/>hash for the day?"}
     same -->|yes| unchanged["status=unchanged"] --> next
     same -->|no| cap{"within size cap?"}
-    cap -->|no| abort
+    cap -->|no| abort(["whole run aborts"])
     cap -->|"yes, dry run"| dry["status=dry_run<br/>plan only, nothing written"] --> next
     cap -->|"yes, apply"| r2["R2: snapshot the new version<br/>(replaced version kept + change log)"]
     r2 --> d1["D1: chunks · file row ·<br/>per-day aggregates · roster rows"]

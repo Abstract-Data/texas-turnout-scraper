@@ -8,12 +8,12 @@ const stranded = (v) => Object.keys(v.served).filter((d) => v.served[d] && v.api
 function context(v) {
 	if (v.container === "running") {
 		const got = Object.values(v.served).filter(Boolean).length;
-		if (v.exit === "fail") return `Run in progress, portal returned 503 after ${got} day${got === 1 ? "" : "s"}`;
-		if (v.exit === "ok") return "Run in progress, every day published";
+		if (v.exit === "ok") return v.skipped ? "Run in progress, published every day the portal handed over" : "Run in progress, every day published";
+		if (v.skipped) return `Run in progress, ${got} of ${days(v).length} days downloaded, a day skipped after 503s`;
 		return `Run in progress, ${got} of ${days(v).length} days downloaded`;
 	}
 	if (v.logged === "finished_ok") return "Last run succeeded";
-	if (v.logged === "finished_fail") return "Last run failed";
+	if (v.logged === "finished_skipped") return "Last run skipped a day the portal refused";
 	return "Waiting for the cron";
 }
 
@@ -40,9 +40,9 @@ export const groupColors = { "API current": "#d1f2eb", "API stale": "#fdebd0", "
 
 const STEPS = {
 	AlarmFinish: "the logs show the run finished",
-	DayFails: "the portal keeps returning 503 for a day",
+	DayFails: "the portal keeps returning 503 for a day, so the sync skips it",
 	FetchDay: "a day downloads",
-	Publish: "every day is published to the API",
+	Publish: "every downloaded day is published to the API",
 	StartRun: "the cron fires",
 };
 export function step(action, before, after) {
