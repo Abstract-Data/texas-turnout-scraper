@@ -6,6 +6,64 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.8](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.7...texas-turnout-scraper-v0.2.8) (2026-10-28)
+
+
+### Features
+
+* **api:** default aggregates are election-to-date; every response says its semantics ([#69](https://github.com/Abstract-Data/texas-turnout-scraper/issues/69)) ([2b5f0a4](https://github.com/Abstract-Data/texas-turnout-scraper/commit/2b5f0a4fa06b89bd157cd196f4395d126dc7299c))
+* **api:** elections list and roster routes (one day, all days) for roster tokens ([#74](https://github.com/Abstract-Data/texas-turnout-scraper/issues/74)) ([f61edd5](https://github.com/Abstract-Data/texas-turnout-scraper/commit/f61edd5b1f3ed52234028d5a4a62156e6c2dda44))
+* **auth:** token scopes; only a roster-scoped token can read voter rows ([#73](https://github.com/Abstract-Data/texas-turnout-scraper/issues/73)) ([68f796f](https://github.com/Abstract-Data/texas-turnout-scraper/commit/68f796f8d4e3a9cd99ebe7ff7e6afc1c5578d2cf))
+* **cli:** interactive, expiring API keys stored in 1Password (tx-turnout api) ([#91](https://github.com/Abstract-Data/texas-turnout-scraper/issues/91)) ([2b18bbe](https://github.com/Abstract-Data/texas-turnout-scraper/commit/2b18bbe4590f4b27a472fdebd683dec7260beb04))
+* **cli:** write an agent handoff onto each issued API key ([#103](https://github.com/Abstract-Data/texas-turnout-scraper/issues/103)) ([5e23505](https://github.com/Abstract-Data/texas-turnout-scraper/commit/5e235055add45f292f41f1d31c23a606c73e3d70))
+* **ev-api:** Worker cron dispatches the early-vote sync three times a day until Nov 3 ([#85](https://github.com/Abstract-Data/texas-turnout-scraper/issues/85)) ([09993ce](https://github.com/Abstract-Data/texas-turnout-scraper/commit/09993ceb9b838526a54258ff106797a63612216f))
+* **ev-ingest:** Container image and Worker for the portal egress spike (ADR-017) ([#119](https://github.com/Abstract-Data/texas-turnout-scraper/issues/119)) ([4182320](https://github.com/Abstract-Data/texas-turnout-scraper/commit/418232004eb525419d802834f16923424bc52034))
+* **ev-ingest:** scheduled early-vote ingest in the Container, shipped with EV_SYNC_MODE=off (ADR-017) ([629cd08](https://github.com/Abstract-Data/texas-turnout-scraper/commit/629cd08154120cb9905afe60c8efaac4823c5eae))
+* **ev-ingest:** scheduled early-vote ingest in the Container, shipped with EV_SYNC_MODE=off (ADR-017) ([78e9de4](https://github.com/Abstract-Data/texas-turnout-scraper/commit/78e9de4162641d3d2b51fdb5117c0ef8490cfa34))
+* **ev-sync:** Workflow ingest code and sync Worker package (ADR-014) ([#101](https://github.com/Abstract-Data/texas-turnout-scraper/issues/101)) ([cd75bc1](https://github.com/Abstract-Data/texas-turnout-scraper/commit/cd75bc1447796e99f1f14fadbdfdd860ee691cf9))
+* **geo:** county, precinct and district points for turnout voters, and a precinct mapping ([#79](https://github.com/Abstract-Data/texas-turnout-scraper/issues/79)) ([fd6b67d](https://github.com/Abstract-Data/texas-turnout-scraper/commit/fd6b67de18b9468524c451c1a35850c45a5b31aa))
+* **geo:** per-voter precinct, districts and residential points (ADR-015) ([#104](https://github.com/Abstract-Data/texas-turnout-scraper/issues/104)) ([0d01597](https://github.com/Abstract-Data/texas-turnout-scraper/commit/0d01597cd4048504c71a02826b686d92b0a61774))
+* **geo:** precinct point and bounding box per roster precinct, served by a lookup endpoint ([#96](https://github.com/Abstract-Data/texas-turnout-scraper/issues/96)) ([4a45c1c](https://github.com/Abstract-Data/texas-turnout-scraper/commit/4a45c1c1c9e44886021858b1bb053a1a5eff55ff))
+* **infra:** tx-turnout-ev-sync-preview Worker, Workflow, and cron repoint ([#102](https://github.com/Abstract-Data/texas-turnout-scraper/issues/102)) ([e14cc12](https://github.com/Abstract-Data/texas-turnout-scraper/commit/e14cc12f5db09f9b9e3d348cd2adaade47ba723f))
+* **loader:** keep every version of a changed day in R2 (90 days) and log added/removed voters ([#64](https://github.com/Abstract-Data/texas-turnout-scraper/issues/64)) ([b6cce49](https://github.com/Abstract-Data/texas-turnout-scraper/commit/b6cce49e05331c2604e54339db766d9394c1a315))
+* **loader:** store every roster column in D1 as validated SQLModel rows, with rejects quarantined ([#77](https://github.com/Abstract-Data/texas-turnout-scraper/issues/77)) ([5c1b126](https://github.com/Abstract-Data/texas-turnout-scraper/commit/5c1b126a61f9c80f3cdaa3f1c04b9190a95d7ed3))
+* **loader:** write only the roster rows that changed; key rows by a small integer ([#78](https://github.com/Abstract-Data/texas-turnout-scraper/issues/78)) ([de67335](https://github.com/Abstract-Data/texas-turnout-scraper/commit/de67335328b73d4f5fa9eba7b3184fec1cda62b7))
+* **repeats:** flag VUIDs counted more than once or removed, and store the non-first appearances ([#83](https://github.com/Abstract-Data/texas-turnout-scraper/issues/83)) ([f20a7ee](https://github.com/Abstract-Data/texas-turnout-scraper/commit/f20a7ee71766110df9defae5e832d5ad63a17e03))
+* **roster:** Range resume and overlapped chunk reads for large day downloads ([#76](https://github.com/Abstract-Data/texas-turnout-scraper/issues/76)) ([d80f02e](https://github.com/Abstract-Data/texas-turnout-scraper/commit/d80f02e163bf4c9ac45a7ec74022cde63c593b40))
+* **snapshots:** default to the shared R2 keys ([#67](https://github.com/Abstract-Data/texas-turnout-scraper/issues/67)) ([c253461](https://github.com/Abstract-Data/texas-turnout-scraper/commit/c2534619c2ae7818247d5d3800a1d0ef90dde4f8))
+* **voters:** voterfile attributes, typed history, scores and an age view for turnout voters ([#80](https://github.com/Abstract-Data/texas-turnout-scraper/issues/80)) ([a23c599](https://github.com/Abstract-Data/texas-turnout-scraper/commit/a23c5998d8f5234301f11b9029b85b815395c579))
+
+
+### Bug Fixes
+
+* **aggregates:** publish distinct voters, restated days and county_fips ([#115](https://github.com/Abstract-Data/texas-turnout-scraper/issues/115)) ([03d28c9](https://github.com/Abstract-Data/texas-turnout-scraper/commit/03d28c984f217d1a65c350ff5d1acd40d5bb8946))
+* **api:** issued keys carry the Cloudflare Access pair ([#111](https://github.com/Abstract-Data/texas-turnout-scraper/issues/111)) ([#114](https://github.com/Abstract-Data/texas-turnout-scraper/issues/114)) ([2a55f63](https://github.com/Abstract-Data/texas-turnout-scraper/commit/2a55f636206e88a42b50e9d3a3b8442cd9c9afc1))
+* **ci:** a release bump no longer trips the preview Worker drift check ([#70](https://github.com/Abstract-Data/texas-turnout-scraper/issues/70)) ([a78b95a](https://github.com/Abstract-Data/texas-turnout-scraper/commit/a78b95a8ca2455612346f064aa18793b13ae4aed))
+* **ev-api:** one auth dependency on every route; unknown token scopes fail closed ([#113](https://github.com/Abstract-Data/texas-turnout-scraper/issues/113)) ([8acbd52](https://github.com/Abstract-Data/texas-turnout-scraper/commit/8acbd52cf9dbc923b88ec03ba93561adb3a11395))
+* **ev-ingest:** clear a run that cannot be tracked, and drop stale cron docs ([036714e](https://github.com/Abstract-Data/texas-turnout-scraper/commit/036714e791c5a95492b73a6bdc3b7c99031cfd48))
+* **loader:** repoint the pointer when its day file is replaced ([#71](https://github.com/Abstract-Data/texas-turnout-scraper/issues/71)) ([182f29f](https://github.com/Abstract-Data/texas-turnout-scraper/commit/182f29f33887736e57b5e48643816b3a36f0cb4c))
+* **loader:** scheduled runs re-hash every day; retry dropped downloads ([#63](https://github.com/Abstract-Data/texas-turnout-scraper/issues/63)) ([0f46a01](https://github.com/Abstract-Data/texas-turnout-scraper/commit/0f46a015104368ad2d2c46e0ba41212514dc2c23))
+* **worker:** log GitHub dispatch failures with truncated body ([#98](https://github.com/Abstract-Data/texas-turnout-scraper/issues/98)) ([edc0127](https://github.com/Abstract-Data/texas-turnout-scraper/commit/edc0127656c4b787e31e251f4f65ca0f72862424))
+
+
+### Performance
+
+* **ingest:** an unchanged early-vote day costs one download and one parse ([#86](https://github.com/Abstract-Data/texas-turnout-scraper/issues/86)) ([f251e19](https://github.com/Abstract-Data/texas-turnout-scraper/commit/f251e1963ff717c7d8f0f0967d3d032d5a7b8244))
+
+
+### Documentation
+
+* **adr:** ADR-017 runs the early-vote loader in a Cloudflare Container ([#118](https://github.com/Abstract-Data/texas-turnout-scraper/issues/118)) ([f8a7b2d](https://github.com/Abstract-Data/texas-turnout-scraper/commit/f8a7b2d73feb09662513e5c3fd0d3b34ffc3fc6c))
+* **adr:** propose the early-vote ingest as a Cloudflare Workflow (ADR-014) ([#89](https://github.com/Abstract-Data/texas-turnout-scraper/issues/89)) ([f7a58ec](https://github.com/Abstract-Data/texas-turnout-scraper/commit/f7a58ec51601e68a04819237a48b11d08dcb516d))
+
+
+### Tests
+
+* **geo:** pin a voter geo page under D1's 2 MB string limit; 256 pages ([#105](https://github.com/Abstract-Data/texas-turnout-scraper/issues/105)) ([a82bca5](https://github.com/Abstract-Data/texas-turnout-scraper/commit/a82bca54452c5e2c417f9fb7d5157ff1ae7b03c1))
+* Hypothesis property and stateful tests for validation, boundaries and roster state ([#87](https://github.com/Abstract-Data/texas-turnout-scraper/issues/87)) ([c7e18a7](https://github.com/Abstract-Data/texas-turnout-scraper/commit/c7e18a7881da28f6346b5ca0ca0dd853469876ed))
+* keep git's hook variables out of tests that build their own repo ([#107](https://github.com/Abstract-Data/texas-turnout-scraper/issues/107)) ([3c2a0ed](https://github.com/Abstract-Data/texas-turnout-scraper/commit/3c2a0edcf1e60e39e32bb653cd111c9c57640da3))
+* stub pacing sleeps in unit tests and run them with pytest-xdist ([#121](https://github.com/Abstract-Data/texas-turnout-scraper/issues/121)) ([8d52ce3](https://github.com/Abstract-Data/texas-turnout-scraper/commit/8d52ce380d424ea3417443065fe4ff3118b86dd6))
+
 ## [0.2.7](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.6...texas-turnout-scraper-v0.2.7) (2026-10-23)
 
 
