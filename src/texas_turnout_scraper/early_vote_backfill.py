@@ -31,6 +31,7 @@ from texas_turnout_scraper.early_vote_sync import (
     pull_statewide_roster_file,
     sync_early_vote,
 )
+from texas_turnout_scraper.http_transport import HTTP_FETCH_EXCEPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,9 @@ class BackfillResult:
     days_wrote: int
     days_dry_run: int
     skipped_empty_dates: tuple[str, ...]
+    # Days the portal refused past every retry. A failed day keeps whatever D1 last stored for
+    # it; it is in ``days`` (status ``failed``) only when D1 has a stored hash for it.
+    failed_dates: tuple[str, ...]
     manifest_sha256: str
     kv_version: str | None
     exit_code: int
@@ -90,9 +94,13 @@ class BackfillResult:
         return len(self.skipped_empty_dates)
 
     @property
+    def days_failed(self) -> int:
+        return len(self.failed_dates)
+
+    @property
     def loaded_dates_iso(self) -> tuple[str, ...]:
         """Planned days that had roster rows."""
-        empty = set(self.skipped_empty_dates)
+        empty = set(self.skipped_empty_dates) | set(self.failed_dates)
         return tuple(iso for iso in self.plan.load_dates_iso if iso not in empty)
 
 
@@ -259,17 +267,39 @@ def run_backfill(
     day_results: list[BackfillDayResult] = []
     manifest_inputs: dict[str, str] = {}
     skipped_empty: list[str] = []
+    failed: list[str] = []
     wrote = 0
     unchanged = 0
     dry_runs = 0
 
     for ev_day in plan.load_dates:
         iso = iso_ev_date(ev_day)
-        response = pull_statewide_roster_file(
-            election_id,
-            ev_day,
-            http_backend=backend,
-        )
+        try:
+            response = pull_statewide_roster_file(
+                election_id,
+                ev_day,
+                http_backend=backend,
+            )
+        except HTTP_FETCH_EXCEPTIONS as exc:
+            # The portal refused this day past every retry. Keep going so the days already
+            # downloaded still get published; the day stays as D1 last stored it.
+            failed.append(iso)
+            logger.warning(
+                "early-vote backfill day failed election_id=%s ev_date=%s status_code=%s error=%s",
+                election_id,
+                iso,
+                getattr(getattr(exc, "response", None), "status_code", None),
+                type(exc).__name__,
+            )
+            stored = store.stored_hash(election_id, ev_date_iso=iso)
+            if stored is not None:
+                manifest_inputs[iso] = stored
+                day_results.append(
+                    BackfillDayResult(
+                        ev_date_iso=iso, status="failed", sha256=stored, decoded_bytes=0
+                    )
+                )
+            continue
         raw = _decode_envelope(response)
         redacted, summary = prepare_payload_bytes(raw, "statewide_roster")
         est_rows = summary.est_rows if summary is not None else 0
@@ -358,6 +388,7 @@ def run_backfill(
         days_wrote=wrote,
         days_dry_run=dry_runs,
         skipped_empty_dates=tuple(skipped_empty),
+        failed_dates=tuple(failed),
         manifest_sha256=manifest,
         kv_version=kv_version,
         exit_code=0,
@@ -395,6 +426,8 @@ def format_backfill_report(result: BackfillResult) -> str:
         f"days_unchanged={result.days_unchanged}",
         f"days_dry_run={result.days_dry_run}",
         f"days_skipped_empty={result.days_skipped_empty}",
+        f"days_failed={result.days_failed}",
+        f"failed_dates={','.join(result.failed_dates)}",
         f"manifest_sha256={result.manifest_sha256}",
         f"exit_code={result.exit_code}",
     ]
