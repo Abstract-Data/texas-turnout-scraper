@@ -6,6 +6,13 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.9](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.8...texas-turnout-scraper-v0.2.9) (2026-10-29)
+
+
+### Tests
+
+* **verify:** pin EV_SYNC_MODE=apply for the ingest Worker ([cc22223](https://github.com/Abstract-Data/texas-turnout-scraper/commit/cc222231a5092acb4ab17ad2d7db821746fcf357))
+
 ## [0.2.8](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.7...texas-turnout-scraper-v0.2.8) (2026-10-28)
 
 
