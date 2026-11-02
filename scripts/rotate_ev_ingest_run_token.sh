@@ -20,12 +20,15 @@ token="$(openssl rand -hex 32)"
 
 # Apply a jq filter to the template; the filter reads the token from the environment, not argv.
 apply_to_template() {
-  NEW_TOKEN="$token" jq "$1" "$template" >"$template.new" && mv "$template.new" "$template"
+  NEW_TOKEN="$token" jq "$1" "$template" >"$template.new" && [[ -s "$template.new" ]] &&
+    mv "$template.new" "$template"
 }
 
 # A lookup failure must stop here. Treating it as "no item" would skip the pending check below.
 matches="$(op item list --vault "$VAULT" --format json |
-  jq --arg title "$TITLE" '[.[] | select(.title == $title)] | length')"
+  jq -e --arg title "$TITLE" 'if type == "array" and all(.[]; type == "object")
+    then [.[] | select(.title == $title)] | length
+    else error("op item list did not return a list of items") end')"
 case "$matches" in
   0) op item template get "API Credential" >"$template" ;;
   1)
@@ -64,7 +67,9 @@ fi
 
 if ! {
   op item get "$TITLE" --vault "$VAULT" --reveal --format json >"$template" &&
-    apply_to_template '(.fields[] | select(.id == "credential") | .value) = env.NEW_TOKEN' &&
+    apply_to_template 'if any(.fields[]; .id == "credential")
+      then (.fields[] | select(.id == "credential") | .value) = env.NEW_TOKEN
+      else error("the item has no credential field") end' &&
     op item edit "$TITLE" --vault "$VAULT" --template="$template" "pending[delete]" >/dev/null
 }; then
   echo "The Worker has the new token, but promotion failed: copy pending to credential." >&2
