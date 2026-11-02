@@ -7,3 +7,7 @@
 !scripts/ev_ingest_steps.sh
 src/**/__pycache__
 src/texas_turnout_scraper/tmp/
+src/**/.env
+src/**/.env.*
+src/**/.logfire
+src/**/.DS_Store
