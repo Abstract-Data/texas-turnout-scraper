@@ -28,7 +28,7 @@ A push to `main` or `workflow_dispatch` on `main` runs two jobs in the GitHub En
 
 ## Early-vote cron trigger
 
-Terraform manages no cron. The early-vote schedule is on the ingest Container Worker `tx-turnout-ev-ingest-preview` (`infra/ev_ingest`, ADR-017), which `wrangler deploy` manages because the Terraform provider has no Container resource. The Python sync Worker `tx-turnout-ev-sync-preview` keeps its `scheduled` handler but no trigger fires it.
+Terraform manages no cron. The early-vote schedule is on the ingest Container Worker `tx-turnout-ev-ingest-preview` (`infra/ev_ingest`, ADR-017), which `wrangler deploy` manages because the Terraform provider has no Container resource. Terraform no longer deploys the Python sync Worker `tx-turnout-ev-sync-preview` or its staging bucket; `sync_worker/` keeps only the source.
 
 The read API Worker may still carry an optional `GITHUB_DISPATCH_TOKEN` binding from the GitHub-dispatch era (ADR-013); no cron uses it. See `docs/adr/017-cloudflare-container-ingest.md`.
 
