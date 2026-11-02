@@ -251,7 +251,7 @@ count voters whose listings disagree; they take their first appearance. An apply
 matches reports `status=unchanged` and writes nothing. After a change to how rows are derived, bump
 `VOTER_GEO_VERSION` in `voter_geo_tables.py`.
 
-**Reading it.** `GET /elections/{id}/roster/{ev_date}/geo?page=0` through `63` with a roster-scoped
+**Reading it.** `GET /elections/{id}/roster/{ev_date}/geo?page=0` through `255` with a roster-scoped
 token. The pages partition the day's live rows; a voter listed twice on one day can appear on two
 pages, so dedupe on `vuid`. A 503 `voter_geo_not_loaded` means the tables do not exist yet.
 

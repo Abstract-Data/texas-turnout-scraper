@@ -1,6 +1,6 @@
 # AGENTS.md
-# Version: 1.9.0
-# Last Updated: 2026-10-27
+# Version: 1.10.0
+# Last Updated: 2026-11-01
 # Environment: dev
 # Model: claude-sonnet-4-6
 # Fallback Model: claude-haiku-4-5-20251001
@@ -373,6 +373,7 @@ Full reference: `docs/GITBUTLER.md`. Rationale for adoption: `docs/adr/006-gitbu
 
 | Version | Date | Change |
 |---------|------|--------|
+| 1.10.0 | 2026-11-01 | `voter_geo_build` runs as the last step of the ingest Container (ADR-015, ADR-017); it is still not in the GitHub sync workflow. Stage 2 stays local-only |
 | 1.9.0 | 2026-10-27 | Voter geography (ADR-015): SQLModel rule names the loader-only `voter_geo_models`/`voter_geo_build`; `voter_geo_tables` holds the Worker-safe DDL; the build is not in the scheduled sync (first build exceeds the 5-minute cap) |
 | 1.8.0 | 2026-10-26 | API keys: `tx-turnout api generate\|extend\|list\|revoke` replaces the `tokens` group; keys expire (default 30 days), are stored in 1Password, and the Worker rejects an expired key; `onepassword_keys` shells out to `op` |
 | 1.7.0 | 2026-10-24 | Repeat VUIDs (ADR-012): SQLModel rule names the loader-only `repeat_models`/`repeat_build`; `repeat_tables` holds the Worker-safe DDL; the sync workflow runs the build after the geography step |
