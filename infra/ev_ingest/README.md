@@ -17,7 +17,9 @@ Container from `Dockerfile.ev-ingest` (repo root: the package with the `waf` and
 ## Deploy (owner)
 
 Docker must be running; `wrangler deploy` builds the image and pushes it to Cloudflare's registry.
-The secrets are copies of the 1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a` values.
+The Cloudflare and R2 secrets are copies of the 1Password Environment `s6tljdcafkgqxfuxhcnj3m5x5a`
+values. `RUN_TOKEN` lives in the 1Password item `tx-turnout-ev-ingest-preview RUN_TOKEN`; rotate it
+with `scripts/rotate_ev_ingest_run_token.sh`.
 
 ```bash
 cd infra/ev_ingest
