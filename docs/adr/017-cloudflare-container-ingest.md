@@ -49,6 +49,6 @@ Built from `Dockerfile.ev-ingest` for `linux/amd64` and run locally with Docker,
 
 ## Consequences
 
-- ADR-014's per-range rewrite, its R2 staging bucket and the Python sync Worker are no longer needed for ingest. Removing them is a later change.
+- ADR-014's per-range rewrite, its R2 staging bucket and the Python sync Worker are no longer needed for ingest. Their Terraform resources were removed on 2026-11-02, after creating the Workflow failed twice with a Cloudflare 500. The sync Worker source in `infra/preview/sync_worker` and `early_vote_workflow` remain; removing that code is a later change.
 - The loader keeps one implementation, tested by the existing unit tests; the Container adds an image and a small Worker, not a second loader.
 - `first_seen_build` runs in the Container, so the GitHub workflow step can be removed once the Container runs.
