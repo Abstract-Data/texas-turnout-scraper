@@ -42,6 +42,14 @@ def test_the_ingest_worker_ships_with_ev_sync_mode_apply() -> None:
     assert _wrangler_config()["vars"]["EV_SYNC_MODE"] == "apply"
 
 
+def test_voter_geo_build_is_the_last_ingest_step() -> None:
+    # It reads the live rows and aliases the earlier steps load, and publishing is already done if
+    # it fails. Stage 2 (`voter_geo`) reads the voterfile and must never run in the Container.
+    steps = re.findall(r"^step (\S+)", (ROOT / "scripts" / "ev_ingest_steps.sh").read_text(), re.M)
+    assert steps[-2:] == ["geo_load", "voter_geo_build"]
+    assert "voter_geo" not in steps
+
+
 def test_no_terraform_cron_trigger_remains() -> None:
     for tf in PREVIEW.glob("*.tf"):
         assert "cloudflare_workers_cron_trigger" not in tf.read_text(), tf.name

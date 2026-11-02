@@ -7,8 +7,8 @@ Container from `Dockerfile.ev-ingest` (repo root: the package with the `waf` and
 - **Cron** `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central through 11:59 PM on
   2026-11-03 it starts a run (`src/schedule.ts`). The other three firings a day do nothing.
 - **A run** is `scripts/ev_ingest_steps.sh <mode>` in a `standard-2` Container: the backfill sync,
-  the aggregate precompute, the roster rows, `first_seen_build` and `geo_load`, the same steps as
-  `scripts/local_ev_backfill.sh`. The Durable Object starts the Container and returns; an alarm
+  the aggregate precompute, the roster rows, `first_seen_build`, `geo_load` and `voter_geo_build`,
+  the same steps as `scripts/local_ev_backfill.sh`. The Durable Object starts the Container and returns; an alarm
   every 60 s reads the exit code, logs the steps' `key=value` lines and destroys the Container.
   A run that passes 3 hours is destroyed. One run at a time.
 - **`EV_SYNC_MODE`** (`wrangler.jsonc` vars): `off` (default, nothing runs), `dry_run` (hash every

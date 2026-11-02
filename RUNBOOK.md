@@ -100,7 +100,7 @@ The Civix portal's per-date files for an election are **daily** (consecutive day
 
 ### Early-vote schedule (ingest Container)
 
-The Worker `tx-turnout-ev-ingest-preview` (`infra/ev_ingest`, ADR-017) has the cron `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 its Durable Object starts a Container that runs `scripts/ev_ingest_steps.sh`: the backfill sync, the aggregate precompute, the roster rows, `first_seen_build` and `geo_load`. `EV_SYNC_MODE` in `infra/ev_ingest/wrangler.jsonc` gates it: `off` (the default; the cron logs a skip), `dry_run` (hashes every day, writes nothing) or `apply`.
+The Worker `tx-turnout-ev-ingest-preview` (`infra/ev_ingest`, ADR-017) has the cron `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 its Durable Object starts a Container that runs `scripts/ev_ingest_steps.sh`: the backfill sync, the aggregate precompute, the roster rows, `first_seen_build`, `geo_load` and `voter_geo_build`. `EV_SYNC_MODE` in `infra/ev_ingest/wrangler.jsonc` gates it: `off` (the default; the cron logs a skip), `dry_run` (hashes every day, writes nothing) or `apply`.
 
 - **Turn it on.** Run the `/spike` egress check first (`infra/ev_ingest/README.md`). Then set `EV_SYNC_MODE` to `apply` in `wrangler.jsonc` and deploy. A deploy from `main` resets the variable to what the file says, so commit the change rather than editing it in the dashboard.
 - **Run it now.** `POST /run` with the `RUN_TOKEN` bearer starts a run in the current mode; it answers 409 while a run is in progress or when the mode is `off`. `GET /status` shows the mode and the run in progress.
@@ -235,10 +235,9 @@ One row per VUID with a live roster row: `county_fips`, `pctkey`, `cd`, `sd`, `h
 (bits 1 cd, 2 sd, 4 hd) and `flags` (1 more than one precinct, 2 more than one county). Values come
 from the voter's first appearance and the geography tables. See `docs/adr/015-voter-geography.md`.
 
-**Not in the scheduled sync.** The first build writes about one row per distinct live VUID (about
-3.68M for 53815), which does not fit the 5-minute workflow cap. Run the first apply by hand, only
-with the owner's approval. Load geography first (`geo_load`), because the build reads the stored
-aliases.
+**Last step of the ingest run** (`scripts/ev_ingest_steps.sh`). It is still not in the GitHub
+workflow, whose 5-minute cap does not fit a large build. To catch up by hand, load geography first
+(`geo_load`), because the build reads the stored aliases.
 
 ```bash
 # Cloudflare credentials as for the sync: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_KV_NAMESPACE_ID
