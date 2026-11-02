@@ -392,6 +392,7 @@ _agg_routes = (
     "by-day",
     "county-by-day",
 )
+_DEDUPE_REQUIRED_ROUTES = ("by-day", "county-by-day")
 
 
 def _agg_app(kv: _SmokeKv) -> object:
@@ -546,6 +547,16 @@ for label, status, etag_ok, inm in agg_outcomes:
     if status != 200:
         print(f"expected aggregate {label} status=200", file=sys.stderr)
         sys.exit(1)
+    if label in _DEDUPE_REQUIRED_ROUTES:
+        # This stub has no early_vote_first_seen rows, so dedupe.status is missing: the body is
+        # served with no ETag and never cached (ADR-016), and If-None-Match cannot revalidate it.
+        if etag_ok:
+            print(f"expected no etag on aggregate {label} without first-seen", file=sys.stderr)
+            sys.exit(1)
+        if inm != 200:
+            print(f"expected aggregate {label} if-none-match status=200", file=sys.stderr)
+            sys.exit(1)
+        continue
     if not etag_ok:
         print(f"expected etag on aggregate {label}", file=sys.stderr)
         sys.exit(1)
