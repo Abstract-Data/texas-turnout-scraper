@@ -235,10 +235,9 @@ One row per VUID with a live roster row: `county_fips`, `pctkey`, `cd`, `sd`, `h
 (bits 1 cd, 2 sd, 4 hd) and `flags` (1 more than one precinct, 2 more than one county). Values come
 from the voter's first appearance and the geography tables. See `docs/adr/015-voter-geography.md`.
 
-**Not in the scheduled sync.** The first build writes about one row per distinct live VUID (about
-3.68M for 53815), which does not fit the 5-minute workflow cap. Run the first apply by hand, only
-with the owner's approval. Load geography first (`geo_load`), because the build reads the stored
-aliases.
+**Last step of the ingest run** (`scripts/ev_ingest_steps.sh`). It is still not in the GitHub
+workflow, whose 5-minute cap does not fit a large build. To catch up by hand, load geography first
+(`geo_load`), because the build reads the stored aliases.
 
 ```bash
 # Cloudflare credentials as for the sync: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_KV_NAMESPACE_ID

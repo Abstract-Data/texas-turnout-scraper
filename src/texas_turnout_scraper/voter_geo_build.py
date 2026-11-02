@@ -1,7 +1,7 @@
 """Place every live roster VUID in a county, a state precinct and its districts, in D1.
 
-Loader-only (``loader`` extra): imports ``voter_geo_models`` (sqlmodel). Run from the owner's
-machine; it is not in the scheduled sync (ADR-015). Steps:
+Loader-only (``loader`` extra): imports ``voter_geo_models`` (sqlmodel). The last step of the
+ingest Container's run (``scripts/ev_ingest_steps.sh``; ADR-015). Steps:
 
 1. Read the geography ADR-010 loaded (county names and the roster-pair aliases) and the build
    signature (the roster version rows, the ``tx_geo`` hash and a hash of the alias rows). On an

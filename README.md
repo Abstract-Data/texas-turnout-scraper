@@ -121,7 +121,7 @@ through 11:59 PM on 2026-11-03. `EV_SYNC_MODE` in
 [`infra/ev_ingest/wrangler.jsonc`](infra/ev_ingest/wrangler.jsonc) gates it: `off` (nothing runs),
 `dry_run` (hash every day, write nothing) or `apply`. A deploy resets the variable to the file's
 value. A run executes [`scripts/ev_ingest_steps.sh`](scripts/ev_ingest_steps.sh): the backfill
-sync, the aggregate precompute, roster rows, `first_seen_build` and `geo_load`. Results are in
+sync, the aggregate precompute, roster rows, `first_seen_build`, `geo_load` and `voter_geo_build`. Results are in
 Workers Logs as `ev-ingest started` / `ev-ingest finished` with `exit_code` and the steps'
 `key=value` report lines.
 
@@ -137,8 +137,8 @@ bash scripts/local_ev_backfill.sh           # apply
 bash scripts/local_ev_backfill.sh dry_run   # hash every day, write nothing
 ```
 
-Voter attributes (`voter_link`, local only because the voterfile is PII), voter geography
-(`voter_geo_build`, not in the scheduled run) and repeat VUIDs (paused until after 2026-11-03) are
+Voter attributes (`voter_link`, local only because the voterfile is PII), residential points
+(`voter_geo`, local for the same reason) and repeat VUIDs (paused until after 2026-11-03) are
 separate local steps; see [`RUNBOOK.md`](RUNBOOK.md).
 
 ### Preview read API
@@ -264,8 +264,9 @@ flowchart TD
     pre --> rows["3 · early_vote_roster_rows_backfill<br/>days whose rows marker is missing or stale"]
     rows --> seen["4 · first_seen_build<br/>first-appearance counts"]
     seen --> geo["5 · geo_load<br/>geography + precinct aliases"]
-    geo --> done(["exit 0"])
-    geo -.->|"GitHub 'Early vote sync' only;<br/>paused in the Container until after 11/03"| rep["6 · repeat_build"]
+    geo --> vgeo["6 · voter_geo_build<br/>county, precinct, districts per VUID"]
+    vgeo --> done(["exit 0"])
+    geo -.->|"GitHub 'Early vote sync' only;<br/>paused in the Container until after 11/03"| rep["repeat_build"]
 ```
 
 ### Per-day sync
@@ -415,7 +416,7 @@ flowchart LR
     gb --> gj[("data/geo/tx_geo.json<br/>committed")]
     gj --> gl["geo_load<br/>scheduled run"] --> geo[("geo_area · geo_precinct ·<br/>geo_precinct_alias")]
     vf[("Voterfile<br/>PII · owner's machine")] --> vl["voter_link<br/>local only"] --> voter[("early_vote_voter")]
-    rr[("early_vote_roster_row")] --> vgb["voter_geo_build<br/>local, not scheduled"] --> vg[("voter_geo")]
+    rr[("early_vote_roster_row")] --> vgb["voter_geo_build<br/>scheduled run"] --> vg[("voter_geo")]
     geo --> vgb
     vf --> vgp["voter_geo (stage 2)<br/>local · address points + plan layers"] --> vgpt[("voter_geo_point")]
     rr --> vgp

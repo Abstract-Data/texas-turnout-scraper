@@ -1,7 +1,7 @@
 # ADR-015: Per-voter geography in D1
 
 **Date:** 2026-10-27
-**Status:** Proposed (both stages built; neither applied to the production D1)
+**Status:** Accepted (both stages applied to the production D1; Stage 1 joined the ingest run on 2026-11-01, see Decision 5)
 
 ## Context
 
@@ -42,13 +42,14 @@ them. Geography is computed after the roster load and stored. It is never comput
    live are deleted. The meta rows are written last. `matched_at` is set only on rows a run
    writes. A dry run reads and compares, never runs the schema step, and never writes. Output and
    logs carry counts only.
-5. **Not in the scheduled sync yet.** The first build writes one row per distinct live VUID, about
-   3.68M rows for 53815. The ADR-009 addendum measured 3.7M row writes through the REST API at 33
-   minutes, far past the 5-minute workflow cap (ADR-014). The step is therefore not added to
-   `early-vote-sync.yml`. The first apply runs once from the owner's machine with the owner's
-   approval. After that a changed day writes only its new or changed VUIDs. The build is shaped to
-   become one ADR-014 Workflow step after the roster ranges land (its reads are per day and per
-   row-hash range already).
+5. **Runs last in the ingest Container (from 2026-11-01).** The first build writes one row per
+   distinct live VUID, about 3.68M rows for 53815. The ADR-009 addendum measured 3.7M row writes
+   through the REST API at 33 minutes, far past the 5-minute workflow cap (ADR-014), so it was first
+   applied by hand from the owner's machine and is not in `early-vote-sync.yml`. Left out of the
+   schedule, it stopped at the roster of 2026-10-23 while the roster kept growing. The ADR-017
+   Container has a 3-hour cap, so the build is now the last step of `scripts/ev_ingest_steps.sh`.
+   A changed day writes only its new or changed VUIDs, an unchanged signature skips the scan, and a
+   failure leaves the run's publishing done.
 6. **Tables and drift.** `voter_geo` (`vuid` key, `WITHOUT ROWID`) and `voter_geo_meta`
    (`name`, `value`). SQLModel models in the loader-only `voter_geo_models.py` (the ADR-011 split:
    a non-table model validates, the table model generates the DDL). The DDL and SQL are committed

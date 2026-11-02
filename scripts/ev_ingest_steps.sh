@@ -2,7 +2,7 @@
 # The early-vote loader steps, in order (ADR-017). Run by the ingest Container and, under op run,
 # by scripts/local_ev_backfill.sh. Prints counts and hashes only. Skips repeat_build, which is
 # paused until after 2026-11-03 (ADR-014).
-#   ev_ingest_steps.sh apply     # sync every day, precompute, roster rows, first-seen, geo
+#   ev_ingest_steps.sh apply     # sync every day, precompute, roster rows, first-seen, geo, voter geo
 #   ev_ingest_steps.sh dry_run   # hash every day and print the plan; writes nothing
 # Needs `python` with the package (waf + loader extras) on PATH and, for apply,
 # CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_KV_NAMESPACE_ID, EV_SNAPSHOT_BUCKET,
@@ -42,3 +42,5 @@ step early_vote_d1_precompute_backfill "${precompute[@]}"
 step early_vote_roster_rows_backfill --election-id "$ELECTION_ID" --apply
 step first_seen_build --election-id "$ELECTION_ID" --apply
 step geo_load --election-id "$ELECTION_ID" --apply
+# Last: it reads the live rows and the aliases above, and publishing is done if it fails (ADR-015).
+step voter_geo_build --election-id "$ELECTION_ID" --apply
