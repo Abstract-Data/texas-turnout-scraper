@@ -107,7 +107,7 @@ The Worker `tx-turnout-ev-ingest-preview` (`infra/ev_ingest`, ADR-017) has the c
 - **See a run.** Workers Logs for `tx-turnout-ev-ingest-preview`: `ev-ingest started`, then `ev-ingest finished` with `exit_code`, `seconds` and the steps' `key=value` report lines (counts and hashes). `ev-ingest timed out` means the run passed 3 hours and the Container was destroyed; `ev-ingest lost` means the Container stopped before it recorded an exit code. The Container's full output is in the Containers dashboard.
 - **Stop it now.** Set `EV_SYNC_MODE` to `off` and deploy. A run already in progress finishes; every step is idempotent, so destroying one mid-run is also safe and the next run finishes the work.
 - **It ends by itself.** After 2026-11-04 05:59:59 UTC the cron still fires but starts nothing.
-- **Secrets.** `CLOUDFLARE_API_TOKEN`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `RUN_TOKEN` are Worker secrets, copies of the 1Password Environment values. Re-set them with `npx wrangler secret put` when a value rotates.
+- **Secrets.** `CLOUDFLARE_API_TOKEN`, `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` are Worker secrets, copies of the 1Password Environment values. Re-set them with `npx wrangler secret put` when a value rotates. `RUN_TOKEN` is also a Worker secret, but its source of truth is the 1Password item `tx-turnout-ev-ingest-preview RUN_TOKEN`; rotate it with `bash scripts/rotate_ev_ingest_run_token.sh`.
 - **Do not overlap a local run.** `scripts/local_ev_backfill.sh` runs the same steps on a laptop. The Durable Object only refuses overlapping Container runs, so do not start a local run while a scheduled one is in progress.
 
 ### Early-vote roster rows (`early_vote_roster_row`)

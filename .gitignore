@@ -23,6 +23,10 @@ src/texas_turnout_scraper/tmp/
 .claude/handoffs/
 HANDOFF.md
 TASK.md
+TASK.*.md
+.abstract-data/
+.claude/state/
+.wrangler/
 
 # =============================================================================
 # Python
