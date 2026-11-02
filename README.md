@@ -31,7 +31,7 @@ flowchart LR
     portal["Civix EVR portal<br/>getFile EVR_STATEWIDE"] -->|cloudscraper, per EV day| sync["early_vote_sync<br/>(backfill)"]
     sync --> r2[("R2<br/>day snapshots")]
     sync --> d1day[("D1 ev-53815<br/>day files + chunks")]
-    d1day --> pre["precompute · roster rows<br/>first_seen · geo_load"]
+    d1day --> pre["precompute · roster rows<br/>first_seen · geo_load<br/>voter_geo_build"]
     pre --> d1agg[("D1 aggregates<br/>roster rows, geo")]
     pre --> kv[("KV<br/>ev:id:version / sha256")]
     d1agg --> api["Preview read API<br/>/elections/{id}/aggregates/*"]

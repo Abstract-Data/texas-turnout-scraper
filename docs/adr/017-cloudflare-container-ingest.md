@@ -44,8 +44,7 @@ Built from `Dockerfile.ev-ingest` for `linux/amd64` and run locally with Docker,
 
 ## Unverified
 
-- Whether the Civix portal accepts requests from a Container's egress. The local run proves the image, not Cloudflare's network path. `POST /spike` on the deployed Worker settles it.
-- Container start time and the cost of a 6 GiB instance for about 45 minutes, six times a day.
+- Container start time and the cost of a 6 GiB instance for about 45 minutes, three runs a day (the cron fires six times, and `schedule.ts` lets three through).
 - Peak memory of an apply run. The dry run peaked at 304 MiB; the apply path also holds the stored version, so `standard-2` stays the starting size until a measured apply.
 
 ## Consequences
