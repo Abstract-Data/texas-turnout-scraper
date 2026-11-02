@@ -23,22 +23,37 @@ apply_to_template() {
   NEW_TOKEN="$token" jq "$1" "$template" >"$template.new" && mv "$template.new" "$template"
 }
 
-stage='.fields += [{id: "pending", label: "pending", type: "CONCEALED", value: env.NEW_TOKEN}]'
-if op item get "$TITLE" --vault "$VAULT" --format json >"$template" 2>/dev/null; then
-  if jq -e '.fields | any(.label == "pending")' "$template" >/dev/null; then
-    cat >&2 <<EOF
+# A lookup failure must stop here. Treating it as "no item" would skip the pending check below.
+matches="$(op item list --vault "$VAULT" --format json |
+  jq --arg title "$TITLE" '[.[] | select(.title == $title)] | length')"
+case "$matches" in
+  0) op item template get "API Credential" >"$template" ;;
+  1)
+    # --reveal: a masked credential written back through the template would overwrite the real one.
+    op item get "$TITLE" --vault "$VAULT" --reveal --format json >"$template"
+    if jq -e '.fields | any(.label == "pending")' "$template" >/dev/null; then
+      cat >&2 <<EOF
 "$TITLE" already has a pending token from an unfinished rotation, which may be the one the Worker
 holds. Try it against GET $URL/status. If it works, copy it to credential. Then delete pending
 (op item edit "$TITLE" --vault "$VAULT" "pending[delete]") and rerun.
 EOF
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Found $matches items titled \"$TITLE\" in the vault; expected at most one." >&2
     exit 1
-  fi
-  apply_to_template "$stage"
-  op item edit "$TITLE" --vault "$VAULT" --template="$template" >/dev/null
-else
-  op item template get "API Credential" >"$template"
-  apply_to_template "$stage"
+    ;;
+esac
+
+# Checked here, before the Worker changes, so promotion cannot be the first to find it missing.
+apply_to_template 'if any(.fields[]; .id == "credential")
+  then .fields += [{id: "pending", label: "pending", type: "CONCEALED", value: env.NEW_TOKEN}]
+  else error("the item has no credential field") end'
+if [[ "$matches" == 0 ]]; then
   op item create --title "$TITLE" --vault "$VAULT" --template="$template" >/dev/null
+else
+  op item edit "$TITLE" --vault "$VAULT" --template="$template" >/dev/null
 fi
 
 if ! printf '%s' "$token" | npx wrangler secret put RUN_TOKEN; then
@@ -48,8 +63,8 @@ if ! printf '%s' "$token" | npx wrangler secret put RUN_TOKEN; then
 fi
 
 if ! {
-  op item get "$TITLE" --vault "$VAULT" --format json >"$template" &&
-    apply_to_template 'if any(.fields[]; .id == "credential") then (.fields[] | select(.id == "credential") | .value) = env.NEW_TOKEN else error("no credential field") end' &&
+  op item get "$TITLE" --vault "$VAULT" --reveal --format json >"$template" &&
+    apply_to_template '(.fields[] | select(.id == "credential") | .value) = env.NEW_TOKEN' &&
     op item edit "$TITLE" --vault "$VAULT" --template="$template" "pending[delete]" >/dev/null
 }; then
   echo "The Worker has the new token, but promotion failed: copy pending to credential." >&2
