@@ -100,7 +100,7 @@ The Civix portal's per-date files for an election are **daily** (consecutive day
 
 ### Early-vote schedule (ingest Container)
 
-The Worker `tx-turnout-ev-ingest-preview` (`infra/ev_ingest`, ADR-017) has the cron `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 its Durable Object starts a Container that runs `scripts/ev_ingest_steps.sh`: the backfill sync, the aggregate precompute, the roster rows, `first_seen_build` and `geo_load`. `EV_SYNC_MODE` in `infra/ev_ingest/wrangler.jsonc` gates it: `off` (the default; the cron logs a skip), `dry_run` (hashes every day, writes nothing) or `apply`.
+The Worker `tx-turnout-ev-ingest-preview` (`infra/ev_ingest`, ADR-017) has the cron `0 15,16,22,23,3,4 * * *` (UTC). At 10:00, 17:00 and 22:00 Central until 11:59 PM on 2026-11-03 its Durable Object starts a Container that runs `scripts/ev_ingest_steps.sh`: the backfill sync, the aggregate precompute, the roster rows, `first_seen_build`, `geo_load` and `voter_geo_build`. `EV_SYNC_MODE` in `infra/ev_ingest/wrangler.jsonc` gates it: `off` (the default; the cron logs a skip), `dry_run` (hashes every day, writes nothing) or `apply`.
 
 - **Turn it on.** Run the `/spike` egress check first (`infra/ev_ingest/README.md`). Then set `EV_SYNC_MODE` to `apply` in `wrangler.jsonc` and deploy. A deploy from `main` resets the variable to what the file says, so commit the change rather than editing it in the dashboard.
 - **Run it now.** `POST /run` with the `RUN_TOKEN` bearer starts a run in the current mode; it answers 409 while a run is in progress or when the mode is `off`. `GET /status` shows the mode and the run in progress.

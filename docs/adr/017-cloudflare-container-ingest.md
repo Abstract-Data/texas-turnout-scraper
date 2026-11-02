@@ -1,7 +1,7 @@
 # ADR-017: Early-vote ingest in a Cloudflare Container
 
 **Date:** 2026-10-28
-**Status:** Proposed. Supersedes ADR-014 once accepted. Step 1, the portal egress spike (`POST /spike`), and step 2, the scheduled ingest, are implemented in `infra/ev_ingest`. The cron ships with `EV_SYNC_MODE=off` until the egress check passes.
+**Status:** Proposed. Supersedes ADR-014 once accepted. Step 1, the portal egress spike (`POST /spike`), and step 2, the scheduled ingest, are implemented in `infra/ev_ingest`. The egress check passed and the cron has run with `EV_SYNC_MODE=apply` since 2026-10-28.
 
 ## Context
 
@@ -9,13 +9,13 @@ The roster in `ev-53815` stops at 2026-10-24. The GitHub sync workflow is disabl
 
 ADR-014 rewrites the loader to fit a Worker's 128 MB isolate: each day split into 16 hash ranges, one Workflow step per range. Its own table lists six loader functions that hold a whole 48 MB day or more; `repeat_build` peaked at 802 MB. That rewrite is the whole cost of ADR-014, and the election is 2026-11-03.
 
-The loader already runs unchanged outside GitHub. `scripts/local_ev_backfill.sh` runs the apply job's steps on a laptop with `op run`: the sync, the aggregate precompute, the roster rows, `first_seen_build` and `geo_load`.
+The loader already runs unchanged outside GitHub. `scripts/local_ev_backfill.sh` runs the apply job's steps on a laptop with `op run`: the sync, the aggregate precompute, the roster rows, `first_seen_build`, `geo_load` and, since 2026-11-01, `voter_geo_build` (ADR-015).
 
 ## Decision
 
 Run the existing Python loader, unchanged, in a Cloudflare Container started by a Worker cron.
 
-- **Image.** Python 3.12, the package installed with `uv sync --locked --extra waf --extra loader`. The five steps live in one script, `scripts/ev_ingest_steps.sh`, which both the Container and `scripts/local_ev_backfill.sh` run. `repeat_build` stays paused (ADR-014).
+- **Image.** Python 3.12, the package installed with `uv sync --locked --extra waf --extra loader`. The six steps live in one script, `scripts/ev_ingest_steps.sh`, which both the Container and `scripts/local_ev_backfill.sh` run. `repeat_build` stays paused (ADR-014).
 - **Size.** `standard-2` (1 vCPU, 6 GiB) to start. Cloudflare's limits page lists up to 4 vCPU and 12 GiB per instance, so `repeat_build` fits later.
 - **Trigger.** The cron moves from the Python sync Worker to a small TypeScript Worker (`infra/ev_ingest`). Its `scheduled` handler calls a Durable Object, which starts the Container. Every Containers example and the `ctx.container` API reference are JavaScript or TypeScript; nothing shows a Python Worker starting a Container. The schedule (`0 15,16,22,23,3,4 * * *` UTC, cut off at 11:59 PM Central on 2026-11-03) and the `EV_SYNC_MODE` gate carry over. The Terraform-managed `cloudflare_workers_cron_trigger.ev_sync` on the Python sync Worker is removed in the same change that gives the new Worker its cron, so the schedule never fires twice.
 - **Run length.** The Container has no fixed maximum runtime; the Worker invocation that starts it does. Cloudflare's cron example awaits `monitor()`, but its own page says to keep the task within Cron Trigger limits, and a pending `monitor()` holds the Durable Object for at most 15 minutes. So the Durable Object starts the Container, sets `setInactivityTimeout` and an alarm, and returns. Code inside the Container does not count as activity, and `exec()` does not inherit the variables `start()` sets, so the steps run as the Container's entrypoint: they record their exit code in a file and the entrypoint then idles. The alarm runs every 60 s, which keeps the Durable Object active; it reads the exit code, logs the steps' `key=value` lines, and destroys the Container. A run past 3 hours is destroyed. One run at a time: the Durable Object refuses a start while one is running. This shape is for the cron ingest; the step 1 `/spike` route awaits its 10-second dry run inside the request and does not guard against a second concurrent request.

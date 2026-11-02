@@ -153,7 +153,7 @@ API key from `tx-turnout api generate`. Setup, Terraform and key handling:
 | Flow | What it covers | Source |
 |---|---|---|
 | [Scheduled ingest run](#scheduled-ingest-run) | Cron → Durable Object → Container → alarm, and what the API serves | [`infra/ev_ingest/src/index.ts`](infra/ev_ingest/src/index.ts) · **TLC-checked** |
-| [Loader steps](#loader-steps) | The five steps of one run and when KV is bumped | [`scripts/ev_ingest_steps.sh`](scripts/ev_ingest_steps.sh) |
+| [Loader steps](#loader-steps) | The six steps of one run and when KV is bumped | [`scripts/ev_ingest_steps.sh`](scripts/ev_ingest_steps.sh) |
 | [Per-day sync](#per-day-sync) | Fetch, hash, skip or write one EV day | [`early_vote_backfill.py`](src/texas_turnout_scraper/early_vote_backfill.py), [`early_vote_sync.py`](src/texas_turnout_scraper/early_vote_sync.py) |
 | [Read API request](#read-api-request) | Access, API key, versioned KV cache, D1 | [`infra/preview/worker/src/ev_api/`](infra/preview/worker/src/ev_api/) |
 | [API key lifecycle](#api-key-lifecycle) | `tx-turnout api` generate, extend, expire, revoke | [`consumer_token_admin.py`](src/texas_turnout_scraper/consumer_token_admin.py) |
@@ -534,7 +534,7 @@ describe.
 | [012](docs/adr/012-repeat-vuids.md) | Repeat VUIDs in D1 | Accepted |
 | [013](docs/adr/013-worker-cron-dispatches-sync.md) | Worker cron dispatches the sync | Accepted |
 | [014](docs/adr/014-cloudflare-workflow-ingest.md) | Ingest as a Cloudflare Workflow | Proposed (superseded by 017 once accepted) |
-| [015](docs/adr/015-voter-geography.md) | Per-voter geography in D1 | Proposed |
+| [015](docs/adr/015-voter-geography.md) | Per-voter geography in D1 | Accepted |
 | [016](docs/adr/016-first-appearance-voter-counts.md) | Distinct voters and county FIPS in the API | Accepted |
 | [017](docs/adr/017-cloudflare-container-ingest.md) | Ingest in a Cloudflare Container | Proposed, running in `apply` |
 
