@@ -395,17 +395,22 @@ def run_backfill(
     )
 
 
-def _backfill_content_sha256(result: BackfillResult) -> str:
+def _latest_backfill_day(result: BackfillResult) -> BackfillDayResult | None:
     if not result.days:
-        return ""
-    latest = max(result.days, key=lambda item: item.ev_date_iso)
-    return latest.sha256
+        return None
+    return max(result.days, key=lambda item: item.ev_date_iso)
+
+
+def _backfill_content_sha256(result: BackfillResult) -> str:
+    latest = _latest_backfill_day(result)
+    return latest.sha256 if latest is not None else ""
 
 
 def format_backfill_report(result: BackfillResult) -> str:
     """Operator report — day list shows ISO dates and statuses only."""
     plan = result.plan
-    content_sha256 = _backfill_content_sha256(result)
+    latest_day = _latest_backfill_day(result)
+    content_sha256 = latest_day.sha256 if latest_day is not None else ""
     sync_status = "wrote" if result.days_wrote > 0 else "unchanged"
     lines = [
         f"election_id={result.election_id}",
@@ -429,6 +434,7 @@ def format_backfill_report(result: BackfillResult) -> str:
         f"days_failed={result.days_failed}",
         f"failed_dates={','.join(result.failed_dates)}",
         f"manifest_sha256={result.manifest_sha256}",
+        f"published_ev_date={latest_day.ev_date_iso if latest_day is not None else ''}",
         f"exit_code={result.exit_code}",
     ]
     if result.kv_version is not None:
