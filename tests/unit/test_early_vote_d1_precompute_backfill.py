@@ -112,7 +112,9 @@ class _BackfillStore:
     ) -> None:
         self.meta_records.append((file_id, county_count))
 
-    def bump_version(self, election_id: str, digest: str, *, manifest_sha256: str | None = None) -> str:
+    def bump_version(
+        self, election_id: str, digest: str, *, manifest_sha256: str | None = None
+    ) -> str:
         self.kv_stored_hash = digest
         self.manifest_sha256 = manifest_sha256
         return "1"

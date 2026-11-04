@@ -1288,7 +1288,9 @@ class CloudflareEarlyVoteStore:
         rows = self._query_rows(database_id, _FILE_ID_FOR_HASH_SQL, [election_id, digest])
         return tuple(_string_column(rows, "file_id"))
 
-    def bump_version(self, election_id: str, digest: str, *, manifest_sha256: str | None = None) -> str:
+    def bump_version(
+        self, election_id: str, digest: str, *, manifest_sha256: str | None = None
+    ) -> str:
         """Write the version key, then the file content hash key."""
         key = version_key(election_id)
         current = self._kv_get(key)
