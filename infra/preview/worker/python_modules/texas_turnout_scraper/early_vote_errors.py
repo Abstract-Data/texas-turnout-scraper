@@ -5,3 +5,9 @@ from __future__ import annotations
 
 class EarlyVoteSyncError(RuntimeError):
     """The sync could not finish. KV was not bumped after a failed D1 write."""
+
+    http_status: int | None
+
+    def __init__(self, message: str, *, http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
