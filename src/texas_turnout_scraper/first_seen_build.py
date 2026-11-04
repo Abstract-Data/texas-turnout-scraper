@@ -139,9 +139,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.election_id,
                 exc.http_status,
             )
-            sys.stdout.write(
-                f"status=degraded\nhttp_status={exc.http_status}\nexit_code=0\n"
-            )
+            sys.stdout.write(f"status=degraded\nhttp_status={exc.http_status}\nexit_code=0\n")
             return 0
         raise
     finally:

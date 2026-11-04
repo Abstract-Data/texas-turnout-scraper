@@ -48,8 +48,7 @@ _DAY_BY_FILE_SQL = (
     "WHERE source_election_id = ? AND file_id = ? ORDER BY ev_date ASC LIMIT 1"
 )
 _DAY_FILE_FOR_DATE_SQL = (
-    "SELECT file_id FROM early_vote_day "
-    "WHERE source_election_id = ? AND ev_date = ? LIMIT 1"
+    "SELECT file_id FROM early_vote_day WHERE source_election_id = ? AND ev_date = ? LIMIT 1"
 )
 
 _COMPLETE_PROBE_SQL = (
@@ -609,9 +608,7 @@ def main(argv: list[str] | None = None) -> int:
         published_ev = args.finalize_kv_published_ev_date.strip()
         manifest = args.finalize_kv_manifest.strip()
         state_kwargs = (
-            {"published_digest": digest, "published_ev_date_iso": published_ev}
-            if digest
-            else {}
+            {"published_digest": digest, "published_ev_date_iso": published_ev} if digest else {}
         )
         state_before = (
             published_precompute_state(store, args.election_id, **state_kwargs)
