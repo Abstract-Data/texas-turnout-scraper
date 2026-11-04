@@ -44,6 +44,9 @@ class _BackfillStore:
         self.meta_records: list[tuple[str, int]] = []
         self.batches: list[int] = []
         self.kv_stored_hash: str | None = None
+        self.manifest_sha256: str | None = None
+        self.published_ev_date: str = "2026-10-20"
+        self.finalize_calls: list[tuple[str, str, str]] = []
 
     def _database_uuid_if_exists(self, election_id: str) -> str | None:
         return "db-1" if election_id == self._election_id else None
@@ -77,6 +80,8 @@ class _BackfillStore:
             return []
         if "COUNT(*) AS n" in sql:
             return [{"n": self._county_rows.get(self._file_id, 0)}]
+        if "early_vote_day" in sql and "ev_date = ?" in sql.replace("\n", " "):
+            return [{"file_id": self._file_id}]
         if "early_vote_day" in sql:
             return [{"ev_date": "2026-10-20"}]
         if "early_vote_pointer" in sql:
@@ -107,9 +112,25 @@ class _BackfillStore:
     ) -> None:
         self.meta_records.append((file_id, county_count))
 
-    def bump_version(self, election_id: str, digest: str) -> str:
+    def bump_version(
+        self, election_id: str, digest: str, *, manifest_sha256: str | None = None
+    ) -> str:
         self.kv_stored_hash = digest
+        self.manifest_sha256 = manifest_sha256
         return "1"
+
+    def finalize_published_roster(
+        self,
+        election_id: str,
+        ev_date_iso: str,
+        content_digest: str,
+        *,
+        manifest_sha256: str | None = None,
+    ) -> str:
+        self.finalize_calls.append((ev_date_iso, content_digest, manifest_sha256 or ""))
+        self.kv_stored_hash = content_digest
+        self.manifest_sha256 = manifest_sha256
+        return "2"
 
     def stored_hash(self, election_id: str) -> str | None:
         return self.kv_stored_hash
@@ -169,7 +190,7 @@ def test_finalize_kv_digest_bumps_when_files_written(monkeypatch) -> None:
     store = _BackfillStore("53815", "f1", b'{"turnout_by_county":[]}')
     bumped: list[str] = []
 
-    def _bump(election_id: str, digest: str) -> str:
+    def _bump(election_id: str, digest: str, *, manifest_sha256: str | None = None) -> str:
         bumped.append(digest)
         return "9"
 
@@ -214,7 +235,7 @@ def test_finalize_kv_digest_skipped_when_unchanged_sync(monkeypatch) -> None:
     store._county_rows["f1"] = 1
     bumped: list[str] = []
 
-    def _bump(election_id: str, digest: str) -> str:
+    def _bump(election_id: str, digest: str, *, manifest_sha256: str | None = None) -> str:
         bumped.append(digest)
         return "9"
 
@@ -260,7 +281,7 @@ def test_retry_after_missing_precompute_bumps_without_after_sync(monkeypatch) ->
     store.kv_stored_hash = "stale-kv"
     bumped: list[str] = []
 
-    def _bump(election_id: str, digest: str) -> str:
+    def _bump(election_id: str, digest: str, *, manifest_sha256: str | None = None) -> str:
         bumped.append(digest)
         return "9"
 
@@ -299,7 +320,7 @@ def test_kv_stale_with_complete_aggregates_bumps_without_rewrite(monkeypatch) ->
     store.kv_stored_hash = "stale-kv"
     bumped: list[str] = []
 
-    def _bump(election_id: str, digest: str) -> str:
+    def _bump(election_id: str, digest: str, *, manifest_sha256: str | None = None) -> str:
         bumped.append(digest)
         return "9"
 
@@ -348,7 +369,7 @@ def test_finalize_kv_after_sync_bumps_without_precompute_writes(monkeypatch) -> 
     store._county_rows["f1"] = 1
     bumped: list[str] = []
 
-    def _bump(election_id: str, digest: str) -> str:
+    def _bump(election_id: str, digest: str, *, manifest_sha256: str | None = None) -> str:
         bumped.append(digest)
         return "9"
 
@@ -437,10 +458,19 @@ class _TwoFileStore(_BackfillStore):
         return super()._query_rows(database_id, sql, params)
 
 
-def _run_finalize(monkeypatch, store: _BackfillStore, digest: str, bumped: list[str]) -> int:
-    def _bump(election_id: str, value: str) -> str:
+def _run_finalize(
+    monkeypatch,
+    store: _BackfillStore,
+    digest: str,
+    bumped: list[str],
+    *,
+    manifest: str = "",
+    published_ev_date: str = "",
+) -> int:
+    def _bump(election_id: str, value: str, *, manifest_sha256: str | None = None) -> str:
         bumped.append(value)
         store.kv_stored_hash = value
+        store.manifest_sha256 = manifest_sha256
         return str(len(bumped))
 
     store.bump_version = _bump  # type: ignore[method-assign]
@@ -454,7 +484,12 @@ def _run_finalize(monkeypatch, store: _BackfillStore, digest: str, bumped: list[
     )
     from texas_turnout_scraper.early_vote_d1_precompute_backfill import main
 
-    return main(["--election-id", "53815", "--apply", "--finalize-kv-digest", digest])
+    args = ["--election-id", "53815", "--apply", "--finalize-kv-digest", digest]
+    if manifest:
+        args.extend(["--finalize-kv-manifest", manifest])
+    if published_ev_date:
+        args.extend(["--finalize-kv-published-ev-date", published_ev_date])
+    return main(args)
 
 
 def test_unreadable_target_with_stale_kv_hash_fails_without_bump(monkeypatch) -> None:
@@ -496,7 +531,28 @@ def test_one_unreadable_target_among_many_blocks_bump_even_when_other_writes(mon
     store.kv_stored_hash = "stale-kv"
     bumped: list[str] = []
     with pytest.raises(EarlyVoteSyncError, match="unreadable"):
-        _run_finalize(monkeypatch, store, store._digest, bumped)
+        _run_finalize(monkeypatch, store, store._digest, bumped, published_ev_date="")
+    assert bumped == []
+
+
+def test_unreadable_non_published_target_does_not_block_defer_finalize(monkeypatch) -> None:
+    store = _TwoFileStore()
+    store._agg_rows.add("f1")
+    store._county_rows["f1"] = 1
+    store.kv_stored_hash = "stale-kv"
+    manifest = "abc123manifest"
+    bumped: list[str] = []
+    code = _run_finalize(
+        monkeypatch,
+        store,
+        store._digest,
+        bumped,
+        manifest=manifest,
+        published_ev_date="2026-10-20",
+    )
+    assert code == 0
+    assert store.finalize_calls == [("2026-10-20", store._digest, manifest)]
+    assert store.manifest_sha256 == manifest
     assert bumped == []
 
 

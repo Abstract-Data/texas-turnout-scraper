@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from typing import Literal, Protocol
 
 from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.early_vote_sync import (
+    CLOUDFLARE_API_RETRY_STATUS_CODES,
     CloudflareEarlyVoteStore,
     EarlyVoteSyncError,
     _cloudflare_config_from_env,
@@ -36,7 +38,11 @@ from texas_turnout_scraper.first_seen import (
 
 logger = logging.getLogger(__name__)
 
-Status = Literal["dry_run", "wrote", "unchanged"]
+Status = Literal["dry_run", "wrote", "unchanged", "degraded"]
+
+
+def _partition_pause_seconds() -> float:
+    return float(os.environ.get("TX_TURNOUT_FIRST_SEEN_PARTITION_PAUSE", "0.25"))
 
 
 class FirstSeenStore(Protocol):
@@ -76,6 +82,8 @@ def build_first_seen(
     counts: dict[Coord, int] = {}
     unknown = 0
     for index, (sql, params) in enumerate(PARTITIONS):
+        if index > 0:
+            time.sleep(_partition_pause_seconds())
         started = time.perf_counter()
         unknown += add_partition_rows(counts, store._query_rows(database_id, sql, params))  # noqa: SLF001
         logger.info(
@@ -122,6 +130,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         result = run_first_seen_build_on_store(store, args.election_id, dry_run=args.dry_run)
+    except EarlyVoteSyncError as exc:
+        if exc.http_status in CLOUDFLARE_API_RETRY_STATUS_CODES:
+            logger.error(
+                "first_seen build degraded election_id=%s http_status=%s; "
+                "published roster unchanged — aggregate unique-voter fields stay stale "
+                "until first_seen_build succeeds",
+                args.election_id,
+                exc.http_status,
+            )
+            sys.stdout.write(f"status=degraded\nhttp_status={exc.http_status}\nexit_code=0\n")
+            return 0
+        raise
     finally:
         store.close()
     if result is None:

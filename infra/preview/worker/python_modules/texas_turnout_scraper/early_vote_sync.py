@@ -53,6 +53,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import sys
 import time
 import uuid
@@ -125,6 +126,14 @@ EVR_HTTP_USER_AGENT = (
 )
 EVR_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
 EVR_HTTP_MAX_RETRIES = 4
+CLOUDFLARE_API_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+CLOUDFLARE_API_MAX_ATTEMPTS = int(os.environ.get("TX_TURNOUT_CF_API_MAX_ATTEMPTS", "6"))
+CLOUDFLARE_API_RETRY_BASE_SECONDS = float(
+    os.environ.get("TX_TURNOUT_CF_API_RETRY_BASE_SECONDS", "1.0")
+)
+CLOUDFLARE_API_RETRY_MAX_SECONDS = float(
+    os.environ.get("TX_TURNOUT_CF_API_RETRY_MAX_SECONDS", "60.0")
+)
 EVR_TURNOUT_TIMEOUT_SECONDS = 60.0
 EVR_STATEWIDE_TIMEOUT_SECONDS = 180.0
 EVR_MIN_REQUEST_INTERVAL_SECONDS = 1.0
@@ -1279,13 +1288,17 @@ class CloudflareEarlyVoteStore:
         rows = self._query_rows(database_id, _FILE_ID_FOR_HASH_SQL, [election_id, digest])
         return tuple(_string_column(rows, "file_id"))
 
-    def bump_version(self, election_id: str, digest: str) -> str:
+    def bump_version(
+        self, election_id: str, digest: str, *, manifest_sha256: str | None = None
+    ) -> str:
         """Write the version key, then the file content hash key."""
         key = version_key(election_id)
         current = self._kv_get(key)
         nxt = _next_version(current)
         self._kv_put(key, nxt)
         self._kv_put(hash_key(election_id), digest)
+        if manifest_sha256:
+            self._kv_put(manifest_key(election_id), manifest_sha256)
         return nxt
 
     def finalize_published_roster(
@@ -1326,7 +1339,12 @@ class CloudflareEarlyVoteStore:
         )
 
         if (
-            published_precompute_state(self, election_id, published_digest=content_digest)
+            published_precompute_state(
+                self,
+                election_id,
+                published_digest=content_digest,
+                published_ev_date_iso=ev_date_iso,
+            )
             == "unknown"
         ):
             raise unreadable_state_error(election_id)
@@ -1617,13 +1635,52 @@ class CloudflareEarlyVoteStore:
                 raise EarlyVoteSyncError("Cloudflare KV write failed")
 
     def _api(self, method: str, path: str, **kwargs: Any) -> Any:
-        response = self._client.request(method, path, **kwargs)
-        if response.status_code >= 400:
-            raise EarlyVoteSyncError(f"Cloudflare HTTP {response.status_code} for {method} {path}")
-        payload = response.json()
-        if isinstance(payload, dict) and payload.get("success") is False:
-            raise EarlyVoteSyncError(f"Cloudflare API error for {method}")
-        return payload
+        attempt = 0
+        while True:
+            response = self._client.request(method, path, **kwargs)
+            if response.status_code < 400:
+                payload = response.json()
+                if isinstance(payload, dict) and payload.get("success") is False:
+                    raise EarlyVoteSyncError(f"Cloudflare API error for {method}")
+                return payload
+            status = response.status_code
+            if status not in CLOUDFLARE_API_RETRY_STATUS_CODES or attempt >= (
+                CLOUDFLARE_API_MAX_ATTEMPTS - 1
+            ):
+                raise EarlyVoteSyncError(
+                    f"Cloudflare HTTP {status} for {method} {path}",
+                    http_status=status,
+                )
+            retry_after = _retry_after_seconds(response)
+            delay = retry_after
+            if delay is None:
+                delay = min(
+                    CLOUDFLARE_API_RETRY_MAX_SECONDS,
+                    CLOUDFLARE_API_RETRY_BASE_SECONDS * (2**attempt),
+                )
+            jitter = random.uniform(0.0, delay * 0.25)
+            sleep_for = delay + jitter
+            logger.warning(
+                "Cloudflare HTTP %s for %s %s; retry in %.2fs (attempt %s/%s)",
+                status,
+                method,
+                path,
+                sleep_for,
+                attempt + 1,
+                CLOUDFLARE_API_MAX_ATTEMPTS - 1,
+            )
+            time.sleep(sleep_for)
+            attempt += 1
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    raw = response.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return float(int(raw.strip()))
+    except ValueError:
+        return None
 
 
 def _kv_value_path(account_id: str, namespace_id: str, key: str) -> str:

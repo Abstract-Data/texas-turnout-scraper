@@ -33,11 +33,15 @@ trap 'rm -f "$report"' EXIT
 step "${sync[@]}" --apply --defer-kv-bump | tee "$report"
 sync_sha="$(sed -n 's/^sha256=//p' "$report" | head -n 1)"
 sync_status="$(sed -n 's/^status=//p' "$report" | head -n 1)"
+sync_manifest="$(sed -n 's/^manifest_sha256=//p' "$report" | head -n 1)"
+sync_ev_date="$(sed -n 's/^published_ev_date=//p' "$report" | head -n 1)"
 # Empty when no day was fetched and D1 holds none of them (see days_failed= in the report).
 [[ -n "$sync_sha" ]] || { echo "sync published no day: nothing to precompute" >&2; exit 1; }
 
 precompute=(--election-id "$ELECTION_ID" --apply --finalize-kv-digest "$sync_sha")
 [[ "$sync_status" == "wrote" ]] && precompute+=(--finalize-kv-after-sync)
+[[ -n "$sync_manifest" ]] && precompute+=(--finalize-kv-manifest "$sync_manifest")
+[[ -n "$sync_ev_date" ]] && precompute+=(--finalize-kv-published-ev-date "$sync_ev_date")
 step early_vote_d1_precompute_backfill "${precompute[@]}"
 step early_vote_roster_rows_backfill --election-id "$ELECTION_ID" --apply
 step first_seen_build --election-id "$ELECTION_ID" --apply

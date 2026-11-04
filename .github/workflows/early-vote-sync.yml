@@ -235,8 +235,12 @@ jobs:
             exit 1
           fi
           SYNC_STATUS="$(awk -F= '/^status=/{print $2; exit}' "${sync_report}")"
+          SYNC_MANIFEST="$(awk -F= '/^manifest_sha256=/{print $2; exit}' "${sync_report}")"
+          SYNC_PUBLISHED_EV="$(awk -F= '/^published_ev_date=/{print $2; exit}' "${sync_report}")"
           echo "SYNC_SHA=${SYNC_SHA}" >> "${GITHUB_ENV}"
           echo "SYNC_STATUS=${SYNC_STATUS}" >> "${GITHUB_ENV}"
+          echo "SYNC_MANIFEST=${SYNC_MANIFEST}" >> "${GITHUB_ENV}"
+          echo "SYNC_PUBLISHED_EV=${SYNC_PUBLISHED_EV}" >> "${GITHUB_ENV}"
       - name: Backfill precomputed D1 aggregates (idempotent)
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
@@ -251,6 +255,12 @@ jobs:
           )
           if [[ "${SYNC_STATUS}" == "wrote" ]]; then
             precompute_args+=(--finalize-kv-after-sync)
+          fi
+          if [[ -n "${SYNC_MANIFEST}" ]]; then
+            precompute_args+=(--finalize-kv-manifest "${SYNC_MANIFEST}")
+          fi
+          if [[ -n "${SYNC_PUBLISHED_EV}" ]]; then
+            precompute_args+=(--finalize-kv-published-ev-date "${SYNC_PUBLISHED_EV}")
           fi
           op run --environment s6tljdcafkgqxfuxhcnj3m5x5a -- \
             uv run python -m texas_turnout_scraper.early_vote_d1_precompute_backfill \

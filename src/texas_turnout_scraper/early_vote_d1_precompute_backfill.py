@@ -47,6 +47,9 @@ _DAY_BY_FILE_SQL = (
     "SELECT ev_date FROM early_vote_day "
     "WHERE source_election_id = ? AND file_id = ? ORDER BY ev_date ASC LIMIT 1"
 )
+_DAY_FILE_FOR_DATE_SQL = (
+    "SELECT file_id FROM early_vote_day WHERE source_election_id = ? AND ev_date = ? LIMIT 1"
+)
 
 _COMPLETE_PROBE_SQL = (
     "SELECT m.county_count AS expected, "
@@ -252,7 +255,22 @@ def _target_file_ids_for_finalize(
     database_id: str,
     election_id: str,
     published_digest: str,
+    *,
+    published_ev_date_iso: str = "",
 ) -> set[str]:
+    ev_date = published_ev_date_iso.strip()
+    if ev_date:
+        rows = store._query_rows(  # noqa: SLF001
+            database_id,
+            _DAY_FILE_FOR_DATE_SQL,
+            [election_id, ev_date],
+        )
+        if not rows:
+            return set()
+        file_id = rows[0].get("file_id")
+        if isinstance(file_id, str) and file_id:
+            return {file_id}
+        return set()
     targets: set[str] = set()
     pointer_rows = store._query_rows(  # noqa: SLF001
         database_id,
@@ -317,6 +335,7 @@ def published_precompute_state(
     election_id: str,
     *,
     published_digest: str,
+    published_ev_date_iso: str = "",
 ) -> PrecomputeState:
     """Aggregate state of pointer and digest-matched files.
 
@@ -336,7 +355,13 @@ def published_precompute_state(
     if database_id is None:
         return "unknown"
     store._ensure_schema(database_id)  # noqa: SLF001
-    targets = _target_file_ids_for_finalize(store, database_id, election_id, digest)
+    targets = _target_file_ids_for_finalize(
+        store,
+        database_id,
+        election_id,
+        digest,
+        published_ev_date_iso=published_ev_date_iso,
+    )
     file_rows = store._query_rows(database_id, _FILES_SQL, [election_id])  # noqa: SLF001
     by_id: dict[str, dict[str, object]] = {}
     for row in file_rows:
@@ -345,6 +370,8 @@ def published_precompute_state(
             by_id[file_id] = row
     if not any(row.get("sha256") == digest for row in by_id.values()):
         return "unknown"
+    if published_ev_date_iso.strip() and not targets:
+        return "unknown"
     pending = False
     for file_id in targets:
         row = by_id.get(file_id)
@@ -352,6 +379,9 @@ def published_precompute_state(
             # A pointer to a deleted file is not servable: the Worker only reads the
             # pointer when its sha matches the KV hash, and otherwise falls back to a
             # digest-matched file. Digest-matched targets always have a row.
+            continue
+        row_digest = row.get("sha256")
+        if isinstance(row_digest, str) and row_digest != digest:
             continue
         needs = _file_needs_precompute_work(store, database_id, election_id, row)
         if needs is None:
@@ -547,6 +577,16 @@ def main(argv: list[str] | None = None) -> int:
             "skipped every file (defer-KV workflow)"
         ),
     )
+    parser.add_argument(
+        "--finalize-kv-manifest",
+        default="",
+        help="Manifest digest from the sync backfill report (ev:<id>:manifest_sha256)",
+    )
+    parser.add_argument(
+        "--finalize-kv-published-ev-date",
+        default="",
+        help="ISO ev_date for the published roster day (from sync backfill report)",
+    )
     args = parser.parse_args(argv)
     if args.dry_run == args.apply:
         parser.error("pass exactly one of --dry-run or --apply")
@@ -565,8 +605,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         digest = args.finalize_kv_digest.strip()
+        published_ev = args.finalize_kv_published_ev_date.strip()
+        manifest = args.finalize_kv_manifest.strip()
+        state_kwargs = (
+            {"published_digest": digest, "published_ev_date_iso": published_ev} if digest else {}
+        )
         state_before = (
-            published_precompute_state(store, args.election_id, published_digest=digest)
+            published_precompute_state(store, args.election_id, **state_kwargs)
             if digest
             else "complete"
         )
@@ -576,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
         state_after = (
-            published_precompute_state(store, args.election_id, published_digest=digest)
+            published_precompute_state(store, args.election_id, **state_kwargs)
             if digest
             else "complete"
         )
@@ -593,7 +638,19 @@ def main(argv: list[str] | None = None) -> int:
             pending_after=pending_after,
             kv_stored_hash=kv_stored,
         ):
-            version = store.bump_version(args.election_id, digest)
+            if published_ev:
+                version = store.finalize_published_roster(
+                    args.election_id,
+                    published_ev,
+                    digest,
+                    manifest_sha256=manifest or None,
+                )
+            else:
+                version = store.bump_version(
+                    args.election_id,
+                    digest,
+                    manifest_sha256=manifest or None,
+                )
             logger.info(
                 "precompute backfill finalized KV election_id=%s version=%s",
                 args.election_id,
