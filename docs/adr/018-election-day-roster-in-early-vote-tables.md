@@ -154,12 +154,16 @@ The page count is part of the ETag, so a client cannot revalidate a page from th
 Each step needs the owner's go-ahead, because it changes the production database or Worker.
 
 1. Record a D1 Time Travel bookmark for `ev-53815`.
-2. Run `python -m texas_turnout_scraper.early_vote_roster_rows_backfill --election-id 53815 --apply`
-   from the new code, in the 1Password Environment `local_ev_backfill.sh` uses. It calls
+2. Before merging, run
+   `python -m texas_turnout_scraper.early_vote_roster_rows_backfill --election-id 53815 --apply`
+   from the PR branch, in the 1Password Environment `local_ev_backfill.sh` uses. It calls
    `_ensure_schema`, which applies the `ALTER`, and has nothing else to do because all 17 days are
    already loaded. Confirm 17 rows read `early`.
-3. Deploy the Worker. **It must follow step 2**: `load_day_rows` turns any query error into an empty
-   list, so a Worker reading a missing column would serve no days rather than fail visibly.
+3. Merge the PR. **It must follow step 2**: a push to `main` that touches `infra/preview/` runs the
+   `Terraform preview` apply job, which deploys the Worker. `load_day_rows` turns any query error
+   into an empty list, so a Worker reading a missing column would serve no days rather than fail
+   visibly. A client holding an aggregate ETag from before the deploy can get a 304 and keep a body
+   without `vote_period` until the next version bump. Step 5 bumps the version.
 4. Run `scripts/local_ev_backfill.sh dry_run` and confirm 2026-11-03 appears with the expected row
    count and no error. A dry run has no stored hashes, so it lists all 18 days and cannot show which
    are new.

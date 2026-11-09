@@ -8,7 +8,7 @@ import io
 import sqlite3
 import zipfile
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -274,15 +274,12 @@ def test_any_other_http_failure_stays_failed() -> None:
 
 
 def test_every_store_requires_a_vote_period() -> None:
+    store: Any = EmptyHashStore()
+    unbound: Any = CloudflareEarlyVoteStore.write_database
     with pytest.raises(TypeError, match="vote_period"):
-        EmptyHashStore().write_database("53815", b"x", "d", ev_date_iso="2026-10-14")  # type: ignore[call-arg]
+        store.write_database("53815", b"x", "d", ev_date_iso="2026-10-14")
     with pytest.raises(TypeError, match="vote_period"):
-        CloudflareEarlyVoteStore.write_database(  # type: ignore[call-arg]
-            None,  # type: ignore[arg-type]
-            "53815",
-            b"x",
-            "d",
-        )
+        unbound(None, "53815", b"x", "d")
 
 
 OLD_DAY_TABLE = (
@@ -440,7 +437,9 @@ def test_elections_list_each_day_with_its_vote_period(monkeypatch: pytest.Monkey
         "UPDATE early_vote_day SET vote_period = 'election_day' WHERE ev_date = '2026-10-20'"
     )
     client = TestClient(
-        create_app(ReadDeps(kv=_Kv(), store=None, rosters=_Rosters({"53815": _Db(conn)})))  # type: ignore[arg-type]
+        create_app(
+            ReadDeps(kv=_Kv(), store=cast(Any, None), rosters=_Rosters({"53815": _Db(conn)}))
+        )
     )
 
     detail = client.get("/elections/53815", headers=AGGREGATES).json()
