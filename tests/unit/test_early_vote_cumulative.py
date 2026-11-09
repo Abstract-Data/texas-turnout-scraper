@@ -74,7 +74,7 @@ def _db(days: dict[str, bytes], *, skip_precompute: tuple[str, ...] = ()) -> _Sq
         file_id, digest = f"f-{ev_date}", f"sha-{ev_date}"
         conn.execute(_FILE_INSERT_SQL, ("53815", file_id, digest, "3", "1"))
         conn.execute(_CHUNK_INSERT_SQL, ("53815", file_id, "0", "e30="))
-        conn.execute(_DAY_UPSERT_SQL, ("53815", ev_date, digest, file_id))
+        conn.execute(_DAY_UPSERT_SQL, ("53815", ev_date, digest, file_id, "early"))
         if ev_date in skip_precompute:
             continue
         body = aggregate_body_from_decoded(decoded, source_election_id="53815", ev_date_iso=ev_date)

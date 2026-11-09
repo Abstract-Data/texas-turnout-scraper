@@ -16,6 +16,16 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass
+from typing import Literal
+
+VotePeriod = Literal["early", "election_day"]
+VOTE_PERIOD_EARLY: VotePeriod = "early"
+VOTE_PERIOD_ELECTION_DAY: VotePeriod = "election_day"
+VOTE_PERIODS: tuple[VotePeriod, ...] = (VOTE_PERIOD_EARLY, VOTE_PERIOD_ELECTION_DAY)
+
+# The Election Day report names the first column COUNTY_NAME; stored rosters use COUNTY.
+# Renaming before hashing keeps one header across every day (ADR-018).
+HEADER_RENAMES: dict[str, str] = {"COUNTY_NAME": "COUNTY"}
 
 
 @dataclass(frozen=True)
@@ -41,6 +51,10 @@ def canonicalize_roster_csv(decoded: bytes) -> tuple[bytes, RosterCsvSummary]:
 
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
+    header = [
+        HEADER_RENAMES.get(name, original)
+        for name, original in zip(normalized, header, strict=True)
+    ]
     writer.writerow(header)
     method_counts: dict[str, int] = {}
     rows = 0

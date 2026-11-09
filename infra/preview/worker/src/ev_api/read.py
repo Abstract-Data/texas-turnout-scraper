@@ -31,9 +31,9 @@ from texas_turnout_scraper.first_seen import cacheable
 
 logger = logging.getLogger(__name__)
 
-# Last cache-key segment. Bump it when the body shape changes, so bodies cached at the same
-# published version in the old shape are not served again.
-BODY_SHAPE = "b2"
+# Last cache-key segment and ETag suffix. Bump it when the body shape changes, so bodies cached
+# at the same published version in the old shape are not served or revalidated again.
+BODY_SHAPE = "b3"
 
 # Daily early-vote snapshots: old version keys expire by TTL; they are not purged.
 DEFAULT_KV_TTL_SECONDS = 86_400
@@ -183,7 +183,7 @@ async def read_resource(
             logger.warning("invalid version token election=%s", election_id)
         return ReadOutcome(404, None, None, "absent")
 
-    etag = etag_for_version(version)
+    etag = etag_for_version(version, body_shape=BODY_SHAPE)
     try:
         matched = etag_matches(query.if_none_match, etag)
     except ValueError:

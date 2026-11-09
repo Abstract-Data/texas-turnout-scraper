@@ -30,8 +30,8 @@ RowKey = tuple[int, int]
 ROWS_PER_STATEMENT = 4000
 KEYS_PER_STATEMENT = 10_000
 # Range statements (recovery, retire, collection) each cover 1/KEY_RANGES of the hash space,
-# about 50k rows for an 800k-row day.
-KEY_RANGES = 16
+# about 43k rows for the 2.07M-row Election Day roster.
+KEY_RANGES = 48
 VUID_WIDTH = 10
 VOTING_METHODS = frozenset({"IN-PERSON", "MAIL-IN"})
 

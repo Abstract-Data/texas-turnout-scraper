@@ -368,6 +368,7 @@ _day_row = {
     "ev_date": "2026-10-20",
     "file_id": "f53815",
     "sha256": _AGG_SHA,
+    "vote_period": "early",
 }
 _preview_db = _PreviewD1(
     pointer="f53815",

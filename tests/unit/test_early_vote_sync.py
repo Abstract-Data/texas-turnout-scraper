@@ -87,6 +87,7 @@ class RecordingStore:
         *,
         ev_date_iso: str | None = None,
         update_pointer: bool = False,
+        vote_period: str,
     ) -> None:
         self.calls.append(f"write:{election_id}:{ev_date_iso or ''}")
         if self.fail_write:
@@ -126,7 +127,7 @@ def test_hash_is_sha256_of_decoded_bytes_not_the_envelope() -> None:
     response = _envelope(payload)
     store = RecordingStore()
 
-    result = sync_early_vote("53813", response, store, dry_run=True)
+    result = sync_early_vote("53813", response, store, dry_run=True, vote_period="early")
 
     assert result.sha256 == sha256_decoded(payload)
     assert result.sha256 == hashlib.sha256(payload).hexdigest()
@@ -137,7 +138,7 @@ def test_hash_is_sha256_of_decoded_bytes_not_the_envelope() -> None:
 
 def test_leading_zero_election_id_stays_a_string() -> None:
     store = RecordingStore()
-    result = sync_early_vote("0123", _envelope(b"rows"), store, dry_run=True)
+    result = sync_early_vote("0123", _envelope(b"rows"), store, dry_run=True, vote_period="early")
 
     assert result.election_id == "0123"
     assert database_name("0123") == "ev-0123"
@@ -151,7 +152,7 @@ def test_unchanged_hash_exits_without_write() -> None:
     digest = sha256_decoded(payload)
     store = RecordingStore(stored=digest)
 
-    result = sync_early_vote("53813", _envelope(payload), store)
+    result = sync_early_vote("53813", _envelope(payload), store, vote_period="early")
 
     assert result.status == "unchanged"
     assert result.exit_code == 0
@@ -164,7 +165,7 @@ def test_new_hash_writes_d1_before_kv_bump() -> None:
     payload = b"new-file"
     store = RecordingStore()
 
-    result = sync_early_vote("53813", _envelope(payload), store)
+    result = sync_early_vote("53813", _envelope(payload), store, vote_period="early")
 
     assert result.status == "wrote"
     assert result.version == "2"
@@ -176,7 +177,7 @@ def test_failed_d1_write_does_not_bump_kv() -> None:
     store = RecordingStore(fail_write=True)
 
     with pytest.raises(EarlyVoteSyncError, match="D1 write failed"):
-        sync_early_vote("53813", _envelope(b"new-file"), store)
+        sync_early_vote("53813", _envelope(b"new-file"), store, vote_period="early")
 
     assert store.calls == ["hash:53813:", "write:53813:"]
     assert store.version is None
@@ -188,12 +189,7 @@ def test_over_cap_refuses_before_create_or_kv(monkeypatch: pytest.MonkeyPatch) -
     store = RecordingStore()
 
     with pytest.raises(EarlyVoteCapError, match="election 53813 is") as raised:
-        sync_early_vote(
-            "53813",
-            _envelope(payload),
-            store,
-            dry_run=False,
-        )
+        sync_early_vote("53813", _envelope(payload), store, dry_run=False, vote_period="early")
 
     assert "Ada" not in str(raised.value)
     assert "0123456789" not in str(raised.value)
@@ -219,7 +215,7 @@ def test_over_cap_uses_the_real_limit_constant(monkeypatch: pytest.MonkeyPatch) 
     )
     store = RecordingStore()
     with pytest.raises(EarlyVoteCapError):
-        sync_early_vote("53813", _envelope(b"12345"), store)
+        sync_early_vote("53813", _envelope(b"12345"), store, vote_period="early")
     assert store.calls == ["hash:53813:"]
 
 
@@ -233,7 +229,7 @@ def test_unchanged_file_exits_even_when_over_the_patched_cap(
         4,
     )
 
-    result = sync_early_vote("53813", _envelope(payload), store)
+    result = sync_early_vote("53813", _envelope(payload), store, vote_period="early")
 
     assert result.status == "unchanged"
     assert result.exit_code == 0
@@ -244,7 +240,9 @@ def test_dry_run_report_has_no_file_body(caplog: pytest.LogCaptureFixture) -> No
     payload = b"VOTER_NAME=Ada ID_VOTER=0123456789"
     store = RecordingStore()
     with caplog.at_level(logging.INFO):
-        result = sync_early_vote("53813", _envelope(payload), store, dry_run=True)
+        result = sync_early_vote(
+            "53813", _envelope(payload), store, dry_run=True, vote_period="early"
+        )
 
     report = format_sync_report(result)
     assert result.status == "dry_run"
@@ -261,7 +259,7 @@ def test_dry_run_report_has_no_file_body(caplog: pytest.LogCaptureFixture) -> No
 def test_invalid_election_id_is_rejected_before_a_write() -> None:
     store = RecordingStore()
     with pytest.raises(ValueError, match="election id"):
-        sync_early_vote("0", _envelope(b"x"), store)
+        sync_early_vote("0", _envelope(b"x"), store, vote_period="early")
     assert store.calls == []
 
 
@@ -369,7 +367,7 @@ def test_cloudflare_store_creates_one_database_then_bumps_kv(
         )
         with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
             store = _cf_store(client)
-            result = sync_early_vote("53813", _envelope(payload), store)
+            result = sync_early_vote("53813", _envelope(payload), store, vote_period="early")
         call_kinds = [
             "query" if "query" in str(call.request.url) else call.request.method
             for call in respx.calls
@@ -413,7 +411,7 @@ def test_cloudflare_store_reuses_the_existing_database() -> None:
             return_value=httpx.Response(200, json={"success": True})
         )
         with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
-            sync_early_vote("53813", _envelope(b"file"), _cf_store(client))
+            sync_early_vote("53813", _envelope(b"file"), _cf_store(client), vote_period="early")
 
     assert create.call_count == 0
 
@@ -439,7 +437,7 @@ def test_second_database_is_not_created() -> None:
         puts = respx.put(url__regex=r".*/storage/kv/.*").mock(return_value=httpx.Response(200))
         with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
             with pytest.raises(EarlyVoteSyncError, match="refusing to create another"):
-                sync_early_vote("53813", _envelope(b"file"), _cf_store(client))
+                sync_early_vote("53813", _envelope(b"file"), _cf_store(client), vote_period="early")
 
     assert create.call_count == 0
     assert puts.call_count == 0
@@ -468,7 +466,7 @@ def test_d1_query_failure_does_not_bump_kv() -> None:
         puts = respx.put(url__regex=r".*/storage/kv/.*").mock(return_value=httpx.Response(200))
         with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
             with pytest.raises(EarlyVoteSyncError, match="D1 query failed"):
-                sync_early_vote("53813", _envelope(b"file"), _cf_store(client))
+                sync_early_vote("53813", _envelope(b"file"), _cf_store(client), vote_period="early")
 
     assert puts.call_count == 0
 
@@ -763,8 +761,13 @@ def _schema_results(names: list[str]) -> httpx.Response:
     )
 
 
+_DAY_COLUMNS = ["source_election_id", "ev_date", "sha256", "file_id", "vote_period"]
+
+
 def _current_schema(sql: str) -> httpx.Response:
-    if "early_vote_chunk" in sql:
+    if "early_vote_day" in sql:
+        names = _DAY_COLUMNS
+    elif "early_vote_chunk" in sql:
         names = ["source_election_id", "file_id", "chunk_index", "payload_b64"]
     else:
         names = ["source_election_id", "file_id", "sha256", "byte_length", "chunk_count"]
@@ -861,7 +864,9 @@ class _MemoryD1:
             return {"success": True, "results": [{"name": name} for name in names]}
         if "pragma_table_info" in sql:
             self.order.append("schema")
-            if "early_vote_chunk" in sql:
+            if "early_vote_day" in sql:
+                names = _DAY_COLUMNS
+            elif "early_vote_chunk" in sql:
                 names = ["source_election_id", "file_id", "chunk_index", "payload_b64"]
             else:
                 names = ["source_election_id", "file_id", "sha256", "byte_length", "chunk_count"]
@@ -970,7 +975,7 @@ def _apply_memory(state: _MemoryD1, payload: bytes) -> None:
         with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
             store = _cf_store(client)
             assert "_replaced_file_id" not in vars(store)
-            sync_early_vote("53813", _envelope(payload), store)
+            sync_early_vote("53813", _envelope(payload), store, vote_period="early")
 
 
 def _seed_published(state: _MemoryD1, file_id: str, digest: str) -> None:
@@ -1067,7 +1072,7 @@ def test_failed_chunk_batch_does_not_flip_the_pointer_or_bump_kv(
         )
         with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
             with pytest.raises(EarlyVoteSyncError, match="D1 query failed"):
-                sync_early_vote("53813", _envelope(b"abc"), _cf_store(client))
+                sync_early_vote("53813", _envelope(b"abc"), _cf_store(client), vote_period="early")
 
     assert chunk_batches == 2
     assert saw_pointer is False
@@ -1104,7 +1109,7 @@ def test_legacy_schema_refuses_in_place_replace() -> None:
         puts = respx.put(url__regex=r".*/storage/kv/.*").mock(return_value=httpx.Response(200))
         with httpx.Client(base_url=CLOUDFLARE_API_BASE) as client:
             with pytest.raises(EarlyVoteSyncError, match="no file_id column"):
-                sync_early_vote("53813", _envelope(b"file"), _cf_store(client))
+                sync_early_vote("53813", _envelope(b"file"), _cf_store(client), vote_period="early")
 
     assert saw_delete is False
     assert puts.call_count == 0

@@ -151,11 +151,11 @@ async def test_by_day_skips_missing_day_serves_others() -> None:
     conn.execute(_POINTER_UPSERT_SQL, ("53815", "f-day"))
     conn.execute(
         _DAY_UPSERT_SQL,
-        ("53815", "2026-10-20", "sha-day", "f-day"),
+        ("53815", "2026-10-20", "sha-day", "f-day", "early"),
     )
     conn.execute(
         _DAY_UPSERT_SQL,
-        ("53815", "2026-10-21", "sha-miss", "f-miss"),
+        ("53815", "2026-10-21", "sha-miss", "f-miss", "early"),
     )
     for sql, params in precompute_statements(
         "53815",
@@ -197,11 +197,11 @@ async def test_county_by_day_raises_when_published_day_lacks_precompute() -> Non
     conn.execute(_POINTER_UPSERT_SQL, ("53815", "f-day"))
     conn.execute(
         _DAY_UPSERT_SQL,
-        ("53815", "2026-10-20", "sha-day", "f-day"),
+        ("53815", "2026-10-20", "sha-day", "f-day", "early"),
     )
     conn.execute(
         _DAY_UPSERT_SQL,
-        ("53815", "2026-10-21", "sha-gap", "f-gap"),
+        ("53815", "2026-10-21", "sha-gap", "f-gap", "early"),
     )
     for sql, params in precompute_statements(
         "53815",

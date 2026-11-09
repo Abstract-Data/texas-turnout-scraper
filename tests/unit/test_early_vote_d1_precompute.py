@@ -146,6 +146,7 @@ def test_dry_run_reports_aggregate_row_count() -> None:
         EmptyHashStore(),
         dry_run=True,
         payload_kind="statewide_roster",
+        vote_period="early",
     )
     assert result.plan is not None
     assert result.plan.aggregate_rows is not None
@@ -168,7 +169,9 @@ async def test_precomputed_parity_with_streaming_on_fixture() -> None:
         file_id="f53815",
         sha256=digest,
         decoded=decoded,
-        days=[{"ev_date": "2026-10-20", "file_id": "f53815", "sha256": digest}],
+        days=[
+            {"ev_date": "2026-10-20", "file_id": "f53815", "sha256": digest, "vote_period": "early"}
+        ],
     )
     streamed = await build_aggregate_resource(
         db,
@@ -209,7 +212,9 @@ async def test_precomputed_parity_with_streaming_on_fixture() -> None:
         file_id="f53815",
         sha256=digest,
         decoded=decoded,
-        days=[{"ev_date": "2026-10-20", "file_id": "f53815", "sha256": digest}],
+        days=[
+            {"ev_date": "2026-10-20", "file_id": "f53815", "sha256": digest, "vote_period": "early"}
+        ],
     )
     precomputed = await build_precomputed_aggregate_resource(
         hybrid,
@@ -221,6 +226,7 @@ async def test_precomputed_parity_with_streaming_on_fixture() -> None:
     assert streamed is not None
     assert precomputed is not None
     assert precomputed.pop("semantics") == "daily"
+    assert precomputed.pop("vote_period") == "early"
     assert precomputed.pop("county_fips_unmatched") == 0
     precomputed.pop("dedupe")
     counties = cast("list[dict[str, object]]", precomputed["by_county"])

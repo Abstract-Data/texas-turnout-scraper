@@ -31,6 +31,7 @@ from texas_turnout_scraper.early_vote_sync import (
 class _BackfillStore:
     def __init__(self) -> None:
         self.day_hashes: dict[tuple[str, str], str] = {}
+        self.vote_periods: dict[str, str] = {}
         self.bump_count = 0
         self.kv_content_hash: str | None = None
         self.manifest_sha256: str | None = None
@@ -49,10 +50,12 @@ class _BackfillStore:
         *,
         ev_date_iso: str | None = None,
         update_pointer: bool = False,
+        vote_period: str,
     ) -> None:
         if not ev_date_iso:
             raise EarlyVoteSyncError("expected ev_date_iso")
         self.day_hashes[(election_id, ev_date_iso)] = digest
+        self.vote_periods[ev_date_iso] = vote_period
 
     def bump_version(self, election_id: str, digest: str) -> str:
         self.bump_count += 1
@@ -269,6 +272,7 @@ def test_sync_defer_kv_bump_skips_version() -> None:
         payload_kind="statewide_roster",
         ev_date_iso="2026-10-14",
         defer_kv_bump=True,
+        vote_period="early",
     )
     assert store.bump_count == 0
 

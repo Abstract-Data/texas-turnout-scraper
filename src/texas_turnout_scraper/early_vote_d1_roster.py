@@ -21,12 +21,15 @@ from texas_turnout_scraper.early_vote_d1_read import (
     _d1_fetch_all,
     _d1_int,
     _row_value,
+    _vote_period,
 )
+from texas_turnout_scraper.early_vote_roster import VotePeriod
 
 DEFAULT_BATCH_CHUNKS = 64
 
 _DAYS_SQL = (
     "SELECT d.ev_date AS ev_date, d.file_id AS file_id, d.sha256 AS sha256, "
+    "d.vote_period AS vote_period, "
     "f.byte_length AS byte_length, f.chunk_count AS chunk_count, "
     "(SELECT COUNT(*) FROM early_vote_chunk c "
     " WHERE c.source_election_id = f.source_election_id AND c.file_id = f.file_id) "
@@ -54,6 +57,7 @@ class RosterDay:
     byte_length: int
     chunk_count: int
     rows: int | None
+    vote_period: VotePeriod
 
 
 async def list_days(db: D1Database, source_election_id: str) -> tuple[RosterDay, ...]:
@@ -68,6 +72,9 @@ async def list_days(db: D1Database, source_election_id: str) -> tuple[RosterDay,
         byte_length = _d1_int(_row_value(row, "byte_length"))
         chunk_count = _d1_int(_row_value(row, "chunk_count"))
         present = _d1_int(_row_value(row, "chunks_present"))
+        vote_period = _vote_period(row)
+        if vote_period is None:
+            continue
         if not all(isinstance(v, str) and v for v in (ev_date, file_id, sha256)):
             continue
         if byte_length is None or chunk_count is None or chunk_count != present:
@@ -80,6 +87,7 @@ async def list_days(db: D1Database, source_election_id: str) -> tuple[RosterDay,
                 byte_length=byte_length,
                 chunk_count=chunk_count,
                 rows=_d1_int(_row_value(row, "rows")),
+                vote_period=vote_period,
             )
         )
     return tuple(days)

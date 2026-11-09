@@ -25,6 +25,7 @@ from texas_turnout_scraper.early_vote_d1_read import (
     load_pointer_file_id,
     resolve_day_for_date,
 )
+from texas_turnout_scraper.early_vote_roster import VotePeriod
 from texas_turnout_scraper.early_vote_sync import EarlyVoteFileView, choose_published_file
 from texas_turnout_scraper.first_seen import annotate, load_first_seen
 
@@ -109,11 +110,11 @@ async def _rollup_days(
             ev_date=day.ev_date,
         )
         if body is not None:
-            rolled.append((day.ev_date, body))
+            rolled.append((day.ev_date, {**body, "vote_period": day.vote_period}))
     return rolled
 
 
-_SEMANTICS_KEYS = ("semantics", "through_ev_date", "days")
+_SEMANTICS_KEYS = ("semantics", "through_ev_date", "days", "vote_period")
 
 
 def _slice_totals_resource(
@@ -176,6 +177,7 @@ async def _totals_for_ev_date(
     file_id = None
     expected_sha256 = None
     resolved_ev_date = ev_date
+    vote_period: VotePeriod | None = None
     if ev_date is None:
         rolled = await _rollup_days(db, election_id, kv_sha256=kv_sha256)
         if rolled:
@@ -187,6 +189,7 @@ async def _totals_for_ev_date(
         file_id = day.file_id
         expected_sha256 = day.sha256
         resolved_ev_date = day.ev_date
+        vote_period = day.vote_period
     body = await _precomputed_for_published(
         db,
         election_id,
@@ -195,8 +198,9 @@ async def _totals_for_ev_date(
         expected_sha256=expected_sha256,
         ev_date=resolved_ev_date,
     )
-    if body is not None and ev_date is not None:
+    if body is not None and vote_period is not None:
         body["semantics"] = "daily"
+        body["vote_period"] = vote_period
     return body
 
 

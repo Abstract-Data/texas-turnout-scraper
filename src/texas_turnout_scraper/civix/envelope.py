@@ -40,7 +40,7 @@ def _decode_envelope(response: Any) -> bytes:
 
     Raises:
         KeyError: If the response JSON lacks the ``"upload"`` key.
-        ValueError: If the response body is non-empty but not valid JSON.
+        ValueError: If the response body is non-empty but not a valid JSON object.
     """
     body = (response.text or "").strip()
     if not body:
@@ -50,6 +50,9 @@ def _decode_envelope(response: Any) -> bytes:
     except ValueError as exc:
         msg = "Civix response was not valid JSON"
         raise ValueError(msg) from exc
+    if not isinstance(envelope, dict):
+        msg = "Civix response was not a JSON object"
+        raise ValueError(msg)
     upload = envelope.get("upload")
     if upload is None:
         raise KeyError("upload")

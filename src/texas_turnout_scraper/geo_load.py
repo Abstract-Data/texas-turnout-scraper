@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_JSON = Path("data/geo/tx_geo.json")
 # Each pair-count query covers one day and 1/ALIAS_KEY_RANGES of the row-hash space.
-ALIAS_KEY_RANGES = 4
+ALIAS_KEY_RANGES = 16
 
 LoadStatus = Literal["dry_run", "wrote", "unchanged"]
 Pair = tuple[str, str]

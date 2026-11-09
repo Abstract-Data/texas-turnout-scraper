@@ -71,6 +71,7 @@ class _DayStore:
         *,
         ev_date_iso: str | None = None,
         update_pointer: bool = False,
+        vote_period: str,
     ) -> None:
         assert ev_date_iso
         self.writes.append(ev_date_iso)
@@ -248,6 +249,7 @@ def test_prepared_bytes_give_the_same_digest_without_a_second_parse() -> None:
         dry_run=True,
         payload_kind="statewide_roster",
         ev_date_iso="2026-10-14",
+        vote_period="early",
     )
     prepared = prepare_payload_bytes(_decode_envelope(response), "statewide_roster")
     counts = _Counts({})
@@ -263,6 +265,7 @@ def test_prepared_bytes_give_the_same_digest_without_a_second_parse() -> None:
             payload_kind="statewide_roster",
             ev_date_iso="2026-10-14",
             prepared=prepared,
+            vote_period="early",
         )
     assert counts.prepares == 0
     assert shortcut.sha256 == plain.sha256

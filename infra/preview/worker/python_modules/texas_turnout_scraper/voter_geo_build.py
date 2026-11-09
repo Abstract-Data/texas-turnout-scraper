@@ -81,7 +81,7 @@ logger = logging.getLogger(__name__)
 
 VOTER_GEO_ROWS_PER_STATEMENT = 2000
 # Each roster read covers one day and 1/VOTER_GEO_KEY_RANGES of the row-hash space.
-VOTER_GEO_KEY_RANGES = 16
+VOTER_GEO_KEY_RANGES = 48
 
 BuildStatus = Literal["dry_run", "wrote", "unchanged", "geo_not_loaded"]
 Pair = tuple[str, str]

@@ -205,6 +205,7 @@ def build_by_day_series(
         series.append(
             {
                 "ev_date": ev_date,
+                "vote_period": day_body.get("vote_period"),
                 "total": int(statewide.get("total") or 0),
                 "in_person": in_person,
                 "mail_in": mail_in,
@@ -232,7 +233,13 @@ def build_county_by_day_series(
         counties = day_body.get("by_county")
         if not isinstance(counties, list):
             continue
-        series.append({"ev_date": ev_date, "by_county": counties})
+        series.append(
+            {
+                "ev_date": ev_date,
+                "vote_period": day_body.get("vote_period"),
+                "by_county": counties,
+            }
+        )
     return {
         "source_election_id": election_id,
         "semantics": "daily",

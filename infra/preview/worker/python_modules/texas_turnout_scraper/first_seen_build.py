@@ -1,6 +1,6 @@
 """Build ``early_vote_first_seen`` in one election's D1 from its live roster rows.
 
-Eleven set-based queries (one per VUID partition, see ``first_seen.PARTITIONS``) return counts
+One set-based query per VUID partition (see ``first_seen.PARTITIONS``) returns counts
 per first-appearance ``(day, county, method)``; the whole table is then replaced in one batch
 with the signature written last. When the stored signature already matches the roster versions,
 the run reads two small tables and stops. Output carries counts only, never a VUID.

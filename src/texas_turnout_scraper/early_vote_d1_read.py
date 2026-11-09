@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from texas_turnout_scraper.civix.ids import require_election_id
+from texas_turnout_scraper.early_vote_roster import VOTE_PERIODS, VotePeriod
 from texas_turnout_scraper.early_vote_sync import EarlyVoteFileView, choose_published_file
 
 
@@ -95,11 +96,11 @@ _CHUNK_SQL = (
     "WHERE source_election_id = ? AND file_id = ? ORDER BY chunk_index ASC"
 )
 _DAY_LIST_SQL = (
-    "SELECT ev_date, file_id, sha256 FROM early_vote_day "
+    "SELECT ev_date, file_id, sha256, vote_period FROM early_vote_day "
     "WHERE source_election_id = ? ORDER BY ev_date ASC"
 )
 _DAY_LOOKUP_SQL = (
-    "SELECT ev_date, file_id, sha256 FROM early_vote_day "
+    "SELECT ev_date, file_id, sha256, vote_period FROM early_vote_day "
     "WHERE source_election_id = ? AND ev_date = ?"
 )
 
@@ -109,6 +110,12 @@ class EvDayRow:
     ev_date: str
     file_id: str
     sha256: str
+    vote_period: VotePeriod
+
+
+def _vote_period(row: object) -> VotePeriod | None:
+    value = _row_value(row, "vote_period")
+    return next((period for period in VOTE_PERIODS if period == value), None)
 
 
 def _row_value(row: object, key: str) -> object | None:
@@ -195,19 +202,22 @@ async def load_file_views(db: D1Database, source_election_id: str) -> tuple[Earl
 
 
 async def load_day_rows(db: D1Database, source_election_id: str) -> tuple[EvDayRow, ...]:
+    """Every stored day, oldest first. A failed query raises: an empty list means no days."""
     election_id = require_election_id(source_election_id)
-    try:
-        rows = await _d1_fetch_all(db.prepare(_DAY_LIST_SQL).bind(election_id))
-    except Exception:  # noqa: BLE001  # reason: D1 raises runtime-only JsException; degrade to empty
-        return ()
+    rows = await _d1_fetch_all(db.prepare(_DAY_LIST_SQL).bind(election_id))
     days: list[EvDayRow] = []
     for row in rows:
         ev_date = _row_value(row, "ev_date")
         file_id = _row_value(row, "file_id")
         sha256 = _row_value(row, "sha256")
+        vote_period = _vote_period(row)
+        if vote_period is None:
+            continue
         if not all(isinstance(item, str) and item for item in (ev_date, file_id, sha256)):
             continue
-        days.append(EvDayRow(ev_date=ev_date, file_id=file_id, sha256=sha256))
+        days.append(
+            EvDayRow(ev_date=ev_date, file_id=file_id, sha256=sha256, vote_period=vote_period)
+        )
     return tuple(days)
 
 
@@ -242,9 +252,12 @@ async def resolve_day_for_date(
     resolved_date = _row_value(row, "ev_date")
     file_id = _row_value(row, "file_id")
     sha256 = _row_value(row, "sha256")
+    vote_period = _vote_period(row)
+    if vote_period is None:
+        return None
     if not all(isinstance(item, str) and item for item in (resolved_date, file_id, sha256)):
         return None
-    return EvDayRow(ev_date=resolved_date, file_id=file_id, sha256=sha256)
+    return EvDayRow(ev_date=resolved_date, file_id=file_id, sha256=sha256, vote_period=vote_period)
 
 
 async def resolve_file_id_for_day(

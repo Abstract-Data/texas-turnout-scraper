@@ -13,14 +13,24 @@ No voterfile joins (Tex. Elec. Code §18.066). Logs and reports are aggregates o
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 
 from texas_turnout_scraper.civix.envelope import _decode_envelope
-from texas_turnout_scraper.civix.evr import CivixClient
+from texas_turnout_scraper.civix.evr import (
+    CivixClient,
+    EdStatewideReportMissingError,
+    read_ed_statewide_voter_csv,
+)
 from texas_turnout_scraper.civix.ids import require_election_id
-from texas_turnout_scraper.early_vote_roster import summarize_roster_csv
+from texas_turnout_scraper.early_vote_roster import (
+    VOTE_PERIOD_EARLY,
+    VOTE_PERIOD_ELECTION_DAY,
+    VotePeriod,
+    summarize_roster_csv,
+)
 from texas_turnout_scraper.early_vote_sync import (
     EarlyVotePayloadKind,
     EarlyVoteStore,
@@ -28,15 +38,18 @@ from texas_turnout_scraper.early_vote_sync import (
     backfill_manifest_digest,
     iso_ev_date,
     prepare_payload_bytes,
+    pull_election_day_roster_file,
     pull_statewide_roster_file,
     sync_early_vote,
 )
-from texas_turnout_scraper.http_transport import HTTP_FETCH_EXCEPTIONS
+from texas_turnout_scraper.http_transport import HTTP_FETCH_EXCEPTIONS, HttpBackend
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_NOV_2026_GENERAL_ID = "53815"
 DEFAULT_NOV_2026_GENERAL_NAME = "2026 NOVEMBER GENERAL ELECTION"
+
+HTTP_NOT_FOUND = 404
 
 SyncMode = Literal["single", "backfill", "latest"]
 
@@ -64,6 +77,10 @@ class BackfillDatePlan:
     calendar_last_iso: str
     skipped_future_dates: tuple[str, ...]
     load_dates: tuple[date, ...]
+    election_day: date | None = None
+
+    def vote_period(self, day: date) -> VotePeriod:
+        return VOTE_PERIOD_ELECTION_DAY if day == self.election_day else VOTE_PERIOD_EARLY
 
     @property
     def load_dates_iso(self) -> tuple[str, ...]:
@@ -175,11 +192,14 @@ def plan_backfill_load_dates(
     calendar_dates: tuple[date, ...],
     *,
     today: date | None = None,
+    election_day: date | None = None,
 ) -> BackfillDatePlan:
     """Skip future calendar dates without pulling anything."""
     election_id = require_election_id(election_id)
     if not calendar_dates:
         raise EarlyVoteSyncError("no calendar EV dates to plan")
+    if election_day is not None:
+        calendar_dates = tuple(sorted({*calendar_dates, election_day}))
     cutoff = today or datetime.now(tz=timezone.utc).date()
     skipped_future: list[str] = []
     load: list[date] = []
@@ -200,6 +220,7 @@ def plan_backfill_load_dates(
         calendar_last_iso=iso_ev_date(calendar_dates[-1]),
         skipped_future_dates=tuple(skipped_future),
         load_dates=tuple(load),
+        election_day=election_day,
     )
 
 
@@ -249,6 +270,38 @@ def latest_loadable_ev_date(
     )
 
 
+# A day that fails these ways is recorded as failed and the batch goes on. KeyError and ValueError
+# are a 200 response that is not a readable envelope or report.
+_DAY_PULL_FAILURES = (*HTTP_FETCH_EXCEPTIONS, KeyError, ValueError)
+
+# One pull per vote period: the response, and the roster CSV bytes inside it. A report the portal
+# has not published is ``(None, b"")``, which the caller counts as an empty day.
+RosterPull = Callable[[str, date, HttpBackend], tuple[Any, bytes]]
+
+
+def _pull_early(election_id: str, day: date, backend: HttpBackend) -> tuple[Any, bytes]:
+    response = pull_statewide_roster_file(election_id, day, http_backend=backend)
+    return response, _decode_envelope(response)
+
+
+def _pull_election_day(election_id: str, day: date, backend: HttpBackend) -> tuple[Any, bytes]:
+    try:
+        response = pull_election_day_roster_file(election_id, day, http_backend=backend)
+        return response, read_ed_statewide_voter_csv(_decode_envelope(response))
+    except EdStatewideReportMissingError:
+        return None, b""
+    except HTTP_FETCH_EXCEPTIONS as exc:
+        if getattr(getattr(exc, "response", None), "status_code", None) == HTTP_NOT_FOUND:
+            return None, b""
+        raise
+
+
+_ROSTER_PULLS: dict[VotePeriod, RosterPull] = {
+    VOTE_PERIOD_EARLY: _pull_early,
+    VOTE_PERIOD_ELECTION_DAY: _pull_election_day,
+}
+
+
 def run_backfill(
     election_id: str,
     store: EarlyVoteStore,
@@ -263,7 +316,7 @@ def run_backfill(
     election_id = require_election_id(election_id)
     if payload_kind != "statewide_roster":
         raise EarlyVoteSyncError("backfill supports payload_kind=statewide_roster only")
-    backend = "cloudscraper" if http_backend == "cloudscraper" else "httpx"
+    backend: HttpBackend = "cloudscraper" if http_backend == "cloudscraper" else "httpx"
     day_results: list[BackfillDayResult] = []
     manifest_inputs: dict[str, str] = {}
     skipped_empty: list[str] = []
@@ -274,15 +327,13 @@ def run_backfill(
 
     for ev_day in plan.load_dates:
         iso = iso_ev_date(ev_day)
+        vote_period = plan.vote_period(ev_day)
         try:
-            response = pull_statewide_roster_file(
-                election_id,
-                ev_day,
-                http_backend=backend,
-            )
-        except HTTP_FETCH_EXCEPTIONS as exc:
-            # The portal refused this day past every retry. Keep going so the days already
-            # downloaded still get published; the day stays as D1 last stored it.
+            pulled = _ROSTER_PULLS[vote_period](election_id, ev_day, backend)
+        except _DAY_PULL_FAILURES as exc:
+            # The portal refused this day past every retry, or sent something unreadable. Keep
+            # going so the days already downloaded still get published; the day stays as D1 last
+            # stored it.
             failed.append(iso)
             logger.warning(
                 "early-vote backfill day failed election_id=%s ev_date=%s status_code=%s error=%s",
@@ -300,7 +351,7 @@ def run_backfill(
                     )
                 )
             continue
-        raw = _decode_envelope(response)
+        response, raw = pulled
         redacted, summary = prepare_payload_bytes(raw, "statewide_roster")
         est_rows = summary.est_rows if summary is not None else 0
         if est_rows == 0:
@@ -318,6 +369,7 @@ def run_backfill(
             election_id,
             response,
             store,
+            vote_period=vote_period,
             dry_run=dry_run,
             payload_kind=payload_kind,
             ev_date_iso=iso,

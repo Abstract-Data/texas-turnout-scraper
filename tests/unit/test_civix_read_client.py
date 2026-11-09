@@ -88,6 +88,8 @@ def test_etag_is_tied_to_the_version() -> None:
     assert etag_for_version(42) == '"v42"'
     assert version_from_etag('"v42"') == 42
     assert version_from_etag('W/"v42"') == 42
+    assert etag_for_version(42, body_shape="b3") == '"v42-b3"'
+    assert version_from_etag('"v42-b3"') == 42
     assert etag_matches('"v42"', '"v42"') is True
     assert etag_matches('W/"v42"', '"v42"') is True
     assert etag_matches('"v41", "v42"', '"v42"') is True

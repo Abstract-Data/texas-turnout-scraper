@@ -156,7 +156,12 @@ def turnout_db() -> _AggregateD1:
         sha256=digest,
         decoded=decoded,
         days=[
-            {"ev_date": "2026-10-20", "file_id": "f53815", "sha256": digest},
+            {
+                "ev_date": "2026-10-20",
+                "file_id": "f53815",
+                "sha256": digest,
+                "vote_period": "early",
+            },
         ],
     )
 
@@ -171,7 +176,12 @@ def roster_db() -> _AggregateD1:
         sha256=digest,
         decoded=decoded,
         days=[
-            {"ev_date": "2026-10-20", "file_id": "f53815", "sha256": digest},
+            {
+                "ev_date": "2026-10-20",
+                "file_id": "f53815",
+                "sha256": digest,
+                "vote_period": "early",
+            },
         ],
     )
 

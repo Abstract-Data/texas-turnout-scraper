@@ -55,9 +55,10 @@ SIGNATURE_SQL = "SELECT value FROM early_vote_first_seen_meta WHERE name = 'sign
 COUNTS_SQL = "SELECT ev_date, county, voting_method, n FROM early_vote_first_seen"
 
 # One query over every live row takes about 15 s on the 4.3M-row roster, near D1's limit, so the
-# build splits voters by the last character of the VUID. A voter's rows all fall in one part.
-# One tenth took 2.5 s on 2026-10-27. The last part catches any VUID not ending in a digit.
-_DIGITS = tuple(str(d) for d in range(10))
+# build splits voters by the last two characters of the VUID. A voter's rows all fall in one part.
+# Election Day brought the roster to 9.7M rows, where a one-digit part took 17 s; a two-digit part
+# took 1.4 s (ADR-018). The last part catches any VUID not ending in two digits.
+_PAIRS = tuple(f"{n:02d}" for n in range(100))
 _PARTITION_SQL = (
     "SELECT d, upper(trim(county)) AS county, upper(trim(voting_method)) AS method, "
     "COUNT(*) AS n FROM (SELECT MIN(day) AS d, county, voting_method "
@@ -65,13 +66,8 @@ _PARTITION_SQL = (
     "GROUP BY 1, 2, 3"
 )
 PARTITIONS: tuple[tuple[str, list[str]], ...] = (
-    *((_PARTITION_SQL.format(where="substr(id_voter, -1) = ?"), [d]) for d in _DIGITS),
-    (
-        _PARTITION_SQL.format(
-            where=f"substr(id_voter, -1) NOT IN ({', '.join(repr(d) for d in _DIGITS)})"
-        ),
-        [],
-    ),
+    *((_PARTITION_SQL.format(where="substr(id_voter, -2) = ?"), [pair]) for pair in _PAIRS),
+    (_PARTITION_SQL.format(where="id_voter NOT GLOB '*[0-9][0-9]'"), []),
 )
 
 _DELETE_META_SQL = "DELETE FROM early_vote_first_seen_meta"

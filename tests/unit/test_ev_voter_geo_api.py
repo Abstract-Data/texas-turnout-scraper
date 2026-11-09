@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from ev_api.app import ReadDeps, create_app
+from ev_api.voter_geo_routes import _page_number
 from fastapi.testclient import TestClient
 
 from tests.unit.test_early_vote_roster_stream import DAY1, DAY2, _Db, _store_day
@@ -327,7 +328,7 @@ def test_etag_names_the_day_the_build_and_the_page_and_gets_304() -> None:
     client = _client(db)
     first = _page(client, 3)
     day_sha = sha256_decoded(DAY1)
-    assert first.headers["etag"] == f'"{day_sha}.{SIGNATURE[:16]}.p3"'
+    assert first.headers["etag"] == f'"{day_sha}.{SIGNATURE[:16]}.n{VOTER_GEO_PAGES}.p3"'
     queries = db.queries
     again = _page(client, 3, **{"If-None-Match": first.headers["etag"]})
     assert again.status_code == 304
@@ -342,7 +343,7 @@ def test_etag_names_the_day_the_build_and_the_page_and_gets_304() -> None:
     db.conn.execute("UPDATE voter_geo_meta SET value = ? WHERE name = 'signature'", ("cd" * 32,))
     rebuilt = _page(client, 3, **{"If-None-Match": first.headers["etag"]})
     assert rebuilt.status_code == 200
-    assert re.fullmatch(r'"[0-9a-f]{64}\.cdcdcdcdcdcdcdcd\.p3"', rebuilt.headers["etag"])
+    assert re.fullmatch(r'"[0-9a-f]{64}\.cdcdcdcdcdcdcdcd\.n[0-9]+\.p3"', rebuilt.headers["etag"])
 
 
 def test_a_page_costs_one_page_query_and_the_route_is_mounted_once() -> None:
@@ -459,7 +460,7 @@ def test_the_etag_names_the_point_apply_and_stays_put_without_one() -> None:
     db, _ = _db()
     client = _client(db)
     before = _page(client, 3).headers["etag"]
-    assert re.fullmatch(r'"[0-9a-f]{64}\.abababababababab\.p3"', before)
+    assert re.fullmatch(r'"[0-9a-f]{64}\.abababababababab\.n[0-9]+\.p3"', before)
     queries = db.queries
     _page(client, 3)
     assert db.queries - queries == 4  # the combined signature query adds no round trip
@@ -467,7 +468,7 @@ def test_the_etag_names_the_point_apply_and_stays_put_without_one() -> None:
     after = _page(client, 3, **{"If-None-Match": before})
     assert after.status_code == 200
     assert re.fullmatch(
-        r'"[0-9a-f]{64}\.abababababababab\.efefefefefefefef\.p3"', after.headers["etag"]
+        r'"[0-9a-f]{64}\.abababababababab\.efefefefefefefef\.n[0-9]+\.p3"', after.headers["etag"]
     )
     db.conn.execute(
         "UPDATE voter_geo_point_meta SET value = ? WHERE name = 'signature'", ("12" * 32,)
@@ -481,3 +482,8 @@ def test_missing_point_tables_are_503() -> None:
     response = _page(_client(db), 0)
     assert response.status_code == 503
     assert response.json() == {"detail": "voter_geo_not_loaded"}
+
+
+def test_the_route_accepts_every_page_number() -> None:
+    assert _page_number(str(VOTER_GEO_PAGES - 1)) == VOTER_GEO_PAGES - 1
+    assert _page_number(str(VOTER_GEO_PAGES)) is None

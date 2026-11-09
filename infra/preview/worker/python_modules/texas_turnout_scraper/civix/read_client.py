@@ -126,14 +126,15 @@ def http_path(election_id: object, *segments: object) -> str:
     return f"/elections/{election}/{tail}"
 
 
-def etag_for_version(version: object) -> str:
-    """Strong ETag tied to the KV version, for example ``\"v42\"``."""
-    return f'"v{_require_version(version)}"'
+def etag_for_version(version: object, *, body_shape: str | None = None) -> str:
+    """Strong ETag tied to the KV version, for example ``\"v42\"`` or ``\"v42-b3\"``."""
+    suffix = f"-{body_shape}" if body_shape else ""
+    return f'"v{_require_version(version)}{suffix}"'
 
 
 def version_from_etag(etag: str) -> int:
     """Return the version number encoded in ``etag``."""
-    inner = _quoted_etag(etag)[1:-1]
+    inner = _quoted_etag(etag)[1:-1].partition("-")[0]
     if len(inner) < 2 or not inner.startswith("v") or not inner[1:].isdigit():
         msg = "etag is not tied to a version"
         raise ValueError(msg)
