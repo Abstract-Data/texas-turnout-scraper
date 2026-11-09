@@ -1,7 +1,7 @@
 # ADR-018: Election Day rosters in the early-vote tables
 
 **Date:** 2026-11-09
-**Status:** Proposed. Spec only: nothing below is built, and D1 is unchanged.
+**Status:** Proposed. Code is in #142. The migration, the Worker deploy and the load have not run.
 
 ## Context
 
@@ -67,8 +67,8 @@ read time was rejected: `early_vote_election_calendar` is empty in `ev-53815`, a
 would need editing for every election.
 
 `_DAY_UPSERT_SQL` writes the value on insert and on conflict. `EarlyVoteStore.write_database` and
-its implementers take it as a required argument with no default, so no code path can reset
-`election_day` to `early`. `_DAY_LIST_SQL`, `_DAY_LOOKUP_SQL` (the `?ev_date=` path) and the roster
+its implementers take it as a required argument with no default. The backfill path sets it per date.
+`--sync-mode single` and `latest` always write `early`, so do not use them for an election date. `_DAY_LIST_SQL`, `_DAY_LOOKUP_SQL` (the `?ev_date=` path) and the roster
 `_DAYS_SQL` read it, and `EvDayRow` and `RosterDay` carry it.
 
 ### 3. Fetch
@@ -147,6 +147,7 @@ caps a string at 2 MB, and 256 pages were sized for a 1,000,000-row day. At the 
 pages it is about 3,200 voters and 1.1 MB. `LARGEST_DAY_ROWS` in
 `tests/unit/test_voter_geo_page_size.py` moves to 2,100,000. This changes the page count for every
 day: clients that read `pages` from the response are fine, and any that hardcoded 256 must change.
+The page count is part of the ETag, so a client cannot revalidate a page from the old split.
 
 ## Rollout
 
@@ -217,9 +218,6 @@ In scope: `early_vote_sync.py`, `early_vote_backfill.py`, `early_vote_roster.py`
 
 Not touched: `early_vote_roster_row` and the other table definitions apart from `early_vote_day`,
 `infra/ev_ingest` (schedule), GitHub Pages `data/`, the MCP server and CLI.
-
-`voter_geo_build.py`, its vendored copy and `scripts/ev_ingest_steps.sh` had uncommitted edits when
-this was written. Those should be committed or resolved before implementation starts.
 
 ## Out of scope
 
