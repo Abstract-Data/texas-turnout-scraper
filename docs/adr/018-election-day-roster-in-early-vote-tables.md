@@ -107,7 +107,8 @@ file stay as the portal reports them.
 | Deduplicated fields (ADR-016) | `unique_voters`, `new_voters` and `restated_rows` include Election Day after `first_seen_build` |
 
 `vote_period` is the only new response field. `_rollup_days` and the one-day path copy it from the day
-row. `BODY_SHAPE` moves from `b2` to `b3`, so bodies cached in the old shape are not served.
+row. `BODY_SHAPE` moves from `b2` to `b3` and is part of the aggregate ETag, so bodies cached in the
+old shape are neither served nor revalidated.
 
 Consumers should note one change in meaning: cumulative `in_person` and `total` now cover early
 voting plus Election Day. The early-only figures remain available by summing `by-day` entries where
@@ -162,8 +163,7 @@ Each step needs the owner's go-ahead, because it changes the production database
 3. Merge the PR. **It must follow step 2**: a push to `main` that touches `infra/preview/` runs the
    `Terraform preview` apply job, which deploys the Worker. `load_day_rows` turns any query error
    into an empty list, so a Worker reading a missing column would serve no days rather than fail
-   visibly. A client holding an aggregate ETag from before the deploy can get a 304 and keep a body
-   without `vote_period` until the next version bump. Step 5 bumps the version.
+   visibly.
 4. Run `scripts/local_ev_backfill.sh dry_run` and confirm 2026-11-03 appears with the expected row
    count and no error. A dry run has no stored hashes, so it lists all 18 days and cannot show which
    are new.

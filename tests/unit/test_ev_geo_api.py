@@ -127,7 +127,7 @@ def test_body_lists_matched_precincts_sorted_with_point_box_and_unmatched_count(
     }
     assert body["precincts"][0]["bbox"] is None
     assert set(body) == {"source_election_id", "version", "count", "unmatched", "precincts"}
-    assert response.headers["etag"] == '"v7"'
+    assert response.headers["etag"] == f'"v7-{BODY_SHAPE}"'
     assert "private" in response.headers["cache-control"]
 
 
@@ -163,7 +163,7 @@ def test_a_new_election_version_gets_a_new_cache_entry_and_etag() -> None:
     client.get(URL, headers=AGGREGATES)
     kv.values[version_key("53815")] = "8"
     response = client.get(URL, headers=AGGREGATES)
-    assert response.headers["etag"] == '"v8"'
+    assert response.headers["etag"] == f'"v8-{BODY_SHAPE}"'
     assert response.json()["version"] == "8"
     assert [key for key, _ in kv.puts] == [
         cache_key("53815", 7, "geo", "precincts", BODY_SHAPE),

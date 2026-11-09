@@ -271,7 +271,7 @@ async def test_if_none_match_returns_304_only_when_versioned_cache_exists() -> N
     store = RecordingStore()
 
     outcome = await read_resource(
-        ResourceQuery(_ELECTION, _segments(), etag_for_version(_VERSION)),
+        ResourceQuery(_ELECTION, _segments(), etag_for_version(_VERSION, body_shape=BODY_SHAPE)),
         kv,
         store,
     )
@@ -282,12 +282,28 @@ async def test_if_none_match_returns_304_only_when_versioned_cache_exists() -> N
 
 
 @pytest.mark.asyncio
+async def test_an_etag_from_the_old_body_shape_gets_the_current_body() -> None:
+    key = cache_key(_ELECTION, _VERSION, *_segments(), BODY_SHAPE)
+    payload = {"statewide": {"total": 1}}
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), key: json.dumps(payload)})
+
+    outcome = await read_resource(
+        ResourceQuery(_ELECTION, _segments(), etag_for_version(_VERSION)),
+        kv,
+        RecordingStore(),
+    )
+
+    assert outcome.status_code == 200
+    assert outcome.body == payload
+
+
+@pytest.mark.asyncio
 async def test_if_none_match_without_cache_populates_from_d1() -> None:
     kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
     store = RecordingStore({(_ELECTION, _segments()): {"statewide": {"total": 1}}})
 
     outcome = await read_resource(
-        ResourceQuery(_ELECTION, _segments(), etag_for_version(_VERSION)),
+        ResourceQuery(_ELECTION, _segments(), etag_for_version(_VERSION, body_shape=BODY_SHAPE)),
         kv,
         store,
     )
