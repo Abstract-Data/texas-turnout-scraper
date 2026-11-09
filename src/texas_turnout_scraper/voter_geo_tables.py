@@ -199,9 +199,9 @@ VOTER_GEO_LIVE_ROWS_SQL = (
 PRECINCT_DISTRICTS_SQL = "SELECT pctkey, cd, sd, hd, split_cd, split_sd, split_hd FROM geo_precinct"
 
 # The route serves a day's live VUIDs in this many row-hash ranges, one per page. A page is one
-# D1 text cell, and D1 caps a string at 2 MB: at about 340 bytes per voter, 256 pages keep a
-# 1,000,000-row day near 1.3 MB per page (tests/unit/test_voter_geo_page_size.py).
-VOTER_GEO_PAGES = 256
+# D1 text cell, and D1 caps a string at 2 MB: at about 340 bytes per voter, 640 pages keep a
+# 2,100,000-row day near 1.2 MB per page (tests/unit/test_voter_geo_page_size.py).
+VOTER_GEO_PAGES = 640
 # One page as one row: the count and one JSON text cell, so D1 result conversion stays
 # constant-size and the Worker never parses it. Parameters: day, low, high. A VUID listed on
 # the day twice under different row hashes can fall in two pages; within a page it is distinct.

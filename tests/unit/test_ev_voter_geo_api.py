@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from ev_api.app import ReadDeps, create_app
+from ev_api.voter_geo_routes import _page_number
 from fastapi.testclient import TestClient
 
 from tests.unit.test_early_vote_roster_stream import DAY1, DAY2, _Db, _store_day
@@ -481,3 +482,8 @@ def test_missing_point_tables_are_503() -> None:
     response = _page(_client(db), 0)
     assert response.status_code == 503
     assert response.json() == {"detail": "voter_geo_not_loaded"}
+
+
+def test_the_route_accepts_every_page_number() -> None:
+    assert _page_number(str(VOTER_GEO_PAGES - 1)) == VOTER_GEO_PAGES - 1
+    assert _page_number(str(VOTER_GEO_PAGES)) is None

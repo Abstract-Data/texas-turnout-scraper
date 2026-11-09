@@ -18,9 +18,9 @@ from texas_turnout_scraper.voter_geo_tables import (
 D1_MAX_STRING_BYTES = 2_000_000
 # The working ceiling per page, leaving room under the limit.
 PAGE_BUDGET_BYTES = 1_500_000
-# The largest day to plan for. 2026-10-24 (early day 11) re-listed 656,734 earlier voters on top
-# of its own (ADR-012), about 1M rows against an average day near 340,000.
-LARGEST_DAY_ROWS = 1_000_000
+# The largest day to plan for. Election Day 2026-11-03 lists 2,073,832 rows (ADR-018); the largest
+# early day, 2026-10-24, re-listed 656,734 earlier voters on top of its own (ADR-012).
+LARGEST_DAY_ROWS = 2_100_000
 # Row hashes are uniform, so a page's count is binomial: 10% over the mean is far past 6 sigma.
 PAGE_SLACK = 1.1
 DAY = 1
