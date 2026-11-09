@@ -1,7 +1,7 @@
 # ADR-018: Election Day rosters in the early-vote tables
 
 **Date:** 2026-11-09
-**Status:** Proposed. Code is in #142. The migration, the Worker deploy and the load have not run.
+**Status:** Proposed. Code is in #142. The migration ran on 2026-11-09 (all 17 days read `early`). The Worker deploy and the load have not run.
 
 ## Context
 
@@ -161,13 +161,14 @@ Each step needs the owner's go-ahead, because it changes the production database
    `_ensure_schema`, which applies the `ALTER`, and has nothing else to do because all 17 days are
    already loaded. Confirm 17 rows read `early`.
 3. Merge the PR. **It must follow step 2**: a push to `main` that touches `infra/preview/` runs the
-   `Terraform preview` apply job, which deploys the Worker. `load_day_rows` turns any query error
-   into an empty list, so a Worker reading a missing column would serve no days rather than fail
-   visibly.
+   `Terraform preview` apply job, which deploys the Worker, and a Worker reading a missing column
+   fails its aggregate requests.
 4. Run `scripts/local_ev_backfill.sh dry_run` and confirm 2026-11-03 appears with the expected row
    count and no error. A dry run has no stored hashes, so it lists all 18 days and cannot show which
    are new.
-5. Run `scripts/local_ev_backfill.sh`. It also applies the portal's early-vote revisions. It covers every step, including `first_seen_build`, `geo_load`
+5. Record the KV values `ev:53815:sha256` and `ev:53815:manifest_sha256` for rollback, noting if
+   either is absent, then run
+   `scripts/local_ev_backfill.sh`. It also applies the portal's early-vote revisions. It covers every step, including `first_seen_build`, `geo_load`
    and `voter_geo_build`. Deduplicated counts read null with `dedupe.status = stale` until
    `first_seen_build` finishes, which is the behavior ADR-016 chose.
 6. Run the smoke checks below.
@@ -176,7 +177,14 @@ Each step needs the owner's go-ahead, because it changes the production database
 
 The cron stays stopped, because the remaining work is one load and one re-load.
 
-**Rollback:** restore the bookmark. The column can stay; it is harmless with every row `early`.
+**Rollback:**
+
+1. Restore the bookmark. The step 1 bookmark predates the migration, so restoring it removes
+   `vote_period`. Re-run the step 2 command straight away, because the deployed Worker reads that
+   column.
+2. KV still describes the load. Write back the values recorded at the first run of step 5, deleting a
+   key that was absent then, and increment `ev:53815:version`. Aggregate bodies and ETags are keyed on the version, so the increment
+   retires everything cached from the load.
 
 ## Acceptance
 
@@ -237,5 +245,9 @@ Not touched: `early_vote_roster_row` and the other table definitions apart from 
 - The database grows from 4.90 GB to an estimated 6.2 GB by row proportion, of a 10 GB cap that
   cannot be raised.
 - A single-day read of Election Day is the largest response the Worker has served.
+- The loader holds the Election Day ZIP and its CSV in memory, about 1.5 GB at peak. The report arrives
+  base64-encoded inside a JSON envelope and the CSV is canonicalized whole, so streaming to disk would
+  not remove the peak. That departs from the repo's rule for bulk ZIPs. It is acceptable for a local
+  backfill, and it has to be revisited before Election Day ingest runs in the Container.
 - A row in the early-vote tables can now be a non-early vote, which `vote_period` marks at the day
   level.

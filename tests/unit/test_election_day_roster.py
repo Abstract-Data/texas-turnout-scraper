@@ -13,18 +13,18 @@ from typing import Any, cast
 import httpx
 import pytest
 import respx
-from ev_api.read import BODY_SHAPE
 from fastapi.testclient import TestClient
 from typing_extensions import override
 
 from tests.unit.test_early_vote_backfill import STATEWIDE_FIXTURE, _BackfillStore
-from tests.unit.test_early_vote_cumulative import DAYS, _db, _get
+from tests.unit.test_early_vote_cumulative import DAYS, KV, _db, _get
 from tests.unit.test_early_vote_roster_stream import DAY1, DAY2, _Db, _store_day
 from tests.unit.test_ev_roster_api import AGGREGATES, _Kv, _Rosters
 from texas_turnout_scraper.civix.evr import (
     API_PREFIX,
     BASE_URL,
     STATEWIDE_ED_VOTER_CSV,
+    EdStatewideReportCorruptError,
     EdStatewideReportMissingError,
     parse_ed_statewide_voter_records,
     read_ed_statewide_voter_csv,
@@ -35,6 +35,10 @@ from texas_turnout_scraper.early_vote_backfill import (
     run_backfill,
 )
 from texas_turnout_scraper.early_vote_d1_precompute import PRECOMPUTE_SCHEMA_CREATES
+from texas_turnout_scraper.early_vote_d1_precompute_read import (
+    build_precomputed_aggregate_resource,
+)
+from texas_turnout_scraper.early_vote_d1_read import _DAY_LIST_SQL
 from texas_turnout_scraper.early_vote_roster import canonicalize_roster_csv
 from texas_turnout_scraper.early_vote_sync import (
     _DAY_TABLE_SQL,
@@ -72,6 +76,23 @@ def _ed_zip(*, with_csv: bool = True, rows: str = ROWS) -> bytes:
             zf.writestr(STATEWIDE_ED_VOTER_CSV, f"{ED_HEADER}\n{rows}")
         zf.writestr("STATEWIDE_POLLING_PLACE_INFO.csv", "COUNTY,POLL PLACE ID\nTRAVIS,1\n")
     return buffer.getvalue()
+
+
+def _corrupt_ed_zip() -> bytes:
+    """A ZIP whose central directory is intact but whose voter CSV fails its CRC."""
+    return _ed_zip().replace(b"DOE, ONE", b"DOE, 0NE")
+
+
+def _ed_zip_with_voter_csv_field(offset: int, value: int) -> bytes:
+    """Overwrite one byte of the voter CSV's central-directory entry."""
+    payload = bytearray(_ed_zip())
+    payload[payload.index(b"PK\x01\x02") + offset] = value
+    return bytes(payload)
+
+
+ENCRYPTED_FLAG = _ed_zip_with_voter_csv_field(8, 1)
+UNKNOWN_COMPRESSION = _ed_zip_with_voter_csv_field(10, 99)
+UNSUPPORTED_VERSION = _ed_zip_with_voter_csv_field(6, 200)
 
 
 def _envelope(payload: bytes) -> httpx.Response:
@@ -260,6 +281,52 @@ def test_a_report_the_portal_has_not_published_is_skipped_empty(response: httpx.
     assert "2026-11-03" not in store.vote_periods
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [_corrupt_ed_zip(), ENCRYPTED_FLAG, UNKNOWN_COMPRESSION, UNSUPPORTED_VERSION],
+    ids=["crc-failure", "encrypted-flag", "unknown-compression", "unsupported-version"],
+)
+def test_an_unreadable_voter_csv_is_corrupt_not_missing(payload: bytes) -> None:
+    with pytest.raises(EdStatewideReportCorruptError):
+        read_ed_statewide_voter_csv(payload)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _envelope(_corrupt_ed_zip()),
+        _envelope(ENCRYPTED_FLAG),
+        _envelope(UNKNOWN_COMPRESSION),
+        _envelope(UNSUPPORTED_VERSION),
+        httpx.Response(200, text="<html>busy</html>"),
+        httpx.Response(200, json={"message": "busy"}),
+        httpx.Response(200, json=["busy"]),
+    ],
+    ids=[
+        "crc-failure",
+        "encrypted-flag",
+        "unknown-compression",
+        "unsupported-version",
+        "html-body",
+        "no-upload-key",
+        "json-not-an-object",
+    ],
+)
+@respx.mock
+def test_an_unreadable_report_is_a_failed_day_and_the_batch_finishes(
+    response: httpx.Response,
+) -> None:
+    _mock_early(respx.mock)
+    _mock_election_day(respx.mock, response)
+    store = _KeepingStore()
+
+    result = _backfill(store)
+
+    assert result.failed_dates == ("2026-11-03",)
+    assert result.skipped_empty_dates == ()
+    assert result.days_wrote == 1
+
+
 @respx.mock
 def test_any_other_http_failure_stays_failed() -> None:
     _mock_early(respx.mock)
@@ -320,12 +387,12 @@ def test_a_current_table_needs_no_alter() -> None:
 
 
 class _SqliteStore(CloudflareEarlyVoteStore):
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, client: httpx.Client) -> None:
         super().__init__(
             account_id="a",
             api_token="t",
             kv_namespace_id="n",
-            client=httpx.Client(base_url="https://api.cloudflare.com/client/v4"),
+            client=client,
         )
         self.conn = conn
 
@@ -348,8 +415,9 @@ def test_ensure_schema_leaves_a_table_with_the_column_and_can_repeat(existing: s
         conn.execute(existing)
         conn.execute("INSERT INTO early_vote_day VALUES ('53815', '2026-10-14', 's', 'f')")
 
-    _SqliteStore(conn)._ensure_schema("db")
-    _SqliteStore(conn)._ensure_schema("db")
+    with httpx.Client(base_url="https://api.cloudflare.com/client/v4", timeout=30.0) as client:
+        _SqliteStore(conn, client)._ensure_schema("db")
+        _SqliteStore(conn, client)._ensure_schema("db")
 
     assert "vote_period" in _columns(conn)
     if existing:
@@ -418,8 +486,24 @@ async def test_a_cumulative_body_keeps_its_shape() -> None:
     assert body["days"] == ["2026-10-19", "2026-10-20"]
 
 
-def test_cached_bodies_in_the_old_shape_are_not_served() -> None:
-    assert BODY_SHAPE == "b3"
+class _BrokenDayList:
+    """A D1 that rejects the day-list query, as a database without ``vote_period`` does."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def prepare(self, sql: str) -> Any:
+        if sql == _DAY_LIST_SQL:
+            raise sqlite3.OperationalError("no such column: vote_period")
+        return self._db.prepare(sql)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_day_list_fails_the_request_instead_of_serving_one_day() -> None:
+    with pytest.raises(sqlite3.OperationalError):
+        await build_precomputed_aggregate_resource(
+            cast(Any, _BrokenDayList(_db(DAYS))), "53815", "totals", kv_sha256=KV
+        )
 
 
 def test_elections_list_each_day_with_its_vote_period(monkeypatch: pytest.MonkeyPatch) -> None:

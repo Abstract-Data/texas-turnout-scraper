@@ -298,6 +298,28 @@ async def test_an_etag_from_the_old_body_shape_gets_the_current_body() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_body_cached_in_the_old_shape_is_rebuilt() -> None:
+    stale = cache_key(_ELECTION, _VERSION, *_segments(), "b2")
+    current = {"statewide": {"total": 2}, "vote_period": "early"}
+    kv = MemoryKv(
+        {
+            version_key(_ELECTION): str(_VERSION),
+            hash_key(_ELECTION): _SHA,
+            stale: json.dumps({"statewide": {"total": 1}}),
+        }
+    )
+
+    outcome = await read_resource(
+        ResourceQuery(_ELECTION, _segments(), None),
+        kv,
+        RecordingStore({(_ELECTION, _segments()): current}),
+    )
+
+    assert outcome.status_code == 200
+    assert outcome.body == current
+
+
+@pytest.mark.asyncio
 async def test_if_none_match_without_cache_populates_from_d1() -> None:
     kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
     store = RecordingStore({(_ELECTION, _segments()): {"statewide": {"total": 1}}})

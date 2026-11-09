@@ -202,11 +202,9 @@ async def load_file_views(db: D1Database, source_election_id: str) -> tuple[Earl
 
 
 async def load_day_rows(db: D1Database, source_election_id: str) -> tuple[EvDayRow, ...]:
+    """Every stored day, oldest first. A failed query raises: an empty list means no days."""
     election_id = require_election_id(source_election_id)
-    try:
-        rows = await _d1_fetch_all(db.prepare(_DAY_LIST_SQL).bind(election_id))
-    except Exception:  # noqa: BLE001  # reason: D1 raises runtime-only JsException; degrade to empty
-        return ()
+    rows = await _d1_fetch_all(db.prepare(_DAY_LIST_SQL).bind(election_id))
     days: list[EvDayRow] = []
     for row in rows:
         ev_date = _row_value(row, "ev_date")

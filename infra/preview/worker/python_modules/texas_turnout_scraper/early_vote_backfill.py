@@ -270,6 +270,10 @@ def latest_loadable_ev_date(
     )
 
 
+# A day that fails these ways is recorded as failed and the batch goes on. KeyError and ValueError
+# are a 200 response that is not a readable envelope or report.
+_DAY_PULL_FAILURES = (*HTTP_FETCH_EXCEPTIONS, KeyError, ValueError)
+
 # One pull per vote period: the response, and the roster CSV bytes inside it. A report the portal
 # has not published is ``(None, b"")``, which the caller counts as an empty day.
 RosterPull = Callable[[str, date, HttpBackend], tuple[Any, bytes]]
@@ -326,9 +330,10 @@ def run_backfill(
         vote_period = plan.vote_period(ev_day)
         try:
             pulled = _ROSTER_PULLS[vote_period](election_id, ev_day, backend)
-        except HTTP_FETCH_EXCEPTIONS as exc:
-            # The portal refused this day past every retry. Keep going so the days already
-            # downloaded still get published; the day stays as D1 last stored it.
+        except _DAY_PULL_FAILURES as exc:
+            # The portal refused this day past every retry, or sent something unreadable. Keep
+            # going so the days already downloaded still get published; the day stays as D1 last
+            # stored it.
             failed.append(iso)
             logger.warning(
                 "early-vote backfill day failed election_id=%s ev_date=%s status_code=%s error=%s",
