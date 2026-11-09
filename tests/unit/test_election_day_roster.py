@@ -83,6 +83,13 @@ def _corrupt_ed_zip() -> bytes:
     return _ed_zip().replace(b"DOE, ONE", b"DOE, 0NE")
 
 
+def _zip_of_voter_csv(voter_csv: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr(STATEWIDE_ED_VOTER_CSV, voter_csv)
+    return buffer.getvalue()
+
+
 def _ed_zip_with_voter_csv_field(offset: int, value: int) -> bytes:
     """Overwrite one byte of the voter CSV's central-directory entry."""
     payload = bytearray(_ed_zip())
@@ -301,6 +308,8 @@ def test_an_unreadable_voter_csv_is_corrupt_not_missing(payload: bytes) -> None:
         httpx.Response(200, text="<html>busy</html>"),
         httpx.Response(200, json={"message": "busy"}),
         httpx.Response(200, json=["busy"]),
+        _envelope(_zip_of_voter_csv(f"{ED_HEADER}\n".encode() + b"\xff\xfe,x,y,z,1\n")),
+        _envelope(_zip_of_voter_csv(f"{ED_HEADER}\n{'A' * 200_000},x,y,z,1\n".encode())),
     ],
     ids=[
         "crc-failure",
@@ -310,6 +319,8 @@ def test_an_unreadable_voter_csv_is_corrupt_not_missing(payload: bytes) -> None:
         "html-body",
         "no-upload-key",
         "json-not-an-object",
+        "csv-not-utf8",
+        "csv-field-over-limit",
     ],
 )
 @respx.mock
@@ -325,6 +336,28 @@ def test_an_unreadable_report_is_a_failed_day_and_the_batch_finishes(
     assert result.failed_dates == ("2026-11-03",)
     assert result.skipped_empty_dates == ()
     assert result.days_wrote == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    [httpx.Response(404), httpx.Response(200, content=b"")],
+    ids=["http-404", "empty-body"],
+)
+@respx.mock
+def test_a_stored_day_whose_report_comes_back_empty_stays_published(
+    response: httpx.Response,
+) -> None:
+    _mock_early(respx.mock)
+    _mock_election_day(respx.mock, response)
+    store = _KeepingStore()
+    store.day_hashes[(DEFAULT_NOV_2026_GENERAL_ID, "2026-11-03")] = "stored-election-day"
+
+    result = _backfill(store)
+
+    assert result.skipped_empty_dates == ()
+    assert result.failed_dates == ("2026-11-03",)
+    assert result.days[-1].sha256 == "stored-election-day"
+    assert store.published_ev_date == "2026-11-03"
 
 
 @respx.mock
