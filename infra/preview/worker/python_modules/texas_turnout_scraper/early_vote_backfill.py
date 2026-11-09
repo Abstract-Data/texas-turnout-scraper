@@ -12,7 +12,9 @@ No voterfile joins (Tex. Elec. Code §18.066). Logs and reports are aggregates o
 
 from __future__ import annotations
 
+import csv
 import logging
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -270,12 +272,12 @@ def latest_loadable_ev_date(
     )
 
 
-# A day that fails these ways is recorded as failed and the batch goes on. KeyError and ValueError
-# are a 200 response that is not a readable envelope or report.
-_DAY_PULL_FAILURES = (*HTTP_FETCH_EXCEPTIONS, KeyError, ValueError)
+# A day that fails these ways is recorded as failed and the batch goes on. KeyError, ValueError and
+# csv.Error are a 200 response that is not a readable envelope, report or CSV.
+_DAY_PULL_FAILURES = (*HTTP_FETCH_EXCEPTIONS, KeyError, ValueError, csv.Error)
 
 # One pull per vote period: the response, and the roster CSV bytes inside it. A report the portal
-# has not published is ``(None, b"")``, which the caller counts as an empty day.
+# has not published is ``(None, b"")``: an empty day, or a failed one if D1 already stores it.
 RosterPull = Callable[[str, date, HttpBackend], tuple[Any, bytes]]
 
 
@@ -321,20 +323,28 @@ def run_backfill(
     manifest_inputs: dict[str, str] = {}
     skipped_empty: list[str] = []
     failed: list[str] = []
-    wrote = 0
-    unchanged = 0
-    dry_runs = 0
+
+    def keep_stored_day(iso: str) -> None:
+        """Mark a day failed; what D1 last stored for it stays in the published set."""
+        failed.append(iso)
+        stored = store.stored_hash(election_id, ev_date_iso=iso)
+        if stored is not None:
+            manifest_inputs[iso] = stored
+            day_results.append(
+                BackfillDayResult(ev_date_iso=iso, status="failed", sha256=stored, decoded_bytes=0)
+            )
 
     for ev_day in plan.load_dates:
         iso = iso_ev_date(ev_day)
         vote_period = plan.vote_period(ev_day)
         try:
-            pulled = _ROSTER_PULLS[vote_period](election_id, ev_day, backend)
+            response, raw = _ROSTER_PULLS[vote_period](election_id, ev_day, backend)
+            redacted, summary = prepare_payload_bytes(raw, "statewide_roster")
         except _DAY_PULL_FAILURES as exc:
             # The portal refused this day past every retry, or sent something unreadable. Keep
             # going so the days already downloaded still get published; the day stays as D1 last
             # stored it.
-            failed.append(iso)
+            keep_stored_day(iso)
             logger.warning(
                 "early-vote backfill day failed election_id=%s ev_date=%s status_code=%s error=%s",
                 election_id,
@@ -342,19 +352,18 @@ def run_backfill(
                 getattr(getattr(exc, "response", None), "status_code", None),
                 type(exc).__name__,
             )
-            stored = store.stored_hash(election_id, ev_date_iso=iso)
-            if stored is not None:
-                manifest_inputs[iso] = stored
-                day_results.append(
-                    BackfillDayResult(
-                        ev_date_iso=iso, status="failed", sha256=stored, decoded_bytes=0
-                    )
-                )
             continue
-        response, raw = pulled
-        redacted, summary = prepare_payload_bytes(raw, "statewide_roster")
         est_rows = summary.est_rows if summary is not None else 0
         if est_rows == 0:
+            # No response means the report is unavailable, not that it was published empty.
+            if response is None and store.stored_hash(election_id, ev_date_iso=iso) is not None:
+                keep_stored_day(iso)
+                logger.warning(
+                    "early-vote backfill stored day's report unavailable election_id=%s ev_date=%s",
+                    election_id,
+                    iso,
+                )
+                continue
             skipped_empty.append(iso)
             logger.info(
                 "early-vote backfill skip empty election_id=%s ev_date=%s "
@@ -385,12 +394,6 @@ def run_backfill(
                 decoded_bytes=result.decoded_bytes,
             )
         )
-        if result.status == "wrote":
-            wrote += 1
-        elif result.status == "unchanged":
-            unchanged += 1
-        elif result.status == "dry_run":
-            dry_runs += 1
         if summary is not None:
             logger.info(
                 "early-vote backfill day election_id=%s ev_date=%s status=%s "
@@ -403,6 +406,8 @@ def run_backfill(
                 len(summary.columns),
             )
 
+    statuses = Counter(day.status for day in day_results)
+    wrote, unchanged, dry_runs = statuses["wrote"], statuses["unchanged"], statuses["dry_run"]
     manifest = backfill_manifest_digest(manifest_inputs) if manifest_inputs else ""
     kv_version: str | None = None
     if not dry_run and not defer_kv_bump and wrote > 0 and day_results:
