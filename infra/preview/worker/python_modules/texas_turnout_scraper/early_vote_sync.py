@@ -57,7 +57,7 @@ import random
 import sys
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -89,7 +89,12 @@ from texas_turnout_scraper.early_vote_day_changes import (
     roster_row_count,
 )
 from texas_turnout_scraper.early_vote_errors import EarlyVoteSyncError
-from texas_turnout_scraper.early_vote_roster import RosterCsvSummary, canonicalize_roster_csv
+from texas_turnout_scraper.early_vote_roster import (
+    VOTE_PERIOD_EARLY,
+    RosterCsvSummary,
+    VotePeriod,
+    canonicalize_roster_csv,
+)
 from texas_turnout_scraper.early_vote_roster_rows import (
     LEGACY_DRAIN_TABLES,
     LEGACY_ROW_COLUMNS_SQL,
@@ -202,9 +207,24 @@ CREATE TABLE IF NOT EXISTS early_vote_day (
     ev_date TEXT NOT NULL,
     sha256 TEXT NOT NULL,
     file_id TEXT NOT NULL,
+    vote_period TEXT NOT NULL DEFAULT 'early',
     PRIMARY KEY (source_election_id, ev_date)
 )
 """.strip()
+DAY_COLUMNS_SQL = "SELECT name FROM pragma_table_info('early_vote_day')"
+
+
+def day_migration_statements(columns: Iterable[str]) -> list[str]:
+    """ALTER that brings an older ``early_vote_day`` to the current columns; none once current.
+
+    ``columns`` is the result of ``DAY_COLUMNS_SQL``. A missing table has no columns, so nothing
+    is altered (its CREATE has the full shape). Existing rows take the ``early`` default.
+    """
+    present = set(columns)
+    if not present or "vote_period" in present:
+        return []
+    return ["ALTER TABLE early_vote_day ADD COLUMN vote_period TEXT NOT NULL DEFAULT 'early'"]
+
 
 SyncStatus = Literal["unchanged", "dry_run", "wrote"]
 
@@ -258,6 +278,7 @@ class EarlyVoteStore(Protocol):
         *,
         ev_date_iso: str | None = None,
         update_pointer: bool = False,
+        vote_period: VotePeriod,
     ) -> None:
         """Stage a new file_id and flip the pointer once every chunk is written."""
 
@@ -305,6 +326,7 @@ class EmptyHashStore:
         *,
         ev_date_iso: str | None = None,
         update_pointer: bool = False,
+        vote_period: VotePeriod,
     ) -> None:
         raise EarlyVoteSyncError("refusing to write D1 without --apply")
 
@@ -429,9 +451,9 @@ _DAY_SELECT_FILE_SQL = (
     "SELECT file_id FROM early_vote_day WHERE source_election_id = ? AND ev_date = ?"
 )
 _DAY_UPSERT_SQL = (
-    "INSERT INTO early_vote_day (source_election_id, ev_date, sha256, file_id) "
-    "VALUES (?, ?, ?, ?) ON CONFLICT(source_election_id, ev_date) DO UPDATE SET "
-    "sha256 = excluded.sha256, file_id = excluded.file_id"
+    "INSERT INTO early_vote_day (source_election_id, ev_date, sha256, file_id, vote_period) "
+    "VALUES (?, ?, ?, ?, ?) ON CONFLICT(source_election_id, ev_date) DO UPDATE SET "
+    "sha256 = excluded.sha256, file_id = excluded.file_id, vote_period = excluded.vote_period"
 )
 _DAY_FILE_IDS_SQL = "SELECT file_id FROM early_vote_day WHERE source_election_id = ?"
 _DAY_SELECT_FILE_AND_HASH_SQL = (
@@ -696,11 +718,12 @@ def summarize_d1_plan(
     )
 
 
-def sync_early_vote(
+def sync_early_vote(  # noqa: PLR0913  # reason: vote_period joins the existing keyword flags
     election_id: str,
     response: Any,
     store: EarlyVoteStore,
     *,
+    vote_period: VotePeriod,
     dry_run: bool = False,
     payload_kind: EarlyVotePayloadKind = "turnout",
     ev_date_iso: str | None = None,
@@ -712,7 +735,8 @@ def sync_early_vote(
     ``response`` is a Civix HTTP response (``.text`` and ``.json()``). The hash
     covers decoded bytes after roster redaction (when ``payload_kind`` is
     ``statewide_roster``), not the JSON envelope text. ``prepared`` is the
-    ``prepare_payload_bytes`` result for ``response`` when the caller already has it.
+    ``prepare_payload_bytes`` result for ``response`` when the caller already has it;
+    ``response`` is then not read.
     """
     election_id = require_election_id(election_id)
     if prepared is None:
@@ -771,6 +795,7 @@ def sync_early_vote(
         digest,
         ev_date_iso=ev_date_iso,
         update_pointer=update_pointer,
+        vote_period=vote_period,
     )
     version = None
     if not defer_kv_bump:
@@ -964,6 +989,35 @@ def pull_statewide_roster_file(
     )
 
 
+def pull_election_day_roster_file(
+    election_id: str,
+    election_date: date,
+    *,
+    client: httpx.Client | None = None,
+    http_backend: HttpBackend = "httpx",
+) -> Any:
+    """GET the Civix Election Day statewide report (``EVR_STATEWIDE_ELECTIONDAY``), a ZIP.
+
+    Endpoint::
+
+        GET /api-ivis-system/api/v1/getFile
+            ?type=EVR_STATEWIDE_ELECTIONDAY&electionId={id}&electionDate={MM/DD/YYYY}
+    """
+    election_id = require_election_id(election_id)
+    params = {
+        "type": "EVR_STATEWIDE_ELECTIONDAY",
+        "electionId": election_id,
+        "electionDate": election_date.strftime("%m/%d/%Y"),
+    }
+    return _evr_get(
+        f"{API_PREFIX}/getFile",
+        params,
+        http_backend=http_backend,
+        timeout=EVR_STATEWIDE_TIMEOUT_SECONDS,
+        client=client,
+    )
+
+
 def _cloudflare_config_from_env() -> tuple[str, str, str] | None:
     account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
     api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
@@ -1036,6 +1090,7 @@ class CloudflareEarlyVoteStore:
         *,
         ev_date_iso: str | None = None,
         update_pointer: bool = False,
+        vote_period: VotePeriod,
     ) -> None:
         election_id = require_election_id(election_id)
         assert_within_cap(len(decoded), election_id)
@@ -1052,6 +1107,7 @@ class CloudflareEarlyVoteStore:
                 digest,
                 decoded,
                 update_pointer=update_pointer,
+                vote_period=vote_period,
             )
             return
         # Previous complete files stay until a later run. This pass only drops
@@ -1086,6 +1142,7 @@ class CloudflareEarlyVoteStore:
         digest: str,
         decoded: bytes,
         *,
+        vote_period: VotePeriod,
         update_pointer: bool = False,
     ) -> None:
         if self._snapshots is None:
@@ -1138,7 +1195,7 @@ class CloudflareEarlyVoteStore:
             [
                 (
                     _DAY_UPSERT_SQL,
-                    [election_id, ev_date_iso, digest, plan.file_id],
+                    [election_id, ev_date_iso, digest, plan.file_id, vote_period],
                 )
             ],
         )
@@ -1398,6 +1455,10 @@ class CloudflareEarlyVoteStore:
         if alters:
             self._statements(database_id, [(sql, []) for sql in alters])
             logger.info("early-vote D1 added %s geo_area columns", len(alters))
+        day_alters = day_migration_statements(self._column_names(database_id, DAY_COLUMNS_SQL))
+        if day_alters:
+            self._statements(database_id, [(sql, []) for sql in day_alters])
+            logger.info("early-vote D1 added early_vote_day.vote_period")
         self._schema_ready.add(database_id)
 
     def _day_scoped_file_ids(self, database_id: str, election_id: str) -> tuple[str, ...]:
@@ -1872,8 +1933,8 @@ def main(argv: list[str] | None = None) -> int:
 
         store = _build_store(apply=args.apply, stored_hash=args.stored_hash)
         if sync_mode == "backfill":
-            _name, _election_day, ev_dates = find_election_ev_dates(args.election_id)
-            plan = plan_backfill_load_dates(args.election_id, ev_dates)
+            _name, election_day, ev_dates = find_election_ev_dates(args.election_id)
+            plan = plan_backfill_load_dates(args.election_id, ev_dates, election_day=election_day)
             backfill = run_backfill(
                 args.election_id,
                 store,
@@ -1915,6 +1976,7 @@ def main(argv: list[str] | None = None) -> int:
             payload_kind=payload_kind,
             ev_date_iso=ev_date_iso,
             defer_kv_bump=args.defer_kv_bump,
+            vote_period=VOTE_PERIOD_EARLY,
         )
     except (EarlyVoteCapError, EarlyVoteSyncError, ValueError) as exc:
         logger.error("%s", exc)

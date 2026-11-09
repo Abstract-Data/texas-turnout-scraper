@@ -345,6 +345,15 @@ voting page. The decoded payload is a ZIP archive with two CSV files:
 Parse voter rows from `STATEWIDE_VOTER_INFO.csv` only (see `parse_ed_statewide_voter_records`
 in `civix.py`).
 
+### Early-vote tables (ADR-018)
+
+The real header of `STATEWIDE_VOTER_INFO.csv` is `COUNTY_NAME,VOTER_NAME,ID_VOTER,VOTING_METHOD,PRECINCT`
+(measured 2026-11-09). The early-vote roster, `EVR_STATEWIDE`, names the first column `COUNTY`.
+The early-vote loader renames `COUNTY_NAME` to `COUNTY` when it canonicalizes the file, so every
+stored day shares one header and early-vote bytes and hashes do not change. A missing report
+(HTTP 404, a body that is not a ZIP, or a ZIP without the voter CSV) counts as an empty day, not a
+failed one.
+
 ---
 
 ## Endpoint 8 — Election Day Per-County Voter Roster (ZIP)

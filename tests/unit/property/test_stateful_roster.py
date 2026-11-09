@@ -827,6 +827,7 @@ class _BackfillDayStore:
         *,
         ev_date_iso: str | None = None,
         update_pointer: bool = False,
+        vote_period: str,
     ) -> None:
         assert ev_date_iso
         self.writes.append(ev_date_iso)

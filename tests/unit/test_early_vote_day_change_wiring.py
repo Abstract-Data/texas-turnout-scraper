@@ -69,7 +69,7 @@ def _store(
 
 def _write(store: CloudflareEarlyVoteStore) -> None:
     plan = build_publish_plan("53815", NEW, "newsha", "new-file")
-    store._write_day_scoped("db", "53815", "2026-10-19", plan, "newsha", NEW)
+    store._write_day_scoped("db", "53815", "2026-10-19", plan, "newsha", NEW, vote_period="early")
 
 
 def test_changed_day_snapshots_both_versions_and_logs_the_diff(

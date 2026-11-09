@@ -460,7 +460,7 @@ def test_rejected_requests_never_reach_the_portal(query: str, detail: str) -> No
     assert fetch.calls == [] and bucket.objects == {}
 
 
-@pytest.mark.parametrize("value", ["", "16", "-1", "0x1", "99"])
+@pytest.mark.parametrize("value", ["", str(KEY_RANGES), "-1", "0x1", "99"])
 def test_a_bad_range_is_refused_before_any_read(value: str) -> None:
     bucket = FakeBucket()
     client = stage_client(Recorder(ok_response(roster(5))), bucket)

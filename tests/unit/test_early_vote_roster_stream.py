@@ -72,7 +72,7 @@ def _store_day(conn: sqlite3.Connection, ev_date: str, decoded: bytes, *, drop: 
     for sql, params in plan.chunk_inserts:
         conn.execute(sql, params)
     conn.execute(plan.file_insert[0], plan.file_insert[1])
-    conn.execute(_DAY_UPSERT_SQL, ("53815", ev_date, digest, file_id))
+    conn.execute(_DAY_UPSERT_SQL, ("53815", ev_date, digest, file_id, "early"))
     body = aggregate_body_from_decoded(decoded, source_election_id="53815", ev_date_iso=ev_date)
     for sql, params in precompute_statements("53815", file_id, body, ev_date_iso=ev_date):
         conn.execute(sql, params)

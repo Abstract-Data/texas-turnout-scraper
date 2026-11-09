@@ -66,6 +66,32 @@ def _check_zip_limits(zf: zipfile.ZipFile) -> None:
         raise PayloadTooLargeError("ZIP archive exceeds the total uncompressed size cap")
 
 
+class EdStatewideReportMissingError(ValueError):
+    """The election-day statewide payload is not a ZIP holding the voter CSV."""
+
+
+def read_ed_statewide_voter_csv(zip_bytes: bytes) -> bytes:
+    """Return ``STATEWIDE_VOTER_INFO.csv`` from an election-day statewide ZIP.
+
+    Raises:
+        EdStatewideReportMissingError: The payload is not a ZIP, or lacks the voter CSV.
+        PayloadTooLargeError: The ZIP breaks the member-count or uncompressed-size caps.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            _check_zip_limits(zf)
+            try:
+                return zf.read(STATEWIDE_ED_VOTER_CSV)
+            except KeyError as exc:
+                members = ", ".join(zf.namelist())
+                raise EdStatewideReportMissingError(
+                    f"Election day statewide ZIP missing {STATEWIDE_ED_VOTER_CSV!r}; "
+                    f"found: {members}"
+                ) from exc
+    except zipfile.BadZipFile as exc:
+        raise EdStatewideReportMissingError("Election day statewide payload is not a ZIP") from exc
+
+
 _CIVIX_ELECTIONS_ADAPTER = TypeAdapter(list[CivixElection])
 
 
@@ -549,15 +575,7 @@ def parse_ed_statewide_voter_records(
 
     PII note: ``ID_VOTER`` and ``VOTER_NAME`` values are NEVER logged.
     """
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        _check_zip_limits(zf)
-        try:
-            csv_bytes = zf.read(STATEWIDE_ED_VOTER_CSV)
-        except KeyError as exc:
-            members = ", ".join(zf.namelist())
-            raise ValueError(
-                f"Election day statewide ZIP missing {STATEWIDE_ED_VOTER_CSV!r}; found: {members}"
-            ) from exc
+    csv_bytes = read_ed_statewide_voter_csv(zip_bytes)
 
     records: list[VoterRecord] = []
     csv_text = csv_bytes.decode("utf-8")

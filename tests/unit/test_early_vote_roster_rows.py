@@ -440,7 +440,9 @@ class _SqliteCloudflareStore(CloudflareEarlyVoteStore):
 
 def _day_write(store: CloudflareEarlyVoteStore, decoded: bytes, file_id: str) -> None:
     plan = build_publish_plan("53815", decoded, f"sha-{file_id}", file_id)
-    store._write_day_scoped("db", "53815", EV_DATE, plan, f"sha-{file_id}", decoded)
+    store._write_day_scoped(
+        "db", "53815", EV_DATE, plan, f"sha-{file_id}", decoded, vote_period="early"
+    )
 
 
 def test_a_day_write_moves_rows_by_diff_before_the_day_pointer_and_never_by_file_id() -> None:

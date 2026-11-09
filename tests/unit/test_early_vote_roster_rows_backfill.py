@@ -68,7 +68,7 @@ def _replace_day(conn: sqlite3.Connection, ev_date: str, decoded: bytes, file_id
     for sql, params in plan.chunk_inserts:
         conn.execute(sql, params)
     conn.execute(plan.file_insert[0], plan.file_insert[1])
-    conn.execute(_DAY_UPSERT_SQL, ("53815", ev_date, digest, file_id))
+    conn.execute(_DAY_UPSERT_SQL, ("53815", ev_date, digest, file_id, "early"))
 
 
 def _versions(store: _SqliteStore) -> list[tuple[Any, ...]]:

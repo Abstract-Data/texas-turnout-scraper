@@ -58,6 +58,7 @@ def _election_summary(election_id: str, days: tuple[RosterDay, ...]) -> dict[str
         "days": [
             {
                 "ev_date": day.ev_date,
+                "vote_period": day.vote_period,
                 "rows": day.rows,
                 "sha256": day.sha256,
                 "byte_length": day.byte_length,

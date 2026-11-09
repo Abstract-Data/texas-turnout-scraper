@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Last cache-key segment. Bump it when the body shape changes, so bodies cached at the same
 # published version in the old shape are not served again.
-BODY_SHAPE = "b2"
+BODY_SHAPE = "b3"
 
 # Daily early-vote snapshots: old version keys expire by TTL; they are not purged.
 DEFAULT_KV_TTL_SECONDS = 86_400
