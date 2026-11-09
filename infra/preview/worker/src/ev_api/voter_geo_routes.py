@@ -95,7 +95,8 @@ class _VoterGeoApi(_RosterApi):
             return JSONResponse({"detail": VOTER_GEO_NOT_LOADED_DETAIL}, status_code=503)
         signature, point_signature = signatures
         point_part = f".{point_signature[:_SIGNATURE_IN_TAG]}" if point_signature else ""
-        tag = f"{day_etag(day)}.{signature[:_SIGNATURE_IN_TAG]}{point_part}.n{VOTER_GEO_PAGES}.p{number}"
+        build_part = f"{signature[:_SIGNATURE_IN_TAG]}{point_part}"
+        tag = f"{day_etag(day)}.{build_part}.n{VOTER_GEO_PAGES}.p{number}"
         headers = {"ETag": _quoted(tag), "Cache-Control": _CACHE_CONTROL}
         if _etag_matches(request.headers.get("if-none-match"), tag):
             return Response(status_code=304, headers=headers)
