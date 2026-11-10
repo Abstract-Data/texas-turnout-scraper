@@ -40,4 +40,4 @@ What are the trade-offs and outcomes?
 | [015](./015-voter-geography.md) | Per-voter geography in D1 | Proposed | 2026-10-27 |
 | [016](./016-first-appearance-voter-counts.md) | Distinct voters and county FIPS in the aggregate API | Accepted | 2026-10-27 |
 | [017](./017-cloudflare-container-ingest.md) | Early-vote ingest in a Cloudflare Container | Proposed | 2026-10-28 |
-| [018](./018-election-day-roster-in-early-vote-tables.md) | Election Day rosters in the early-vote tables | Proposed | 2026-11-09 |
+| [018](./018-election-day-roster-in-early-vote-tables.md) | Election Day rosters in the early-vote tables | Accepted | 2026-11-09 |
