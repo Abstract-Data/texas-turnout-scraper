@@ -6,13 +6,46 @@ for the active version before loading chunk payloads.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.early_vote_roster import VOTE_PERIODS, VotePeriod
 from texas_turnout_scraper.early_vote_sync import EarlyVoteFileView, choose_published_file
+
+_D1_OVERLOADED_TEXT = "D1 DB is overloaded"
+_D1_OVERLOAD_RETRY_DELAYS = (1.0, 2.0)
+# D1 measures the resources behind this error over a ten-second window.
+D1_OVERLOAD_RETRY_AFTER_SECONDS = 10
+
+
+class D1OverloadedError(RuntimeError):
+    """D1 kept refusing a read as overloaded after the retries."""
+
+
+def _is_overloaded(exc: Exception) -> bool:
+    return _D1_OVERLOADED_TEXT in str(exc)
+
+
+async def _retry_overloaded(call: Callable[[], Awaitable[object]]) -> object:
+    """Await ``call``, backing off while D1 reports overload. Only ever wraps reads."""
+    for delay in _D1_OVERLOAD_RETRY_DELAYS:
+        try:
+            return await call()
+        except Exception as exc:  # reason: D1 raises runtime-only JsException
+            if not _is_overloaded(exc):
+                raise
+        await asyncio.sleep(delay + random.uniform(0, delay / 2))
+    try:
+        return await call()
+    except Exception as exc:  # reason: D1 raises runtime-only JsException
+        if not _is_overloaded(exc):
+            raise
+        raise D1OverloadedError("D1 overloaded") from None
 
 
 class D1Prepared(Protocol):
@@ -57,7 +90,7 @@ async def _d1_fetch_all(prepared: object) -> list[object]:
     all_fn = getattr(prepared, "all", None)
     if callable(all_fn):
         try:
-            outcome = await all_fn()
+            outcome = await _retry_overloaded(all_fn)
         except (AttributeError, NotImplementedError, TypeError):
             outcome = None
         rows = _coerce_results_list(outcome)
@@ -65,7 +98,7 @@ async def _d1_fetch_all(prepared: object) -> list[object]:
             return rows
     run_fn = getattr(prepared, "run", None)
     if callable(run_fn):
-        return _coerce_results_list(await run_fn())
+        return _coerce_results_list(await _retry_overloaded(run_fn))
     return []
 
 
@@ -73,7 +106,7 @@ async def _d1_fetch_first(prepared: object) -> object | None:
     first_fn = getattr(prepared, "first", None)
     if not callable(first_fn):
         return None
-    row = await first_fn()
+    row = await _retry_overloaded(first_fn)
     if row is None:
         return None
     return _d1_to_python(row)
@@ -245,6 +278,8 @@ async def resolve_day_for_date(
     election_id = require_election_id(source_election_id)
     try:
         row = await _d1_fetch_first(db.prepare(_DAY_LOOKUP_SQL).bind(election_id, ev_date))
+    except D1OverloadedError:
+        raise
     except Exception:  # noqa: BLE001  # reason: D1 raises runtime-only JsException; degrade to empty
         return None
     if row is None:
