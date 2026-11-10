@@ -1,7 +1,9 @@
 # ADR-018: Election Day rosters in the early-vote tables
 
 **Date:** 2026-11-09
-**Status:** Proposed. Code is in #142. The migration ran on 2026-11-09 (all 17 days read `early`). The Worker deploy and the load have not run.
+**Status:** Accepted. Code is in #142 and #144. As of 2026-11-10 the migration, Worker deploy and load have all run: `ev-53815` holds 18 days and 9,718,945 rows with no rejects, and 2026-11-03 has 2,073,832 rows for 2,073,828 distinct voters, because 4 rows are exact repeats.
+
+One check below was not met. The owner accepted `first_seen` partitions missing the 20 s target on 2026-11-10: a three-partition sample after the load read 21.5 s cold, 4.8 s and 2.0 s, inside D1's 30 s limit, and the load's own timings were not captured.
 
 ## Context
 
