@@ -34,6 +34,10 @@ from ev_api.spike_workflow import register_spike_workflow_routes
 from ev_api.voter_geo_routes import register_voter_geo_routes
 from texas_turnout_scraper.civix.read_client import http_path
 from texas_turnout_scraper.consumer_tokens import SCOPE_AGGREGATES
+from texas_turnout_scraper.early_vote_d1_read import (
+    D1_OVERLOAD_RETRY_AFTER_SECONDS,
+    D1OverloadedError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +161,18 @@ def create_app(deps: ReadDeps | None = None) -> FastAPI:
     @app.exception_handler(AuthDenied)
     async def auth_denied(request: Request, exc: AuthDenied) -> Response:
         return exc.response
+
+    @app.exception_handler(D1OverloadedError)
+    async def d1_overloaded(request: Request, exc: D1OverloadedError) -> JSONResponse:
+        logger.warning("d1 overloaded route=%s", _route_template(request))
+        return JSONResponse(
+            {"detail": "d1_overloaded"},
+            status_code=503,
+            headers={
+                "Retry-After": str(D1_OVERLOAD_RETRY_AFTER_SECONDS),
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:

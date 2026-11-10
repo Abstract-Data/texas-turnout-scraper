@@ -27,6 +27,10 @@ from texas_turnout_scraper.civix.read_client import (
 )
 from texas_turnout_scraper.consumer_tokens import hash_token, kv_key_for_hash
 from texas_turnout_scraper.early_vote_d1_precompute_read import AggregatesNotComputed
+from texas_turnout_scraper.early_vote_d1_read import (
+    D1_OVERLOAD_RETRY_AFTER_SECONDS,
+    D1OverloadedError,
+)
 from texas_turnout_scraper.early_vote_sync import hash_key
 
 _ACCESS_ID = "preview-client.access"
@@ -377,6 +381,29 @@ def test_http_aggregate_totals_internal_error_json() -> None:
     response = client.get(_url(), headers=_AUTH)
     assert response.status_code == 500
     assert response.json() == {"detail": "internal_error"}
+
+
+def test_http_read_overloaded_is_503_with_retry_after() -> None:
+    class OverloadedStore:
+        async def build_body(
+            self,
+            source_election_id: str,
+            segments: tuple[str, ...],
+            *,
+            kv_sha256: str,
+        ) -> dict[str, object] | None:
+            raise D1OverloadedError("D1 overloaded")
+
+    kv = MemoryKv({version_key(_ELECTION): str(_VERSION), hash_key(_ELECTION): _SHA})
+    client = TestClient(
+        create_app(ReadDeps(kv=kv, store=OverloadedStore())),
+        raise_server_exceptions=False,
+    )
+    response = client.get(_url(), headers=_AUTH)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "d1_overloaded"}
+    assert response.headers["Retry-After"] == str(D1_OVERLOAD_RETRY_AFTER_SECONDS)
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_http_aggregate_totals_requires_access() -> None:
