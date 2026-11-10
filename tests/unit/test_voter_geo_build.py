@@ -27,7 +27,9 @@ from texas_turnout_scraper.early_vote_roster_rows import (
 from texas_turnout_scraper.early_vote_sync import _SCHEMA_CREATES
 from texas_turnout_scraper.geo_tables import GEO_SCHEMA_CREATES
 from texas_turnout_scraper.voter_geo_build import (
+    Place,
     VoterGeoResult,
+    derived_hash,
     output_lines,
     run_voter_geo_build_on_store,
 )
@@ -76,7 +78,8 @@ EXPECTED_PLACE: dict[tuple[str, str], tuple[Any, ...]] = {
     ("BEXAR", "0050"): ("029", "0290050", None, "26", None, 0),
     ("TRAVIS", "ZZZ"): ("453", None, None, None, None, None),
     ("ATLANTIS", "1"): (None, None, None, None, None, None),
-    ("BEXAR", "99"): ("029", None, None, None, None, None),
+    # Bexar's precincts all sit in SD 26 unsplit; its CD and HD are split or unknown.
+    ("BEXAR", "99"): ("029", None, None, "26", None, None),
 }
 
 
@@ -286,6 +289,8 @@ def test_counts_match_the_synthetic_geography(store: _Store) -> None:
     # Matched: voters 1, 2, 3, 7, 8, 9, 10, 11, 12. Unmatched alias: 4 and 5. No alias: 6.
     assert (result.matched_vuids, result.unmatched_alias_vuids, result.no_alias_vuids) == (9, 2, 1)
     assert result.unknown_county_vuids == 1
+    # Voter 6 (BEXAR 99) gets Bexar's whole-county SD; TRAVIS ZZZ gets nothing, ATLANTIS no county.
+    assert result.county_district_vuids == 1
     # Voter 7 is the only matched one with a NULL cd or hd; sd is set for every matched precinct.
     assert (result.null_cd_vuids, result.null_sd_vuids, result.null_hd_vuids) == (1, 0, 1)
     # BEXAR 7 splits cd and hd: voters 2, 11 and 12 and, by first listing, no one else.
@@ -319,6 +324,45 @@ def test_stored_matched_rows_agree_with_the_expected_pairs() -> None:
         if PAIR_PCTKEY.get(pair) is not None
     )
     assert expected == MATCHED_ROWS
+
+
+def test_a_voter_without_a_precinct_gets_only_the_districts_its_whole_county_lies_in() -> None:
+    store = _Store()
+    store.add(D1, _v(1), "DE WITT", "Q")  # one unsplit precinct: every layer is the county's
+    store.add(D1, _v(2), "TRAVIS", "ZZZ")  # CD and HD differ by precinct, SD is split
+    store.add(D1, _v(3), "BEXAR", "99")  # SD whole; CD split and partly unknown, HD split
+    store.add(D1, _v(4), "ATLANTIS", "1")  # no county, no districts
+    result = _run(store)
+    placed = {
+        vuid: tuple(_placed(store, vuid)[c] for c in ("county_fips", "pctkey", "cd", "sd", "hd"))
+        for vuid in (_v(1), _v(2), _v(3), _v(4))
+    }
+    assert placed == {
+        _v(1): ("123", None, "27", "18", "30"),
+        _v(2): ("453", None, None, None, None),
+        _v(3): ("029", None, None, "26", None),
+        _v(4): (None, None, None, None, None),
+    }
+    assert all(_placed(store, vuid)["split_flag"] is None for vuid in placed)
+    assert result.county_district_vuids == 2
+    assert (result.matched_vuids, result.null_cd_vuids) == (0, 0)
+
+
+def test_the_county_rule_rewrites_only_the_voters_it_places(store: _Store) -> None:
+    _run(store)
+    # The row voter 6 had before the rule: a county and no districts, under that row's hash.
+    old = Place("029", None, None, None, None, None, "no_alias")
+    store.conn.execute(
+        "UPDATE voter_geo SET sd = NULL, src_hash = ? WHERE vuid = ?",
+        (derived_hash(_v(6), old, 0), _v(6)),
+    )
+    store.conn.execute(
+        "UPDATE voter_geo_meta SET value = 'before-the-rule' WHERE name = 'signature'"
+    )
+    result = _run(store, now=T2)
+    assert (result.status, result.rows_pending, result.rows_stale) == ("wrote", 1, 0)
+    assert _placed(store, _v(6))["sd"] == "26"
+    assert _placed(store, _v(1))["matched_at"] == "2026-10-27T01:00:00Z"
 
 
 def test_vuids_are_normalized_before_they_key_a_row() -> None:
@@ -503,6 +547,7 @@ def test_the_output_has_every_count_line_in_order(store: _Store) -> None:
         "unmatched_alias_vuids",
         "no_alias_vuids",
         "unknown_county_vuids",
+        "county_district_vuids",
         "null_cd_vuids",
         "null_sd_vuids",
         "null_hd_vuids",
@@ -516,7 +561,7 @@ def test_the_output_has_every_count_line_in_order(store: _Store) -> None:
         "queries",
         "seconds",
     ]
-    assert re.fullmatch(r"matched_row_share=\d\.\d{4}", output_lines(_run(store))[14])
+    assert re.fullmatch(r"matched_row_share=\d\.\d{4}", output_lines(_run(store))[15])
 
 
 # --- DDL drift and imports --------------------------------------------------------------------

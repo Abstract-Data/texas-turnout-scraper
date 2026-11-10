@@ -410,6 +410,8 @@ def compare_with_precinct(
             if fix is None:
                 stated += row.get("pctkey") is not None
                 continue
+            if row.get("pctkey") is None:
+                continue  # districts from the county alone (ADR-015 §16), not a precinct's
             for layer in disagree:
                 point, precinct = getattr(fix, layer), row.get(layer)
                 if point is not None and precinct is not None:
