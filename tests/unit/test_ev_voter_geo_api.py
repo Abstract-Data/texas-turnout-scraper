@@ -234,6 +234,17 @@ def test_each_voter_reports_the_stored_district_and_the_source_of_the_assignment
     assert unbuilt["geocode_quality"] is None and unbuilt["matched_at"] is None
 
 
+def test_districts_from_the_county_alone_are_labelled_county() -> None:
+    db, _ = _db()
+    db.conn.execute("UPDATE voter_geo SET sd = '14' WHERE vuid = ?", (_vuid(1),))
+    seen = _all_voters(_client(db))
+    voter = seen[_vuid(1)]
+    assert (voter["pctkey"], voter["cd"], voter["sd"], voter["hd"]) == (None, None, "14", None)
+    assert voter["district_source"] == "county"
+    assert (voter["split_flag"], voter["geocode_quality"]) == (None, "not_located")
+    assert seen[_vuid(8)]["district_source"] is None  # n = 7: no precinct and no district
+
+
 def test_pages_partition_the_days_live_vuids_in_vuid_order() -> None:
     db, live = _db()
     client = _client(db)

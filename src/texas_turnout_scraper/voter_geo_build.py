@@ -27,7 +27,7 @@ import logging
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 from typing import Literal, NamedTuple, Protocol
 
@@ -63,6 +63,7 @@ from texas_turnout_scraper.voter_geo_tables import (
     SPLIT_SD,
     VOTER_GEO_BASE_PRESENT_SQL,
     VOTER_GEO_BASE_TABLE_COUNT,
+    VOTER_GEO_BUILD_REVISION,
     VOTER_GEO_COLUMNS,
     VOTER_GEO_DELETE_SQL,
     VOTER_GEO_LIVE_ROWS_SQL,
@@ -134,6 +135,7 @@ class VoterGeoResult:
     unmatched_alias_vuids: int = 0
     no_alias_vuids: int = 0
     unknown_county_vuids: int = 0
+    county_district_vuids: int = 0
     null_cd_vuids: int = 0
     null_sd_vuids: int = 0
     null_hd_vuids: int = 0
@@ -162,11 +164,18 @@ class VoterGeoResult:
 
 @dataclass(frozen=True)
 class Geography:
-    """What ADR-010 loaded: county codes by name, districts by state precinct, aliases by pair."""
+    """What ADR-010 loaded: county codes by name, districts by state precinct, aliases by pair.
+
+    ``county_districts`` holds, per county FIPS, the ``(cd, sd, hd)`` the whole county lies in:
+    a layer is set only when every precinct of the county has that district and none is split.
+    """
 
     county_fips: Mapping[str, str]
     districts: Mapping[str, tuple[str | None, str | None, str | None, int]]
     aliases: Mapping[Pair, str | None]
+    county_districts: Mapping[str, tuple[str | None, str | None, str | None]] = field(
+        default_factory=dict
+    )
 
 
 class Place(NamedTuple):
@@ -232,29 +241,47 @@ def read_geography(
     for row in store._query_rows(database_id, COUNTY_NAMES_SQL, []):  # noqa: SLF001
         counties.setdefault(county_key(_text(row.get("name"))), _text(row.get("code")))
     districts: dict[str, tuple[str | None, str | None, str | None, int]] = {}
+    seen: dict[str, tuple[set[str | None], set[str | None], set[str | None]]] = {}
     for row in store._query_rows(database_id, PRECINCT_DISTRICTS_SQL, []):  # noqa: SLF001
         split = (
             (SPLIT_CD if _truthy(row.get("split_cd")) else 0)
             | (SPLIT_SD if _truthy(row.get("split_sd")) else 0)
             | (SPLIT_HD if _truthy(row.get("split_hd")) else 0)
         )
-        districts[_text(row.get("pctkey"))] = (
-            _optional(row.get("cd")),
-            _optional(row.get("sd")),
-            _optional(row.get("hd")),
-            split,
-        )
-    return Geography(counties, districts, aliases)
+        cd, sd, hd = _optional(row.get("cd")), _optional(row.get("sd")), _optional(row.get("hd"))
+        districts[_text(row.get("pctkey"))] = (cd, sd, hd, split)
+        layers = seen.setdefault(_text(row.get("county_fips")), (set(), set(), set()))
+        # A split precinct reaches past its district, so it counts as a second, unknown one.
+        for values, value, bit in zip(
+            layers, (cd, sd, hd), (SPLIT_CD, SPLIT_SD, SPLIT_HD), strict=True
+        ):
+            values.add(None if split & bit else value)
+    county_districts = {
+        fips: (_sole(cds), _sole(sds), _sole(hds)) for fips, (cds, sds, hds) in seen.items()
+    }
+    return Geography(counties, districts, aliases, county_districts)
+
+
+def _sole(values: set[str | None]) -> str | None:
+    return next(iter(values)) if len(values) == 1 else None
+
+
+def _county_place(
+    fips: str | None, geography: Geography, alias: Literal["unmatched_alias", "no_alias"]
+) -> Place:
+    """No precinct: only the districts the whole county lies in (ADR-015 §16)."""
+    cd, sd, hd = geography.county_districts.get(fips or "", (None, None, None))
+    return Place(fips, None, cd, sd, hd, None, alias)
 
 
 def place_of(pair: Pair, geography: Geography) -> Place:
     """County from the name's letters, precinct from the stored alias of the exact pair."""
     fips = geography.county_fips.get(county_key(pair[0]))
     if pair not in geography.aliases:
-        return Place(fips, None, None, None, None, None, "no_alias")
+        return _county_place(fips, geography, "no_alias")
     pctkey = geography.aliases[pair]
     if pctkey is None:
-        return Place(fips, None, None, None, None, None, "unmatched_alias")
+        return _county_place(fips, geography, "unmatched_alias")
     cd, sd, hd, split = geography.districts.get(pctkey, (None, None, None, 0))
     return Place(fips, pctkey, cd, sd, hd, split, "matched")
 
@@ -279,7 +306,7 @@ def build_signature(
             sorted([county, precinct, pctkey] for (county, precinct), pctkey in aliases.items())
         ).encode()
     ).hexdigest()
-    payload = [VOTER_GEO_VERSION, versions, geo_sha, alias_hash]
+    payload = [VOTER_GEO_VERSION, VOTER_GEO_BUILD_REVISION, versions, geo_sha, alias_hash]
     return hashlib.sha256(_dump(payload).encode()).hexdigest()
 
 
@@ -521,6 +548,7 @@ def _tally(tally: dict[str, int], place: Place, flags: int) -> None:
     tally["unmatched_alias_vuids"] += place.alias == "unmatched_alias"
     tally["no_alias_vuids"] += place.alias == "no_alias"
     tally["unknown_county_vuids"] += place.county_fips is None
+    tally["county_district_vuids"] += place.pctkey is None and any((place.cd, place.sd, place.hd))
     if place.pctkey is not None:
         tally["null_cd_vuids"] += place.cd is None
         tally["null_sd_vuids"] += place.sd is None
@@ -609,6 +637,7 @@ def output_lines(result: VoterGeoResult) -> list[str]:
         "unmatched_alias_vuids",
         "no_alias_vuids",
         "unknown_county_vuids",
+        "county_district_vuids",
         "null_cd_vuids",
         "null_sd_vuids",
         "null_hd_vuids",

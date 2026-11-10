@@ -132,6 +132,22 @@ approval. Stage 2 runs only on the owner's machine, like ADR-011. No workflow ru
     the Stage 1 fields. The ETag adds the point signature when one exists, so an apply of points
     alone still changes it.
 
+## Amendment 2026-11-10: districts from the county alone
+
+16. **County districts.** On 2026-11-10, 66,835 of `ev-53815`'s 9,718,945 voters had a roster
+    precinct with no state precinct alias: 34,174 in Gregg, 11,954 in Hopkins and 5,793 in
+    Liberty, whose rosters carry sub-precinct codes such as `0101` or `16-N` that
+    `Precincts26P` does not have, and a long tail elsewhere. They had a county and no district.
+    A voter with no precinct now gets the district of each layer that the whole county lies in:
+    a layer is set only when every precinct of the county has the same non-NULL district and
+    none is split for that layer (`split_* = share < 0.99`, ADR-010). Otherwise that layer stays
+    NULL. `pctkey` and `split_flag` stay NULL and no precinct is guessed. The route reports
+    `district_source` `county` for such a voter, and `geocode_quality` stays `not_located`.
+    Meta and the build output gain `county_district_vuids`. Stage 2 still compares a point only
+    with a precinct's districts. The signature takes a new `VOTER_GEO_BUILD_REVISION`, which is
+    not in each row's `src_hash`, so the first build after the change rewrites only the voters
+    it places.
+
 ## Consequences
 
 - Stage 1 carries no information the ADR-010 lookup document does not already hold. It turns a

@@ -10,6 +10,9 @@ from __future__ import annotations
 
 # Part of the build signature, so a change to how rows are derived rebuilds them.
 VOTER_GEO_VERSION = 1
+# In the build signature only, not in each row's hash: bump it for a derivation change that moves
+# few rows, so the next build reruns and rewrites only the rows whose values changed.
+VOTER_GEO_BUILD_REVISION = 2
 # The same for voter_geo_point, which only the local voter_geo module writes (Stage 2).
 VOTER_GEO_POINT_VERSION = 1
 GEOCODE_SOURCE_POINT = "txgio_address_point"
@@ -102,6 +105,7 @@ META_COUNT_NAMES: tuple[str, ...] = (
     "unmatched_alias_vuids",
     "no_alias_vuids",
     "unknown_county_vuids",
+    "county_district_vuids",
     "null_cd_vuids",
     "null_sd_vuids",
     "null_hd_vuids",
@@ -196,7 +200,9 @@ VOTER_GEO_LIVE_ROWS_SQL = (
     "WHERE day = ? AND row_hash BETWEEN ? AND ? AND removed_in IS NULL ORDER BY row_hash, occ"
 )
 # One row per state precinct: ~10k rows, read once. The split columns are booleans.
-PRECINCT_DISTRICTS_SQL = "SELECT pctkey, cd, sd, hd, split_cd, split_sd, split_hd FROM geo_precinct"
+PRECINCT_DISTRICTS_SQL = (
+    "SELECT pctkey, county_fips, cd, sd, hd, split_cd, split_sd, split_hd FROM geo_precinct"
+)
 
 # The route serves a day's live VUIDs in this many row-hash ranges, one per page. A page is one
 # D1 text cell, and D1 caps a string at 2 MB: at about 340 bytes per voter, 640 pages keep a
@@ -209,7 +215,8 @@ VOTER_GEO_PAGE_SQL = (
     "SELECT COUNT(*) AS n, json_group_array(json_object("
     "'vuid', vuid, 'county_fips', county_fips, 'pctkey', pctkey, 'cd', cd, 'sd', sd, 'hd', hd, "
     "'district_source', CASE WHEN has_point THEN 'address_point' "
-    "WHEN pctkey IS NOT NULL THEN 'precinct_alias' END, "
+    "WHEN pctkey IS NOT NULL THEN 'precinct_alias' "
+    "WHEN cd IS NOT NULL OR sd IS NOT NULL OR hd IS NOT NULL THEN 'county' END, "
     "'split_flag', split_flag, 'flags', flags, 'lat', lat, 'lon', lon, "
     "'geocode_source', CASE WHEN has_point THEN geocode_source "
     "WHEN has_row THEN 'none' END, "
