@@ -253,3 +253,15 @@ Not touched: `early_vote_roster_row` and the other table definitions apart from 
   backfill, and it has to be revisited before Election Day ingest runs in the Container.
 - A row in the early-vote tables can now be a non-early vote, which `vote_period` marks at the day
   level.
+
+## 2026-11-10: county coverage check (issue #151)
+
+The 2026-11-03 Election Day roster loaded with 80 rows for Fort Bend, 3 for Nueces and 5 for Chambers, because those counties had not yet submitted to the state. Nothing flagged it.
+
+`run_backfill` now compares each county's Election Day rows with its mean rows per early-vote day loaded in the same run. The mean sums the county's rows over every early day in the run that had any rows statewide, and divides by the count of those days. A county is flagged when its Election Day rows are under 10% of that mean. Counties whose mean is under 100 rows a day are never flagged.
+
+The thresholds come from data measured on 2026-11-10, with each county's mean early day taken from the state's cumulative county totals. As loaded, the three unsubmitted counties sat at 0.0007 to 0.0057 of that mean. In the portal's current file, Waller sits at 0.009, the lowest healthy county at 0.92 and the median near 3.7. The 10% line falls well clear of both groups.
+
+The check flags and never blocks. The day is still written and `exit_code` stays 0, because the Container runs the later steps under `set -e` and a late county is not a reason to skip them. The result carries `low_coverage_counties` and `coverage_checked`. The report appends `coverage_checked`, `low_coverage_count` and `low_coverage_counties` (`COUNTY:rows/baseline`), and the run logs one warning with county names and counts only.
+
+The check runs only in `--sync-mode backfill`, and only when the plan includes Election Day and at least one early day had rows. `--sync-mode single` and `latest` do not run it.

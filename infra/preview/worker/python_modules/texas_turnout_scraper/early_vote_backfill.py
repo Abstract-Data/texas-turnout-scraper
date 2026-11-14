@@ -30,7 +30,10 @@ from texas_turnout_scraper.civix.ids import require_election_id
 from texas_turnout_scraper.early_vote_roster import (
     VOTE_PERIOD_EARLY,
     VOTE_PERIOD_ELECTION_DAY,
+    CountyShortfall,
+    RosterCsvSummary,
     VotePeriod,
+    low_coverage_counties,
     summarize_roster_csv,
 )
 from texas_turnout_scraper.early_vote_sync import (
@@ -107,6 +110,8 @@ class BackfillResult:
     manifest_sha256: str
     kv_version: str | None
     exit_code: int
+    low_coverage_counties: tuple[CountyShortfall, ...] = ()
+    coverage_checked: bool = False
 
     @property
     def days_skipped_empty(self) -> int:
@@ -323,6 +328,7 @@ def run_backfill(
     manifest_inputs: dict[str, str] = {}
     skipped_empty: list[str] = []
     failed: list[str] = []
+    coverage = _ElectionDayCoverage()
 
     def keep_stored_day(iso: str) -> None:
         """Mark a day failed; what D1 last stored for it stays in the published set."""
@@ -374,6 +380,7 @@ def run_backfill(
                 est_rows,
             )
             continue
+        coverage.observe(election_id, iso, vote_period, summary)
         result = sync_early_vote(
             election_id,
             response,
@@ -449,7 +456,49 @@ def run_backfill(
         manifest_sha256=manifest,
         kv_version=kv_version,
         exit_code=0,
+        low_coverage_counties=coverage.shortfalls,
+        coverage_checked=coverage.checked,
     )
+
+
+def _shortfall_text(item: CountyShortfall) -> str:
+    return f"{item.county}:{item.rows}/{item.baseline_rows}"
+
+
+class _ElectionDayCoverage:
+    """Compares the Election Day pull with the county rows of the early days loaded before it."""
+
+    def __init__(self) -> None:
+        self._early_county_rows: Counter[str] = Counter()
+        self._early_days = 0
+        self.shortfalls: tuple[CountyShortfall, ...] = ()
+        self.checked = False
+
+    def observe(
+        self, election_id: str, iso: str, vote_period: VotePeriod, summary: RosterCsvSummary | None
+    ) -> None:
+        if summary is None:
+            return
+        day_counties = dict(summary.county_counts)
+        if vote_period == VOTE_PERIOD_EARLY:
+            self._early_county_rows.update(day_counties)
+            self._early_days += 1
+        elif self._early_days:
+            baseline = {
+                county: total / self._early_days
+                for county, total in self._early_county_rows.items()
+            }
+            self.shortfalls = low_coverage_counties(day_counties, baseline)
+            self.checked = True
+            if self.shortfalls:
+                logger.warning(
+                    "early-vote election day coverage low election_id=%s ev_date=%s "
+                    "counties=%s detail=%s",
+                    election_id,
+                    iso,
+                    len(self.shortfalls),
+                    ",".join(_shortfall_text(item) for item in self.shortfalls),
+                )
 
 
 def _latest_backfill_day(result: BackfillResult) -> BackfillDayResult | None:
@@ -500,6 +549,14 @@ def format_backfill_report(result: BackfillResult) -> str:
         lines.append(f"kv_manifest_key=ev:{result.election_id}:manifest_sha256")
     else:
         lines.append("kv_bump=deferred_or_dry_run_or_unchanged")
+    lines.extend(
+        [
+            f"coverage_checked={str(result.coverage_checked).lower()}",
+            f"low_coverage_count={len(result.low_coverage_counties)}",
+            "low_coverage_counties="
+            + ",".join(_shortfall_text(item) for item in result.low_coverage_counties),
+        ]
+    )
     for day in result.days:
         lines.append(
             f"day ev_date={day.ev_date_iso} status={day.status} "
