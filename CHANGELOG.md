@@ -6,6 +6,39 @@ Release versions and `pyproject.toml` are updated by [Release Please](https://gi
 when release PRs merge to `main`. Use [Conventional Commits](https://www.conventionalcommits.org/) on
 `main` (for example `feat:`, `fix:`, `docs:`, `chore:`) so changelogs and semver bumps stay accurate.
 
+## [0.2.11](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.10...texas-turnout-scraper-v0.2.11) (2026-11-14)
+
+
+### Features
+
+* **ev-ingest:** load Election Day rosters into the early-vote tables ([#142](https://github.com/Abstract-Data/texas-turnout-scraper/issues/142)) ([e935377](https://github.com/Abstract-Data/texas-turnout-scraper/commit/e935377e7d6b2855aabc043d812de9980b106de5))
+* **ev-ingest:** run voter_geo_build as the last step of the ingest run (ADR-015) ([df58afb](https://github.com/Abstract-Data/texas-turnout-scraper/commit/df58afbb2add2aab005f193bac884d2000033fa6))
+* **ev-ingest:** run voter_geo_build as the last step of the ingest run (ADR-015) ([b5857e9](https://github.com/Abstract-Data/texas-turnout-scraper/commit/b5857e914331efc35d1d51e75c7afb37ceec2f3f))
+* **loader:** flag Election Day counties far below their early-vote volume ([#151](https://github.com/Abstract-Data/texas-turnout-scraper/issues/151)) ([#152](https://github.com/Abstract-Data/texas-turnout-scraper/issues/152)) ([610e886](https://github.com/Abstract-Data/texas-turnout-scraper/commit/610e886e29b78aa431306f52f745b4ebc25f779e))
+
+
+### Bug Fixes
+
+* **ci:** the Pyodide smoke expects no ETag on by-day without first-seen rows ([17ade33](https://github.com/Abstract-Data/texas-turnout-scraper/commit/17ade334a1b0123a4bee1b72c1558add3b3c43f2))
+* **ci:** the Pyodide smoke expects no ETag on by-day without first-seen rows ([bc5620a](https://github.com/Abstract-Data/texas-turnout-scraper/commit/bc5620a5fe1819b4122aa4288a8b52c736c8860e))
+* **ev-api:** retry D1 overload on reads, then answer 503 ([c21fd3c](https://github.com/Abstract-Data/texas-turnout-scraper/commit/c21fd3c9af29a40dd20c1382c404996c224dd49b))
+* **ev-api:** retry D1 overload on reads, then answer 503 ([0c582ba](https://github.com/Abstract-Data/texas-turnout-scraper/commit/0c582ba311b0817a93a217b14cf17e21b537ab00))
+* **ev-ingest:** keep local dotfiles out of the Container image ([0bca2a4](https://github.com/Abstract-Data/texas-turnout-scraper/commit/0bca2a414d14dc78a42d7ccdfd285d7a968dbb6c))
+* **ev-ingest:** keep the batch and stored days when a report is unreadable ([#144](https://github.com/Abstract-Data/texas-turnout-scraper/issues/144)) ([3a2bce3](https://github.com/Abstract-Data/texas-turnout-scraper/commit/3a2bce3a21d3d4c9cc113df4ee6360aba3375636))
+* **ev-ingest:** retry Cloudflare 429, degrade first_seen, finalize manifest on defer-KV ([#141](https://github.com/Abstract-Data/texas-turnout-scraper/issues/141)) ([6863cad](https://github.com/Abstract-Data/texas-turnout-scraper/commit/6863cad10caa64b138320435aea41db40d117d85))
+* **ops:** stop token rotation when the 1Password lookup fails ([#137](https://github.com/Abstract-Data/texas-turnout-scraper/issues/137)) ([fc871ec](https://github.com/Abstract-Data/texas-turnout-scraper/commit/fc871ec2173de37967cfb165d254ca7ae07cb066))
+* **voter-geo:** give unmatched voters the districts their whole county lies in ([7922f23](https://github.com/Abstract-Data/texas-turnout-scraper/commit/7922f239bee4c36c1274cd18d404cc1033ef3717))
+* **voter-geo:** give unmatched voters the districts their whole county lies in ([918730c](https://github.com/Abstract-Data/texas-turnout-scraper/commit/918730ced95fa0d9516afad3f66bef5deaab0f88))
+
+
+### Documentation
+
+* **adr:** mark ADR-018 accepted with the load's final totals ([25d9e53](https://github.com/Abstract-Data/texas-turnout-scraper/commit/25d9e53d31396a4b6371f3ec3c28eec102f58c13))
+* **adr:** mark ADR-018 accepted with the load's final totals ([b8f1f7b](https://github.com/Abstract-Data/texas-turnout-scraper/commit/b8f1f7b7cc0cf40bb936a79ba2a8a405f5c648f7))
+* correct voter_geo page range and ingest step lists ([3b57b27](https://github.com/Abstract-Data/texas-turnout-scraper/commit/3b57b27a780a5962439d145afec159794bbf71bb))
+* correct voter_geo page range and ingest step lists ([367f03b](https://github.com/Abstract-Data/texas-turnout-scraper/commit/367f03b19bee16cac45918fe95a7a56e6773f9f3))
+* list voter_geo_build in the ingest steps (ADR-015, ADR-017) ([7388a3f](https://github.com/Abstract-Data/texas-turnout-scraper/commit/7388a3fae0362ad00c7af3b7264281b2a0fa0f25))
+
 ## [0.2.10](https://github.com/Abstract-Data/texas-turnout-scraper/compare/texas-turnout-scraper-v0.2.9...texas-turnout-scraper-v0.2.10) (2026-10-29)
 
 
